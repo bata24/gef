@@ -82875,6 +82875,18 @@ class KernelPath:
     """
 
     PathInfo = collections.namedtuple("PathInfo", "path status crossed root_mount")
+    InodeInfo = collections.namedtuple("InodeInfo", "mode ino super_block dev major minor fstype devname")
+
+    # the file types of inode->i_mode (S_IFMT) and their letters in `ls -l`
+    FILE_TYPES = {
+        0o010000: "p",
+        0o020000: "c",
+        0o040000: "d",
+        0o060000: "b",
+        0o100000: "-",
+        0o120000: "l",
+        0o140000: "s",
+    }
 
     @classmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -83037,7 +83049,8 @@ class KernelPath:
             self.offset_mount_mnt_child = None
 
         ptrsize = current_arch.ptrsize
-        for delta in (0, -ptrsize, ptrsize, -ptrsize * 2, ptrsize * 2):
+        for delta in (0, -ptrsize, ptrsize, -ptrsize * 2, ptrsize * 2,
+                      -ptrsize * 3, ptrsize * 3, -ptrsize * 4, ptrsize * 4):
             offset = self.nominal_mnt_mounts + delta
             if offset < 0:
                 continue
@@ -83425,20 +83438,12 @@ class KernelPath:
         return True
 
     def initialize_inode_offsets(self, inode):
-        self.offset_i_mode = self.get_offset_i_mode()
-        self.offset_i_ino = self.get_offset_i_ino(inode)
-        self.offset_i_sb = self.get_offset_i_sb(inode)
-        if None in (self.offset_i_mode, self.offset_i_ino, self.offset_i_sb):
+        """Resolve inode->{i_mode,i_ino,i_sb} from the sample `inode`. They replace the resolved ones only if `inode`
+        reads as a struct inode with them, so a sample that is not an inode never breaks the later commands."""
+        offsets = (self.get_offset_i_mode(), self.get_offset_i_ino(inode), self.get_offset_i_sb(inode))
+        if None in offsets or not self.is_inode(inode, offsets):
             return None
-
-        try:
-            read_int16_from_memory(inode + self.offset_i_mode)
-            super_block = read_int_from_memory(inode + self.offset_i_sb)
-            read_int_from_memory(inode + self.offset_i_ino)
-        except (gdb.MemoryError, OverflowError):
-            return None
-        if not is_valid_addr(super_block):
-            return None
+        self.offset_i_mode, self.offset_i_ino, self.offset_i_sb = offsets
 
         self.meta.append(("info", "offsetof(inode, i_mode): {:#x}".format(self.offset_i_mode)))
         self.meta.append(("info", "offsetof(inode, i_ino): {:#x}".format(self.offset_i_ino)))
@@ -83563,10 +83568,8 @@ class KernelPath:
                 cand_offset_mnt = current_arch.ptrsize * i
                 mnt = read_int_from_memory(file + cand_offset_mnt)
                 # f_path.mnt points in the middle of the chunk, so the "unaligned" warning is not a problem
-                ret = Kernel.get_slab_contains(mnt, allow_unaligned=True)
-                if not ret:
-                    continue
-                if "mnt_cache" in ret:
+                obj = Kernel.get_slab_object(mnt)
+                if obj and "mnt_cache" in obj["name"]:
                     offset_mnt = cand_offset_mnt
                     break
             else:
@@ -83587,10 +83590,8 @@ class KernelPath:
                 for i in range(0x40):
                     cand_offset_mnt = current_arch.ptrsize * i
                     mnt = read_int_from_memory(file + cand_offset_mnt)
-                    ret = Kernel.get_slab_contains(mnt, allow_unaligned=True)
-                    if not ret:
-                        continue
-                    if "inode_cache" in ret:
+                    obj = Kernel.get_slab_object(mnt)
+                    if obj and "inode_cache" in obj["name"]:
                         offset_mnt = cand_offset_mnt - current_arch.ptrsize * 2
                         break
                 else:
@@ -83930,6 +83931,127 @@ class KernelPath:
         i_ino = read_int_from_memory(inode + self.offset_i_ino)
         return i_ino
 
+    def get_seed_dentry(self, address, kind):
+        """Return the dentry the object of `kind` refers to, used to resolve the dentry layout."""
+        if kind == "dentry":
+            return address
+        if kind == "path":
+            return read_int_from_memory(address + current_arch.ptrsize)
+        if kind == "mount":
+            address += self.offset_mount_mnt
+        return read_int_from_memory(address + self.offset_vfsmount_mnt_root)
+
+    def bootstrap(self, kversion, kind="auto", address=None, threads=False):
+        """Resolve the struct dentry layout from whatever sample works, for an object whose type may be unknown.
+        `address` is the object of `kind` ("auto" if it is unknown). `threads` is passed to the task resolver.
+        Return (ok, task resolver or None, meta). The task resolver is returned if it was initialized
+        (with files=True) to resolve the layout from the open files of the tasks."""
+        meta = []
+        if self.initialized:
+            meta.extend(self.meta)
+            return True, None, meta
+
+        # plan 1: the root dentry of a registered filesystem, which needs no task
+        if "3.3" <= kversion:
+            kfs = Kernel.file_system()
+            if kfs.initialize() and self.initialized:
+                meta.extend(self.meta)
+                meta.append(("info", "dentry (sample): the root of a mount in file_systems"))
+                return True, None, meta
+
+        # plan 2: the object at `address`, whose type is given
+        if kind != "auto" and self.ensure_mount_offsets():
+            try:
+                if kind == "file":
+                    ret = self.initialize(file=address)
+                else:
+                    ret = self.initialize(dentry=self.get_seed_dentry(address, kind))
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                ret = None
+            if ret:
+                meta.extend(self.meta)
+                meta.append(("info", "{:s} (sample): {:#x}".format(kind, address)))
+                return True, None, meta
+
+        # plan 3: the open files of the tasks
+        task_command = Kernel.task()
+        task_ready = task_command.initialize(files=True, threads=threads)
+        meta.extend(task_command.meta)
+        if task_ready and self.initialized:
+            return True, task_command, meta
+
+        meta.append(("err", "Could not resolve the struct dentry layout"))
+        if kind == "auto":
+            meta.append(("err", "Specifying the type with --type may help"))
+        return None, None, meta
+
+    def resolve_file(self, file, strict=True):
+        """Return [(vfsmount, dentry)] of the struct file at `file`, or [] if it is not a file.
+        If the file offsets are not resolved yet, they are guessed from this object, and forgotten
+        again if it turns out not to be a file. `strict=False` trusts a resolved file even if the
+        parent of its dentry is unreadable."""
+        probing = self.offset_file_mnt is None
+        n = len(self.meta)
+        try:
+            if not probing or self.initialize_file_offsets(file):
+                vfsmnt = read_int_from_memory(file + self.offset_file_mnt)
+                dentry = read_int_from_memory(file + self.offset_file_dentry)
+                strict = probing or strict
+                if self.is_vfsmount(vfsmnt) and self.is_dentry(dentry, strict=strict):
+                    return [(vfsmnt, dentry)]
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            pass
+        if probing:
+            # the offsets were guessed from this object, which turned out not to be a file
+            self.offset_file_mnt = None
+            self.offset_file_dentry = None
+            del self.meta[n:]
+        return []
+
+    def resolve_object(self, address, kind, strict=True):
+        """Return [(vfsmount, dentry)] the struct path, file, mount or vfsmount (`kind`) at `address` refers to,
+        or [] if it is not one. A bare dentry has no mount information, so it is not resolved here
+        (see KernelMount.find_mounts_for_dentry()). `strict=False` trusts the object even if the parent
+        of the dentry is unreadable, which the walk reports."""
+        ptrsize = current_arch.ptrsize
+
+        try:
+            if kind == "path":
+                vfsmnt = read_int_from_memory(address)
+                dentry = read_int_from_memory(address + ptrsize)
+            elif kind == "file":
+                return self.resolve_file(address, strict)
+            elif kind in ("mount", "vfsmount"):
+                if kind == "mount":
+                    vfsmnt = address + self.offset_mount_mnt
+                else:
+                    vfsmnt = address
+                dentry = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root)
+            else:
+                return []
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return []
+
+        if not self.is_vfsmount(vfsmnt) or not self.is_dentry(dentry, strict=strict):
+            return []
+        return [(vfsmnt, dentry)]
+
+    def detect_object_type(self, address):
+        """Return which of "mount", "vfsmount", "path", "file" and "dentry" `address` points to, or None."""
+        if self.is_mount(address):
+            return "mount"
+        if self.is_vfsmount(address):
+            return "vfsmount"
+        if self.is_path(address):
+            return "path"
+        # f_path.dentry and f_op of a file can pass as d_parent and d_name.name of a dentry,
+        # so the stricter check of a file, whose f_path must hold both objects, goes first
+        if self.resolve_object(address, "file"):
+            return "file"
+        if self.is_dentry(address):
+            return "dentry"
+        return None
+
     def search_mounts_for_dentry(self, index, root_mounts, visited):
         """Return the vfsmounts in the trees of `root_mounts` whose mnt_root is in `index`
         ({dentry: depth}), the nearest one first. The mounts in `visited` are skipped, and the
@@ -83949,6 +84071,155 @@ class KernelPath:
                     candidates.append((index[mnt_root], len(candidates), vfsmnt))
         candidates.sort()
         return [vfsmnt for _, _, vfsmnt in candidates]
+
+    @staticmethod
+    def mode_string(mode):
+        """Return `mode` (inode->i_mode) in the notation of `ls -l`, e.g. "drwxr-xr-x"."""
+        chars = []
+        for shift in (6, 3, 0):
+            bits = (mode >> shift) & 7
+            for flag, label in ((4, "r"), (2, "w"), (1, "x")):
+                if bits & flag:
+                    chars.append(label)
+                else:
+                    chars.append("-")
+        if mode & 0o4000:
+            if chars[2] == "x":
+                chars[2] = "s"
+            else:
+                chars[2] = "S"
+        if mode & 0o2000:
+            if chars[5] == "x":
+                chars[5] = "s"
+            else:
+                chars[5] = "S"
+        if mode & 0o1000:
+            if chars[8] == "x":
+                chars[8] = "t"
+            else:
+                chars[8] = "T"
+        return KernelPath.FILE_TYPES.get(mode & 0o170000, "?") + "".join(chars)
+
+
+    def initialize_vfs(self, kind="auto", address=None, fd_mode=False):
+        """Resolve what reading the VFS objects (struct file, dentry, inode and super_block) needs.
+        `address` is a sample object of `kind`, which may be "auto". With `fd_mode`, the file comes from
+        a file descriptor, so the task resolver must have resolved the layout already.
+        Return (ok, meta). KernelFileSystem, which reads super_block, is initialized again on every call."""
+        meta = []
+        if address is not None and not fd_mode:
+            try:
+                if kind == "file":
+                    if not self.initialize(file=address):
+                        meta.append(("err", "Could not resolve the file layout"))
+                        return None, meta
+                elif kind == "dentry":
+                    if not self.initialize(dentry=address):
+                        meta.append(("err", "Could not resolve the dentry layout"))
+                        return None, meta
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                meta.append(("err", "Could not resolve the VFS object layout"))
+                return None, meta
+
+        # KernelFileSystem resolves super_block, and adds the filesystem name and mount source.
+        # It keeps the nominal super_block layout if it does not resolve the layout, e.g. before v3.3.
+        kfs = Kernel.file_system()
+        kfs_ret = kfs.initialize()
+        # only the super_block layout is needed, so its errors are only warnings here
+        meta.extend(("warn" if level == "err" else level, line) for level, line in kfs.meta)
+        if not kfs_ret:
+            meta.append(("info", "offsetof(super_block, s_dev): {:#x}".format(kfs.offset_s_dev)))
+            meta.append(("info", "offsetof(super_block, s_type): {:#x}".format(kfs.offset_s_type)))
+
+        # The given inode settles the inode layout, even if KernelFileSystem has resolved it with the root of a mount.
+        if address is not None and not fd_mode and kind == "inode":
+            try:
+                if not self.initialize_inode_offsets(address):
+                    meta.append(("err", "Could not resolve the inode layout"))
+                    return None, meta
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                meta.append(("err", "Could not resolve the VFS object layout"))
+                return None, meta
+
+        if address is not None and not fd_mode and kind == "auto" and not self.initialized:
+            try:
+                if not self.initialize(file=address) and not self.initialize(dentry=address):
+                    if not self.initialize_inode_offsets(address) or not self.is_inode(address):
+                        meta.append(("err", "Could not resolve the VFS object layout"))
+                        return None, meta
+                    kind = "inode"
+            except (gdb.MemoryError, OverflowError, RuntimeError):
+                meta.append(("err", "Could not resolve the VFS object layout"))
+                return None, meta
+
+        if address is not None and not fd_mode and kind != "inode" and not self.initialized:
+            meta.append(("err", "Could not resolve the VFS object layout"))
+            return None, meta
+        if fd_mode and not self.initialized:
+            meta.append(("err", "Could not resolve the VFS object layout"))
+            return None, meta
+
+        meta.extend(self.meta)
+        return True, meta
+
+    def is_inode(self, inode, offsets=None):
+        """Return True if `inode` looks like a struct inode, read with `offsets` (of i_mode, i_ino and i_sb), which
+        are the resolved ones by default.
+        An anonymous inode is told by its filesystem, so KernelFileSystem must be initialized beforehand."""
+        if offsets is None:
+            offsets = (self.offset_i_mode, self.offset_i_ino, self.offset_i_sb)
+        offset_i_mode, offset_i_ino, offset_i_sb = offsets
+        if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
+            return False
+        try:
+            mode = read_int16_from_memory(inode + offset_i_mode)
+            super_block = read_int_from_memory(inode + offset_i_sb)
+            read_int_from_memory(inode + offset_i_ino)
+        except (gdb.MemoryError, OverflowError):
+            return False
+        if not is_valid_addr(super_block):
+            return False
+        file_type = mode & 0o170000
+        if file_type == 0:
+            return Kernel.file_system().get_fstype_name(super_block) == "anon_inodefs"
+        return file_type in self.FILE_TYPES
+
+    def is_file(self, file):
+        """Return True if `file` looks like a struct file. The file offsets are guessed from it if they are not resolved yet."""
+        try:
+            if self.offset_file_mnt is None and not self.initialize_file_offsets(file):
+                return False
+            vfsmnt = read_int_from_memory(file + self.offset_file_mnt)
+            dentry = read_int_from_memory(file + self.offset_file_dentry)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return False
+        return self.is_vfsmount(vfsmnt) and self.is_dentry(dentry)
+
+    def detect_vfs_type(self, address):
+        """Return which of "file", "dentry" and "inode" `address` points to, or None.
+        KernelFileSystem must be initialized beforehand (see is_inode())."""
+        if self.initialized and self.is_file(address):
+            return "file"
+        if self.initialized and self.is_dentry(address):
+            return "dentry"
+        if self.is_inode(address):
+            return "inode"
+        return None
+
+    def get_inode_info(self, inode, mount=None):
+        """Return the InodeInfo of `inode`. fstype is None if it is unknown, and devname is the source of
+        `mount` (the mount the inode is reached through), or None if it is unknown.
+        KernelFileSystem, which reads super_block, must be initialized beforehand."""
+        kfs = Kernel.file_system()
+        mode = read_int16_from_memory(inode + self.offset_i_mode)
+        ino = read_int_from_memory(inode + self.offset_i_ino)
+        super_block = read_int_from_memory(inode + self.offset_i_sb)
+        dev = read_int32_from_memory(super_block + kfs.offset_s_dev)
+        major = dev >> 20
+        minor = dev & ((1 << 20) - 1)
+        fstype = kfs.get_fstype_name(super_block)
+        devname = kfs.get_dev_name(mount)
+        return KernelPath.InodeInfo(mode, ino, super_block, dev, major, minor, fstype, devname)
 
 
 class KernelFileSystem:
@@ -104352,8 +104623,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         self.meta = []
         self.task_command = None
         self.task_tried = False
-        self.offset_fs = None
-        self.root_mount = None
+        self.task_ready = None
 
         kversion = Kernel.version()
         if kversion is None:
@@ -104361,117 +104631,27 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
             return None
 
         self.kpath = Kernel.path()
-        if not self.initialize_layout(kversion):
+        self.kmount = Kernel.mount()
+        ret, self.task_command, meta = self.kpath.bootstrap(
+            kversion, self.args.type, self.args.address, threads=self.args.pid is not None,
+        )
+        self.meta.extend(Kernel.export_meta(self, meta))
+        if not ret:
             return None
 
         if self.args.meta:
             self.initialize_tasks()
         return True
 
-    def get_seed_dentry(self, address, kind):
-        """Return the dentry the object of `kind` refers to, used to resolve the dentry layout."""
-        kpath = self.kpath
-        if kind == "dentry":
-            return address
-        if kind == "path":
-            return read_int_from_memory(address + current_arch.ptrsize)
-        if kind == "mount":
-            address += kpath.offset_mount_mnt
-        return read_int_from_memory(address + kpath.offset_vfsmount_mnt_root)
-
-    def initialize_layout(self, kversion):
-        kpath = self.kpath
-        if kpath.initialized:
-            self.meta.extend(Kernel.export_meta(self, kpath.meta))
-            return True
-
-        # plan 1: the root dentry of a registered filesystem, which needs no task
-        if "3.3" <= kversion:
-            kfs = Kernel.file_system()
-            if kfs.initialize() and kpath.initialized:
-                self.meta.extend(Kernel.export_meta(self, kpath.meta))
-                self.meta.append((self.quiet_info, "dentry (sample): the root of a mount in file_systems"))
-                return True
-
-        # plan 2: the object given with --type
-        kind = self.args.type
-        if kind != "auto" and kpath.ensure_mount_offsets():
-            try:
-                if kind == "file":
-                    ret = kpath.initialize(file=self.args.address)
-                else:
-                    ret = kpath.initialize(dentry=self.get_seed_dentry(self.args.address, kind))
-            except (gdb.MemoryError, OverflowError, RuntimeError):
-                ret = None
-            if ret:
-                self.meta.extend(Kernel.export_meta(self, kpath.meta))
-                self.meta.append((self.quiet_info, "{:s} (sample): {:#x}".format(kind, self.args.address)))
-                return True
-
-        # plan 3: the open files of the tasks
-        task_command = Kernel.task()
-        task_ready = task_command.initialize(files=True, threads=self.args.pid is not None)
-        self.meta.extend(Kernel.export_meta(self, task_command.meta))
-        if not task_ready:
-            task_command = None
-        if task_command is not None and kpath.initialized:
-            self.task_command = task_command
-            return True
-
-        self.meta.append((self.quiet_err, "Could not resolve the struct dentry layout"))
-        if kind == "auto":
-            self.meta.append((self.quiet_err, "Specifying the type with --type may help"))
-        return None
-
     def initialize_tasks(self):
         """Resolve what walking the tasks needs. Only a bare dentry and --pid/--task need it."""
         if self.task_tried:
-            return self.offset_fs is not None
+            return self.task_ready
         self.task_tried = True
 
-        task_command = self.task_command
-        if task_command is None:
-            task_command = Kernel.task()
-            task_ready = task_command.initialize(threads=self.args.pid is not None)
-            self.meta.extend(Kernel.export_meta(self, task_command.meta))
-            if not task_ready:
-                task_command = None
-            if task_command is None:
-                return None
-
-        # task_struct->fs sits just before task_struct->files, which init_task is enough to find
-        try:
-            offset_files = task_command.get_offset_files(task_command.offset_comm)
-        except (gdb.MemoryError, OverflowError):
-            offset_files = None
-        if offset_files is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->files"))
-            return None
-        offset_fs = self.kpath.get_offset_task_fs(offset_files)
-        if offset_fs is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->fs"))
-            return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, fs): {:#x}".format(offset_fs)))
-
-        init_root = self.kpath.get_task_root(task_command.init_task, offset_fs)
-        if init_root is None:
-            self.meta.append((self.quiet_warn, "Could not find init_task->fs->root"))
-        else:
-            self.root_mount = self.kpath.get_root_mount(init_root[0] - self.kpath.offset_mount_mnt)
-            self.meta.append((self.quiet_info, "root mount: {:#x}".format(self.root_mount)))
-        self.task_command = task_command
-        self.offset_fs = offset_fs
-        return True
-
-    def get_task_by_pid(self, pid):
-        task_command = self.task_command
-        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
-        if task_command.enabled.get("threads"):
-            task_addrs = task_command.add_lwp_task(task_addrs)
-        for task in task_addrs:
-            if read_int32_from_memory(task + task_command.offset_pid, safe=True) == pid:
-                return task
-        return None
+        self.task_ready = self.kmount.initialize_task_roots(self.task_command, threads=self.args.pid is not None)
+        self.meta.extend(Kernel.export_meta(self, self.kmount.meta))
+        return self.task_ready
 
     def resolve_root(self):
         """Return (ok, root, task). `root` is None when the path must be resolved absolutely."""
@@ -104486,152 +104666,23 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
             err("Could not resolve task_struct->fs->root, which --pid/--task needs")
             return False, None, None
 
-        task = args.task
-        if task is None:
-            task = self.get_task_by_pid(args.pid)
-            if task is None:
-                err("Could not find the task of pid {:d}".format(args.pid))
-                return False, None, None
-
-        root = self.kpath.get_task_root(task, self.offset_fs)
-        if root is None:
-            err("Could not find task->fs->root of {:#x}".format(task))
+        root, task, error = self.kmount.find_task_root(args.pid, args.task, safe=True)
+        if error is not None:
+            err(error)
             return False, None, None
         return True, root, task
 
-    def detect_type(self, address):
-        kpath = self.kpath
-        if kpath.is_mount(address):
-            return "mount"
-        if kpath.is_vfsmount(address):
-            return "vfsmount"
-        if kpath.is_path(address):
-            return "path"
-        # f_path.dentry and f_op of a file can pass as d_parent and d_name.name of a dentry,
-        # so the stricter check of a file, whose f_path must hold both objects, goes first
-        if self.resolve_targets(address, "file"):
-            return "file"
-        if kpath.is_dentry(address):
-            return "dentry"
-        return None
-
-    def get_primary_root(self, task_root):
-        """Return the root mount of the mount namespace the answer is asked about."""
-        kpath = self.kpath
-        if task_root is not None:
-            return [kpath.get_root_mount(task_root[0] - kpath.offset_mount_mnt)]
-        if self.root_mount is not None:
-            return [self.root_mount]
-        return []
-
-    def get_other_roots(self, primary):
-        """Return the root mount of every other mount namespace that has a task."""
-        kpath = self.kpath
-        others = []
-        task_command = self.task_command
-        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
-            root = kpath.get_task_root(task, self.offset_fs)
-            if root is None:
-                continue
-            mount = kpath.get_root_mount(root[0] - kpath.offset_mount_mnt)
-            if mount not in primary and mount not in others:
-                others.append(mount)
-        return others
-
-    def search_mounts_for_dentry(self, index, root_mounts, visited):
-        kpath = self.kpath
-        candidates = []
-        for root_mount in root_mounts:
-            for mount in kpath.iter_mounts(root_mount):
-                if mount in visited:
-                    continue
-                visited.add(mount)
-                vfsmnt = mount + kpath.offset_mount_mnt
-                mnt_root = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_root, safe=True)
-                if mnt_root is None:
-                    continue
-                if mnt_root in index:
-                    # the discovery order breaks ties, so the nearest mount of the nearest namespace wins
-                    candidates.append((index[mnt_root], len(candidates), vfsmnt))
-        candidates.sort()
-        return [vfsmnt for _, _, vfsmnt in candidates]
-
-    def find_mounts_for_dentry(self, dentry, task_root):
-        """Return every (vfsmount, dentry) the dentry can be reached through, the nearest mount first.
-        Only the target mount namespace is searched first. The other namespaces are searched
-        just when that finds nothing, so that a container private mount does not shadow the
-        answer the user is asking about."""
-        kpath = self.kpath
-
-        if not self.initialize_tasks():
-            return []
-
-        chain = []
-        seen = set()
-        current = dentry
-        while is_valid_addr(current) and current not in seen:
-            seen.add(current)
-            chain.append(current)
-            parent = read_int_from_memory(current + kpath.offset_d_parent, safe=True)
-            if parent is None:
-                break
-            if parent == current:
-                break
-            current = parent
-        index = {d: i for i, d in enumerate(chain)}
-
-        primary = self.get_primary_root(task_root)
-        visited = set()
-        found = self.search_mounts_for_dentry(index, primary, visited)
-        if not found:
-            found = self.search_mounts_for_dentry(index, self.get_other_roots(primary), visited)
-        return [(vfsmnt, dentry) for vfsmnt in found]
-
     def resolve_targets(self, address, kind, task_root=None):
-        kpath = self.kpath
-        ptrsize = current_arch.ptrsize
+        if kind in ("path", "file", "mount", "vfsmount"):
+            # an explicit type is trusted even if the parent of the dentry is unreadable, which the walk reports
+            return self.kpath.resolve_object(address, kind, strict=self.args.type == "auto")
 
         try:
-            if kind == "path":
-                vfsmnt = read_int_from_memory(address)
-                dentry = read_int_from_memory(address + ptrsize)
-            elif kind == "file":
-                return self.resolve_file(address)
-            elif kind in ("mount", "vfsmount"):
-                if kind == "mount":
-                    vfsmnt = address + kpath.offset_mount_mnt
-                else:
-                    vfsmnt = address
-                dentry = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_root)
-            else:
-                return self.find_mounts_for_dentry(address, task_root)
+            if not self.initialize_tasks():
+                return []
+            return self.kmount.find_mounts_for_dentry(address, task_root)
         except (gdb.MemoryError, OverflowError, RuntimeError):
             return []
-
-        # an explicit type is trusted even if the parent of the dentry is unreadable, which the walk reports
-        if not kpath.is_vfsmount(vfsmnt) or not kpath.is_dentry(dentry, strict=self.args.type == "auto"):
-            return []
-        return [(vfsmnt, dentry)]
-
-    def resolve_file(self, file):
-        kpath = self.kpath
-        probing = kpath.offset_file_mnt is None
-        n = len(kpath.meta)
-        try:
-            if not probing or kpath.initialize_file_offsets(file):
-                vfsmnt = read_int_from_memory(file + kpath.offset_file_mnt)
-                dentry = read_int_from_memory(file + kpath.offset_file_dentry)
-                strict = probing or self.args.type == "auto"
-                if kpath.is_vfsmount(vfsmnt) and kpath.is_dentry(dentry, strict=strict):
-                    return [(vfsmnt, dentry)]
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            pass
-        if probing:
-            # the offsets were guessed from this object, which turned out not to be a file
-            kpath.offset_file_mnt = None
-            kpath.offset_file_dentry = None
-            del kpath.meta[n:]
-        return []
 
     def dump(self, targets, root):
         kpath = self.kpath
@@ -104697,7 +104748,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
 
         kind = args.type
         if kind == "auto":
-            kind = self.detect_type(args.address)
+            kind = self.kpath.detect_object_type(args.address)
             if kind is None:
                 err("Could not tell what {:#x} points to; specify it with --type".format(args.address))
                 return
@@ -104708,7 +104759,7 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
         self.out = []
         if not targets:
             if kind == "dentry":
-                if self.offset_fs is None:
+                if not self.task_ready:
                     self.quiet_warn("Could not walk the tasks, so no mount was searched (see --meta)")
                 else:
                     self.quiet_warn("Could not find a mount holding this dentry")
