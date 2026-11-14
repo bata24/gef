@@ -47479,13 +47479,13 @@ class DereferenceCommand(GenericCommand):
             if not is_valid_addr(current_address):
                 continue
             v = read_int_from_memory(current_address)
-            ret = Kernel.get_slab_contains(v, allow_unaligned=self.args.slab_contains_unaligned)
-            if ret:
+            obj = Kernel.get_slab_object(v, allow_unaligned=self.args.slab_contains_unaligned)
+            if obj:
                 tag = self.tags_dict.get(idx, "")
                 if tag:
                     tag += ", "
-                tag += ret.split()[1]
-                if "remarks: unaligned" in ret:
+                tag += obj["name"]
+                if obj["offset"]:
                     tag += "(unaligned)"
                 self.tags_dict[idx] = tag
                 self.max_tag_width = max(self.max_tag_width, len(Color.remove_color(tag)))
@@ -80436,14 +80436,19 @@ class Kernel:
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
-    def get_slab_object(addr):
-        """Return the dict of the slab object that contains `addr` resolved as `slab-contains`, or None."""
+    def get_slab_object(addr, allow_unaligned=True):
+        """Return the dict of the slab object that contains `addr` resolved as `slab-contains`, or None.
+        An address in the middle of an object is rejected unless `allow_unaligned`."""
+        if not is_valid_addr(addr):
+            return None
         if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (
             is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
         ):
             return None
         obj = Kernel.slab_contains().get_slab_object(addr)
         if obj["error"]:
+            return None
+        if not allow_unaligned and obj["offset"]:
             return None
         return obj
 
@@ -162517,12 +162522,11 @@ class KernelSlabContains:
 
     def virt2page_wrapper(self, vaddr):
         if self.slab_virtual_enabled:
-            ret = gdb.execute("slab-virtual --quiet from_virt {:#x}".format(vaddr), to_string=True)
-            r = re.search(r"Slab: (\S+)", ret)
-            if r:
-                return int(r.group(1), 16)
-            else:
+            kslabv = Kernel.slab_virtual()
+            if not kslabv.initialize():
                 return None
+            slab, _ = kslabv.virt_to_slab(vaddr)
+            return slab
         return Kernel.virt2page(vaddr)
 
     @staticmethod
@@ -162534,25 +162538,16 @@ class KernelSlabContains:
         kmem_cache = kmem_caches[0]
         freed_addresses = []
         if allocator == "SLUB":
-            for kmem_cache_cpu in kmem_cache.get("kmem_cache_cpu", {}).values():
-                freed_addresses += kmem_cache_cpu["freelist"]
-                freed_addresses += kmem_cache_cpu.get("active_page", {}).get("freelist", [])
-                for page in kmem_cache_cpu.get("partial_pages", []):
-                    freed_addresses += page.get("freelist", [])
-            for page_list in kmem_cache.get("nodes_partial", []) + kmem_cache.get("nodes_full", []):
-                for page in page_list:
-                    freed_addresses += page.get("freelist", [])
+            for page, freelist_fastpath in KernelSlub.get_cache_pages(kmem_cache):
+                freed_addresses += freelist_fastpath + page.get("freelist", [])
             freed_addresses += KernelSlub.get_sheaf_objects(kmem_cache)
         elif allocator == "SLUB_TINY":
-            for page_list in kmem_cache["nodes"]:
-                for page in page_list:
-                    freed_addresses += page.get("freelist", [])
+            for page in KernelSlubTiny.get_cache_pages(kmem_cache):
+                freed_addresses += page.get("freelist", [])
         elif allocator == "SLAB":
             freed_addresses += kmem_cache["array_cache"]["freelist_all"]
-            for slabs_list in kmem_cache["nodes"]:
-                for page_list in slabs_list.values():
-                    for page in page_list:
-                        freed_addresses += [page["s_mem"] + kmem_cache["size"] * idx for idx in page.get("freelist", [])]
+            for page in KernelSlab.get_cache_pages(kmem_cache):
+                freed_addresses += [page["s_mem"] + kmem_cache["size"] * idx for idx in page.get("freelist", [])]
         return object_base in freed_addresses
 
     def get_slab_object(self, address):
@@ -162605,7 +162600,9 @@ class KernelSlabContains:
         try:
             slab_cache_name_ptr = read_int_from_memory(kmem_cache + self.kmem_cache_offset_name)
             slab_cache_name = read_cstring_from_memory(slab_cache_name_ptr)
-            if slab_cache_name is None:
+            # Every kmem_cache has a non-empty printable name. Anything else means that `slab_cache`
+            # aliases another field of a non-slab page (e.g. `ptdesc->pt_list` of a page-table page).
+            if not slab_cache_name:
                 obj["error"] = 'This address is not managed by slab (slab_cache_name="")'
                 return obj
 
