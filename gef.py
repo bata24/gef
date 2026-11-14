@@ -211075,7 +211075,7 @@ class KmallocAllocatedByCommand(GenericCommand):
 
     _example_ = "\n".join([
         "{0:s}       # simple output",
-        "{0:s} -dtv  # useful output",
+        "{0:s} -dt   # useful output",
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
@@ -211145,13 +211145,12 @@ class KmallocAllocatedByCommand(GenericCommand):
             abi = "arm32"
         else:
             abi = "riscv" + current_arch.mode
-        for line in self.ksyscalls_ret.splitlines():
-            tag, _, valid, name, *__ = Color.remove_color(line).split()
-            if tag != abi:
+        for table in self.syscall_tables:
+            if table["abi"] != abi:
                 continue
-            if valid != "valid":
-                continue
-            valid_syscall.append(name)
+            for entry in table["entries"]:
+                if entry["valid"]:
+                    valid_syscall.append(entry["name"])
 
         invalid_syscall = []
         tested_syscall = []
@@ -212601,7 +212600,7 @@ class KmallocAllocatedByCommand(GenericCommand):
         # initialize
         self.extra_info = None
         if allocator == "SLUB":
-            self.extra_info = KmallocTracerCommand.get_extra_info()
+            self.extra_info = KernelAllocTracer.get_extra_info()
             if self.extra_info is None:
                 err("Failed to initialize")
                 return
@@ -212619,25 +212618,28 @@ class KmallocAllocatedByCommand(GenericCommand):
             err("Could not find the syscall table")
             return
         self.syscall_table = {e.name: e for n, e in syscall_table.nr_table.items() if n < 0x1000}
-        self.ksyscalls_ret = gdb.execute("ksyscalls --no-pager --quiet", to_string=True)
+        self.syscall_tables = Kernel.syscall().get_tables()
 
         # get task
-        res = gdb.execute("ktask --print-regs --no-pager --quiet --filter sleep", to_string=True)
-        r = re.findall(r"(?:^|\n)(0x\S+)", res)
-        if not r:
+        ktask = Kernel.task()
+        if ktask.initialize(regs=True):
+            sleeps = ktask.get_tasks(comm_filter=[re.compile("sleep")])
+        else:
+            sleeps = []
+        if not sleeps:
             err("Could not find `sleep` process, unable to continue")
             info("Do `/bin/sleep 5` in the guest (use full path), then `{:s}` again".format(
                 self._cmdline_,
             ))
             return
-        if len(r) != 1:
+        if len(sleeps) != 1:
             err("Multiple sleep processes are found, unable to continue")
             return
-        target_task = int(r[0], 16)
+        target_task = sleeps[0]["task"]
         info("The task of `sleep`: {:#x}".format(target_task))
 
         # create option_info
-        option_info = KmallocTracerCommand.create_option_info(args, target_task)
+        option_info = KernelAllocTracer.create_option_info(args, target_task)
 
         # get the saved user PC for the breakpoint and SP for process matching
         if is_x86_64():
@@ -212648,13 +212650,14 @@ class KmallocAllocatedByCommand(GenericCommand):
             pc_name, sp_name = ("epc", "sp")
         else:
             pc_name, sp_name = ("pc", "sp")
-        r1 = re.search(r"\b{:s}\s*: (0x\S+)".format(pc_name), res)
-        r2 = re.search(r"\b{:s}\s*: (0x\S+)".format(sp_name), res)
-        if not r1 or not r2:
+        regs = None
+        if ktask.enabled["regs"] and sleeps[0]["kstack"] is not None:
+            regs = ktask.get_regs(sleeps[0]["kstack"], ktask.offset_ptregs)
+        if not regs:
             err("Failed to get {:s} and {:s}".format(pc_name, sp_name))
             return
-        rip_of_sleep = int(r1.group(1), 16)
-        rsp_of_sleep = int(r2.group(1), 16)
+        rip_of_sleep = regs[pc_name]
+        rsp_of_sleep = regs[sp_name]
         info("The sleep's ${:s}: {:#x}, {:s}: {:#x} (after return from nanosleep syscall)".format(
             pc_name, rip_of_sleep, sp_name, rsp_of_sleep,
         ))
@@ -212665,7 +212668,7 @@ class KmallocAllocatedByCommand(GenericCommand):
             try:
                 hwbp = KmallocAllocatedBy_UserlandHardwareBreakpoint(rip_of_sleep, target_task)
                 self.hwbp = hwbp
-                breakpoints = KmallocTracerCommand.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
+                breakpoints = KernelAllocTracerOutput.set_bp_to_kmalloc_kfree(option_info, self.extra_info)
                 info("Setup is complete. continuing...")
                 gdb.execute("continue")
 
