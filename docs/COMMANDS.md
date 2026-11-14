@@ -10037,6 +10037,7 @@ options:
 
 ```text
 False means explicitly unsupported; None means not found; '-' means unavailable or not run.
+Candidate lists pass when they include the symbol-backed address; source labels are ignored.
 $ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.
 ```
 
@@ -12177,6 +12178,7 @@ options:
 ```text
 Fields whose layout cannot be verified are shown as '-'.
 Without type information, the address column may be &net_device.name rather than net_device.
+Each network namespace has its own list (net->dev_base_head). The one of init_net is shown.
 Use -v to show operations and queue details.
 
 Simplified net_device structure:
@@ -12543,7 +12545,7 @@ kprocfs -q
 ```text
 This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 The tree is read from proc_root instead of readdir, so an entry hidden by hooking readdir or lookup is listed.
-/proc/<pid>, /proc/self, /proc/thread-self and the entries under /proc/sys are not proc_dir_entry.
+/proc/<pid>, /proc/self (except v3.8), /proc/thread-self and the entries under /proc/sys are not proc_dir_entry.
 /proc/net is another tree for each network namespace (net->proc_net). The one of init_net is shown.
 proc_ops is proc_fops before v5.6, and proc_dir_ops for a directory since v5.6. Use `kops` to see the handlers.
 
@@ -12976,6 +12978,8 @@ userfaultfd first appeared in Linux v4.3. Older kernels are detected without sca
 DWARF is used when available. Without it, the layout is validated with the back pointers.
 ADDRESS with `--type ctx` skips the fd scan.
 The wait queues are transient and may be incomplete while another CPU is running.
+Only page faults are listed. The waiters of the other events (fork, remap, remove, unmap) on event_wqh are not.
+A registered range with neither MISSING nor WP is shown as MINOR, so MINOR combined with them is not shown.
 
 Simplified userfaultfd structure:
 
@@ -14145,7 +14149,7 @@ options:
 
 ```gdb
 kmalloc-allocated-by       # simple output
-kmalloc-allocated-by -dtv  # useful output
+kmalloc-allocated-by -dt   # useful output
 ```
 
 ### Notes
@@ -14184,7 +14188,7 @@ options:
 
 ```gdb
 kmalloc-tracer       # simple output
-kmalloc-tracer -dtv  # useful output
+kmalloc-tracer -dt   # useful output
 ```
 
 ### Notes
@@ -14395,7 +14399,7 @@ options:
 ### Examples
 
 ```gdb
-optee-bget-dump 0x2a408
+optee-bget-dump -m 0x2a408
 ```
 
 ### Notes
