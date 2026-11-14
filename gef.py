@@ -91175,21 +91175,33 @@ class KernelSeccomp:
 
     @staticmethod
     def find_offset_prev(filter_addr):
-        """Return the offset of `prev` in the `seccomp_filter` at `filter_addr`, which is followed by `prog`, or None."""
+        """Return the offset of `prev` in the `seccomp_filter` at `filter_addr`, which is followed by `prog`, or None.
+        A page-aligned `prev` after a zero member (e.g., `log`) also looks like `prog`, so each candidate walks
+        the chain and the one that walks the longest wins."""
+        best_length, best_offset = 0, None
         for i in range(0x100):
-            # a wrong candidate of `filter` may be at the end of a mapping
-            previous = read_int_from_memory(filter_addr + current_arch.ptrsize * i, safe=True)
-            prog = read_int_from_memory(filter_addr + current_arch.ptrsize * (i + 1), safe=True)
-            if previous is None or prog is None:
+            offset = current_arch.ptrsize * i
+            length = 0
+            current = filter_addr
+            while current and length <= 0x100:
+                # a wrong candidate of `filter` may be at the end of a mapping
+                previous = read_int_from_memory(current + offset, safe=True)
+                prog = read_int_from_memory(current + offset + current_arch.ptrsize, safe=True)
+                if previous is None or prog is None:
+                    break
+                if (previous & 0x7) or (previous != 0 and not is_valid_addr(previous)):
+                    break
+                if (prog & 0xfff) or not is_valid_addr(prog):
+                    break
+                if is_valid_addr(read_int_from_memory(prog)):
+                    break
+                length += 1
+                current = previous
+            if length == 0 and current == filter_addr and (previous is None or prog is None):
                 break
-            if (previous & 0x7) or (previous != 0 and not is_valid_addr(previous)):
-                continue
-            if (prog & 0xfff) or not is_valid_addr(prog):
-                continue
-            if is_valid_addr(read_int_from_memory(prog)):
-                continue
-            return current_arch.ptrsize * i
-        return None
+            if length > best_length:
+                best_length, best_offset = length, offset
+        return best_offset
 
     @Cache.cache_this_session(cache_None=False)
     def get_offset_prev(self):
