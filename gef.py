@@ -80174,6 +80174,11 @@ class Kernel:
         return KernelFileSystem.get_instance()
 
     @staticmethod
+    def mount():
+        """Return the mount namespace and mount tree resolver."""
+        return KernelMount.get_instance()
+
+    @staticmethod
     def task(init_task=None):
         """Return the task_struct resolver."""
         return KernelTask.get_instance(init_task)
@@ -83924,6 +83929,26 @@ class KernelPath:
         inode = read_int_from_memory(dentry + self.offset_d_inode)
         i_ino = read_int_from_memory(inode + self.offset_i_ino)
         return i_ino
+
+    def search_mounts_for_dentry(self, index, root_mounts, visited):
+        """Return the vfsmounts in the trees of `root_mounts` whose mnt_root is in `index`
+        ({dentry: depth}), the nearest one first. The mounts in `visited` are skipped, and the
+        searched ones are added to it."""
+        candidates = []
+        for root_mount in root_mounts:
+            for mount in self.iter_mounts(root_mount):
+                if mount in visited:
+                    continue
+                visited.add(mount)
+                vfsmnt = mount + self.offset_mount_mnt
+                mnt_root = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root, safe=True)
+                if mnt_root is None:
+                    continue
+                if mnt_root in index:
+                    # the discovery order breaks ties, so the nearest mount of the nearest namespace wins
+                    candidates.append((index[mnt_root], len(candidates), vfsmnt))
+        candidates.sort()
+        return [vfsmnt for _, _, vfsmnt in candidates]
 
 
 class KernelFileSystem:
@@ -105077,71 +105102,19 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelMountCommand(GenericCommand, BufferingOutput):
-    """Dump the mount tree of each mount namespace."""
+class KernelMount:
+    """Resolve the mount namespaces and the mount trees, and decode the state of each `struct mount`.
+    `KernelPath` resolves the struct mount layout and the pathnames, and `KernelFileSystem` the filesystem
+    type and the device of a mount; this class adds what ties the mounts and the tasks together.
 
-    _cmdline_ = "kmount"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    - Mount namespaces are inferred from mounts reachable through tasks (task->fs->root),
+      so namespaces with no task are invisible.
+    - The tree walks `mnt_mounts/mnt_child`, so all mounts in the namespace are reached,
+      including bind mounts sharing a `super_block`.
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-p", "--pid", type=int, help="dump the mount namespace of this pid.")
-    parser.add_argument("-T", "--task", type=AddressUtil.parse_address, help="dump the mount namespace of this task_struct.")
-    parser.add_argument("-a", "--all", action="store_true", help="dump every mount namespace.")
-    parser.add_argument("-t", "--tasks", action="store_true", help="list the tasks of each mount namespace.")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="also show mnt_id, peer_group, mnt_master and propagation.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s}",
-        "{0:s} --pid 1337",
-        "{0:s} --all --tasks",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
-        "",
-        "- Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.",
-        "  `kfilesystems` instead shows filesystem types and all their `super_block`s, mounted or not.",
-        "- Mount namespaces are inferred from mounts reachable through tasks, so namespaces with no task are invisible.",
-        "- Without `--pid/--task`, the whole namespace is shown with absolute paths.",
-        "  With either option, output is rooted at `task->fs->root`; unreachable mounts are marked `outside-root`.",
-        "",
-        "Simplified mount tree structure:",
-        "",
-        "+-task_struct--+     +-fs_struct-+     +-path----+",
-        "| ...          |     | ...       |     | mnt     |--+",
-        "| fs           |---->| root      |---->| dentry  |  |",
-        "| ...          |     | pwd       |     +---------+  |",
-        "+--------------+     +-----------+                  |",
-        "                                                    |",
-        "    +-----------------------------------------------+",
-        "    |",
-        "    v",
-        "+-mount----------+<-+     +-mount----------+<-+     +-mount----------+",
-        "| mnt_parent     |--+<----| mnt_parent     |  +<----| mnt_parent     |",
-        "| mnt_mountpoint |     +--| mnt_mountpoint |     +--| mnt_mountpoint |",
-        "| mnt (vfsmount) |     |  | mnt (vfsmount) |     |  | mnt (vfsmount) |",
-        "|   mnt_root     |     |  |   mnt_root     |     |  |   mnt_root     |",
-        "|   mnt_sb       |-+   |  |   mnt_sb       |     |  |   mnt_sb       |",
-        "|   mnt_flags    | |   |  |   mnt_flags    |     |  |   mnt_flags    |",
-        "| mnt_mounts     |-|-+ |  | mnt_mounts     |--+  |  | mnt_mounts     |",
-        "| mnt_child      | | +-|->| mnt_child      |  +--|->| mnt_child      |",
-        "| mnt_devname    | |   |  | mnt_devname    |     |  | mnt_devname    |",
-        "+----------------+ |   |  +----------------+     |  +----------------+",
-        "                   |   +-->dentry                +-->dentry",
-        "                   v",
-        "            +-super_block-+     +-file_system_type-+",
-        '            | ...         |     | name             |-->"ext4"',
-        "            | s_type      |---->| ...              |",
-        "            | ...         |     +------------------+",
-        "            +-------------+",
-    ])
+    The tasks and the mounts change while the kernel runs, so initialize() and initialize_task_roots()
+    resolve them again on every call.
+    """
 
     # include/linux/mount.h
     MNT_FLAGS = [
@@ -105168,64 +105141,83 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
     ]
     MNT_READONLY = 0x40
 
-    def initialize(self):
+    MountInfo = collections.namedtuple(
+        "MountInfo", "mount vfsmnt mnt_root super_block fstype devname path_info flags mnt_id group_id master propagation",
+    )
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
         self.meta = []
+        self.task_command = None
+        self.kpath = None
+        self.kfs = None
+        self.offset_fs = None
+        self.root_mount = None
+        self.namespaces = collections.OrderedDict()
+        return
+
+    def initialize(self, threads=False):
+        """Resolve what dumping the mount trees needs, including every mount namespace.
+        `threads` lets find_task_root() find a thread by its pid too."""
+        self.meta = []
+        self.task_command = None
+        self.offset_fs = None
+        self.namespaces = collections.OrderedDict()
 
         kversion = Kernel.version()
         if kversion is None:
-            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
+            self.meta.append(("err", "Could not find Linux kernel"))
             return None
         self.kversion = kversion
 
         task_command = Kernel.task()
-        task_ready = task_command.initialize(files=kversion < "3.3", namespaces=True,
-                                             threads=self.args.pid is not None)
-        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        task_ready = task_command.initialize(files=kversion < "3.3", namespaces=True, threads=threads)
+        self.meta.extend(task_command.meta)
         if not task_ready:
-            task_command = None
-        if task_command is None:
             return None
         self.task_command = task_command
         self.offset_nsproxy = getattr(task_command, "offset_nsproxy", None)
 
-        self.kfs = None
-        if "3.3" <= kversion:
-            self.kfs = Kernel.file_system()
-            kfs_ret = self.kfs.initialize()
-            self.meta.extend(Kernel.export_meta(self, self.kfs.meta, demote_err=True))
-            if not kfs_ret:
-                self.meta.append((
-                    self.quiet_warn, "Could not resolve the super_block layout; fstype and devname are not shown",
-                ))
-                self.kfs = None
+        # KernelFileSystem gives fstype and devname. It keeps the nominal super_block layout
+        # if it does not resolve the layout, e.g. before v3.3, where struct mount does not exist yet.
+        self.kfs = Kernel.file_system()
+        kfs_ret = self.kfs.initialize()
+        # fstype and devname are optional, so its errors are only warnings here
+        self.meta.extend(("warn" if level == "err" else level, line) for level, line in self.kfs.meta)
+        if not kfs_ret:
+            self.meta.append(("info", "offsetof(super_block, s_type): {:#x}".format(self.kfs.offset_s_type)))
 
         self.kpath = Kernel.path()
         if not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the struct dentry layout"))
+            self.meta.append(("err", "Could not resolve the struct dentry layout"))
             return None
 
         if task_command.offset_files is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->files"))
+            self.meta.append(("err", "Could not find task_struct->files"))
             return None
         self.offset_fs = self.kpath.get_offset_task_fs(task_command.offset_files)
         if self.offset_fs is None:
-            self.meta.append((self.quiet_err, "Could not find task_struct->fs"))
+            self.meta.append(("err", "Could not find task_struct->fs"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(task_struct, fs): {:#x}".format(self.offset_fs)))
+        self.meta.append(("info", "offsetof(task_struct, fs): {:#x}".format(self.offset_fs)))
 
         self.namespaces = self.collect_namespaces()
         if not self.namespaces:
-            self.meta.append((self.quiet_err, "Could not find any mount namespace"))
+            self.meta.append(("err", "Could not find any mount namespace"))
             return None
-        self.meta.append((self.quiet_info, "Number of mount namespaces: {:d}".format(len(self.namespaces))))
+        self.meta.append(("info", "Number of mount namespaces: {:d}".format(len(self.namespaces))))
 
         root_mount = list(self.namespaces.keys())[0]
         self.offset_mnt_flags = self.kpath.get_offset_mnt_flags(root_mount)
         if self.offset_mnt_flags is None:
-            self.meta.append((self.quiet_warn, "Could not find mount->mnt.mnt_flags"))
+            self.meta.append(("warn", "Could not find mount->mnt.mnt_flags"))
             self.mnt_onrb_present = False
         else:
-            self.meta.append((self.quiet_info, "offsetof(mount, mnt.mnt_flags): {:#x}".format(self.offset_mnt_flags)))
+            self.meta.append(("info", "offsetof(mount, mnt.mnt_flags): {:#x}".format(self.offset_mnt_flags)))
             # MNT_ONRB accompanied the namespace rbtree from v6.8, but it was
             # later removed and that removal was backported to stable trees.
             # Every namespace root collected above is attached, so its live bit
@@ -105242,40 +105234,13 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
                 status = "present"
             else:
                 status = "absent"
-            self.meta.append((self.quiet_info, "MNT_ONRB: {:s} (live mount flags)".format(status)))
+            self.meta.append(("info", "MNT_ONRB: {:s} (live mount flags)".format(status)))
 
-        if kversion < "3.3":
-            self.offset_s_type = GefUtil.offsetof("super_block", "s_type")
-            if self.offset_s_type is None:
-                if is_64bit() or is_arm32():
-                    loff_t_align = 8
-                else:
-                    loff_t_align = 4
-                self.offset_s_type = align(current_arch.ptrsize * 3 + 8, loff_t_align) + 8
-            self.meta.append((self.quiet_info, "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
-
-            self.offset_mnt_devname = GefUtil.offsetof("vfsmount", "mnt_devname")
-            if self.offset_mnt_devname is None and self.offset_mnt_flags is not None:
-                base = align(self.offset_mnt_flags + 4, current_arch.ptrsize)
-                candidates = (base, align(self.offset_mnt_flags + 8, current_arch.ptrsize) + current_arch.ptrsize)
-                mounts = [mount for mount, _ in self.walk_tree(root_mount)][:16]
-                scores = []
-                for offset in candidates:
-                    score = 0
-                    for mount in mounts:
-                        name_ptr = read_int_from_memory(mount + offset, safe=True)
-                        if not is_valid_addr(name_ptr):
-                            continue
-                        name = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
-                        if name and all(0x20 <= ord(char) < 0x7f for char in name):
-                            score += 1
-                    scores.append(score)
-                if max(scores) > 0 and scores.count(max(scores)) == 1:
-                    self.offset_mnt_devname = candidates[scores.index(max(scores))]
-            if self.offset_mnt_devname is not None:
-                self.meta.append((self.quiet_info, "offsetof(vfsmount, mnt_devname): {:#x}".format(self.offset_mnt_devname)))
-            else:
-                self.meta.append((self.quiet_warn, "Could not find vfsmount->mnt_devname"))
+        offset_mnt_devname = self.kfs.get_offset_mnt_devname(root_mount)
+        if offset_mnt_devname is None:
+            self.meta.append(("warn", "Could not find mnt_devname; devname is not shown"))
+        elif not kfs_ret:
+            self.meta.append(("info", "offsetof(vfsmount, mnt_devname): {:#x}".format(offset_mnt_devname)))
 
         self.offset_mnt_t_flags = GefUtil.offsetof("mount", "mnt_t_flags")
         self.offset_mnt_master = GefUtil.offsetof("mount", "mnt_master")
@@ -105292,7 +105257,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             ("mnt_slave", self.offset_mnt_slave),
         ):
             if offset is not None:
-                self.meta.append((self.quiet_info, "offsetof(mount, {:s}): {:#x}".format(member, offset)))
+                self.meta.append(("info", "offsetof(mount, {:s}): {:#x}".format(member, offset)))
 
         if self.offset_mnt_t_flags is not None:
             self.propagation_flag_source = "mnt_t_flags (debug information)"
@@ -105303,7 +105268,48 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         else:
             self.propagation_flag_source = "mnt_group_id/mnt_share/mnt_slave (version fallback)"
             self.mnt_slave_is_hlist = True
-        self.meta.append((self.quiet_info, "Mount propagation source: {:s}".format(self.propagation_flag_source)))
+        self.meta.append(("info", "Mount propagation source: {:s}".format(self.propagation_flag_source)))
+        return True
+
+    def initialize_task_roots(self, task_command=None, threads=False):
+        """Resolve what walking the tasks for their root needs, i.e. task_struct->fs and the root mount
+        of init_task, without collecting every mount namespace. `task_command` is a task resolver
+        initialized already, or None to initialize one here with `threads`."""
+        self.meta = []
+        self.task_command = None
+        self.offset_fs = None
+        self.root_mount = None
+        self.kpath = Kernel.path()
+
+        if task_command is None:
+            task_command = Kernel.task()
+            task_ready = task_command.initialize(threads=threads)
+            self.meta.extend(task_command.meta)
+            if not task_ready:
+                return None
+
+        # task_struct->fs sits just before task_struct->files, which init_task is enough to find
+        try:
+            offset_files = task_command.get_offset_files(task_command.offset_comm)
+        except (gdb.MemoryError, OverflowError):
+            offset_files = None
+        if offset_files is None:
+            self.meta.append(("err", "Could not find task_struct->files"))
+            return None
+        offset_fs = self.kpath.get_offset_task_fs(offset_files)
+        if offset_fs is None:
+            self.meta.append(("err", "Could not find task_struct->fs"))
+            return None
+        self.meta.append(("info", "offsetof(task_struct, fs): {:#x}".format(offset_fs)))
+
+        init_root = self.kpath.get_task_root(task_command.init_task, offset_fs)
+        if init_root is None:
+            self.meta.append(("warn", "Could not find init_task->fs->root"))
+        else:
+            self.root_mount = self.kpath.get_root_mount(init_root[0] - self.kpath.offset_mount_mnt)
+            self.meta.append(("info", "root mount: {:#x}".format(self.root_mount)))
+        self.task_command = task_command
+        self.offset_fs = offset_fs
         return True
 
     def get_mnt_ns(self, task):
@@ -105335,49 +105341,107 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
                 namespaces[root_mount] = {"mnt_ns": self.get_mnt_ns(task), "tasks": []}
             namespaces[root_mount]["tasks"].append(task)
 
-        if not namespaces and self.kfs is not None and self.kfs.sample_mount is not None:
+        if not namespaces and self.kfs.sample_mount is not None:
             # no task->fs->root was readable, but a mount found via super_block still gives the tree
             root_mount = kpath.get_root_mount(self.kfs.sample_mount)
             namespaces[root_mount] = {"mnt_ns": None, "tasks": []}
         return namespaces
 
-    def get_task_by_pid(self, pid):
-        task_command = self.task_command
-        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
-        if task_command.enabled.get("threads"):
-            task_addrs = task_command.add_lwp_task(task_addrs)
-        for task in task_addrs:
-            if read_int32_from_memory(task + task_command.offset_pid) == pid:
-                return task
-        return None
+    def get_namespace(self, root_mount):
+        """Return {"mnt_ns": mnt_namespace or None, "tasks": [task, ...]} of the namespace whose root mount is `root_mount`."""
+        return self.namespaces.get(root_mount, {"mnt_ns": None, "tasks": []})
 
-    def resolve_target(self):
-        """Return (ok, [(namespace root mount, tree root mount), ...], root).
+    def get_sample_comm(self, tasks):
+        """Return the comm of the task that represents the mount namespace `tasks` belong to."""
+        task_command = self.task_command
+        # the idle task heads the list, but it says nothing about who owns the namespace
+        sample = tasks[0]
+        for task in tasks:
+            if read_int32_from_memory(task + task_command.offset_pid) != 0:
+                sample = task
+                break
+        return read_cstring_from_memory(sample + task_command.offset_comm)
+
+    def find_task_root(self, pid=None, task=None, safe=False):
+        """Return (task->fs->root, task, None) of `task`, or of the task of `pid` if `task` is None.
+        On failure, return (None, task or None, the reason). `safe` skips a task whose pid is unreadable."""
+        if task is None:
+            task = self.task_command.get_task_by_pid(pid, safe=safe)
+            if task is None:
+                return None, None, "Could not find the task of pid {:d}".format(pid)
+
+        root = self.kpath.get_task_root(task, self.offset_fs)
+        if root is None:
+            return None, task, "Could not find task->fs->root of {:#x}".format(task)
+        return root, task, None
+
+    def resolve_targets(self, pid=None, task=None, all_namespaces=False):
+        """Return ([(namespace root mount, tree root mount), ...], root, None), or (None, None, the reason).
         `root` is the (vfsmount, dentry) pair the pathnames stop at, or None when they are absolute.
-        With --pid/--task the tree starts at the mount of task->fs->root instead of the namespace
+        With `pid` or `task` the tree starts at the mount of task->fs->root instead of the namespace
         root. Mounts outside that root may also be returned and are marked `outside-root`."""
-        args = self.args
+        if pid is None and task is None:
+            root_mounts = list(self.namespaces.keys())
+            if not all_namespaces:
+                root_mounts = root_mounts[:1]
+            return [(root_mount, root_mount) for root_mount in root_mounts], None, None
+
+        root, _task, error = self.find_task_root(pid, task)
+        if error is not None:
+            return None, None, error
+        tree_root = root[0] - self.kpath.offset_mount_mnt
+        return [(self.kpath.get_root_mount(tree_root), tree_root)], root, None
+
+    def get_primary_root(self, task_root):
+        """Return the root mount of the mount namespace the answer is asked about."""
+        kpath = self.kpath
+        if task_root is not None:
+            return [kpath.get_root_mount(task_root[0] - kpath.offset_mount_mnt)]
+        if self.root_mount is not None:
+            return [self.root_mount]
+        return []
+
+    def get_other_roots(self, primary):
+        """Return the root mount of every other mount namespace that has a task."""
+        kpath = self.kpath
+        others = []
+        task_command = self.task_command
+        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
+            root = kpath.get_task_root(task, self.offset_fs)
+            if root is None:
+                continue
+            mount = kpath.get_root_mount(root[0] - kpath.offset_mount_mnt)
+            if mount not in primary and mount not in others:
+                others.append(mount)
+        return others
+
+    def find_mounts_for_dentry(self, dentry, task_root):
+        """Return every (vfsmount, dentry) the dentry can be reached through, the nearest mount first.
+        Only the target mount namespace is searched first. The other namespaces are searched
+        just when that finds nothing, so that a container private mount does not shadow the
+        answer the user is asking about. initialize_task_roots() must succeed beforehand."""
         kpath = self.kpath
 
-        if args.pid is None and args.task is None:
-            root_mounts = list(self.namespaces.keys())
-            if not args.all:
-                root_mounts = root_mounts[:1]
-            return True, [(root_mount, root_mount) for root_mount in root_mounts], None
+        chain = []
+        seen = set()
+        current = dentry
+        while is_valid_addr(current) and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            parent = read_int_from_memory(current + kpath.offset_d_parent, safe=True)
+            if parent is None:
+                break
+            if parent == current:
+                break
+            current = parent
+        index = {d: i for i, d in enumerate(chain)}
 
-        task = args.task
-        if task is None:
-            task = self.get_task_by_pid(args.pid)
-            if task is None:
-                err("Could not find the task of pid {:d}".format(args.pid))
-                return False, [], None
-
-        root = kpath.get_task_root(task, self.offset_fs)
-        if root is None:
-            err("Could not find task->fs->root of {:#x}".format(task))
-            return False, [], None
-        tree_root = root[0] - kpath.offset_mount_mnt
-        return True, [(kpath.get_root_mount(tree_root), tree_root)], root
+        primary = self.get_primary_root(task_root)
+        visited = set()
+        found = kpath.search_mounts_for_dentry(index, primary, visited)
+        if not found:
+            found = kpath.search_mounts_for_dentry(index, self.get_other_roots(primary), visited)
+        return [(vfsmnt, dentry) for vfsmnt in found]
 
     def get_children(self, mount):
         kpath = self.kpath
@@ -105391,12 +105455,13 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         return children
 
     def walk_tree(self, root_mount, max_mounts=0x20000):
-        """Yield (mount, tree prefix) over the whole tree under `root_mount`, depth first."""
+        """Walk the whole tree under `root_mount`, depth first. Return ([(mount, tree prefix), ...], error),
+        where `error` tells why the walk is truncated, or is None."""
         kpath = self.kpath
         if kpath.get_offset_mnt_mounts(root_mount) is None:
-            yield root_mount, ""
-            return
+            return [(root_mount, "")], None
 
+        entries = []
         seen = set()
         stack = [(root_mount, "", True, True)]
         while stack:
@@ -105404,8 +105469,7 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             if mount in seen:
                 continue
             if len(seen) >= max_mounts:
-                self.err_add_out("Mount tree truncated after {:d} mounts".format(max_mounts))
-                break
+                return entries, "Mount tree truncated after {:d} mounts".format(max_mounts)
             seen.add(mount)
             if is_root:
                 mark, child_prefix = "", ""
@@ -105418,11 +105482,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
                     child_prefix = prefix + "   "
                 else:
                     child_prefix = prefix + "|  "
-            yield mount, mark
+            entries.append((mount, mark))
             children = self.get_children(mount)
             for i, child in enumerate(reversed(children)):
                 stack.append((child, child_prefix, i == 0, False))
-        return
+        return entries, None
 
     def get_mnt_flags(self, mount):
         if self.offset_mnt_flags is None:
@@ -105542,43 +105606,29 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             names.append("marked")
         return ",".join(names)
 
-    def get_mount_row(self, mount, mark, root):
+    def get_mount_info(self, mount, root, verbose=False):
+        """Return the MountInfo of `mount`, or None if it is unreadable.
+        `root` is the (vfsmount, dentry) pair the pathname stops at, or None.
+        fstype and devname are None if they are unknown. mnt_id, group_id, master and propagation
+        are read only if `verbose` (None otherwise); mnt_id, group_id and master are None if they
+        are unknown, and master is 0 if the mount has none."""
         kpath = self.kpath
         vfsmnt = mount + kpath.offset_mount_mnt
         try:
             mnt_root = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_root)
             super_block = read_int_from_memory(vfsmnt + kpath.offset_vfsmount_mnt_sb)
         except (gdb.MemoryError, OverflowError):
-            self.warn_add_out("Unreadable mount: {:#x}".format(mount))
             return None
 
-        fstype = None
-        devname = None
-        if self.kfs is not None:
-            fstype = self.kfs.get_fstype_name(super_block)
-            devname = self.kfs.get_dev_name(mount)
-        elif self.kversion < "3.3":
-            fst = read_int_from_memory(super_block + self.offset_s_type, safe=True)
-            if is_valid_addr(fst):
-                name_ptr = read_int_from_memory(fst, safe=True)
-                if is_valid_addr(name_ptr):
-                    fstype = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
-            if self.offset_mnt_devname is not None:
-                name_ptr = read_int_from_memory(vfsmnt + self.offset_mnt_devname, safe=True)
-                if is_valid_addr(name_ptr):
-                    devname = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
+        fstype = self.kfs.get_fstype_name(super_block)
+        devname = self.kfs.get_dev_name(mount)
 
         path_info = kpath.get_mount_path(mount, root)
-        path = path_info.path or "???"
-        if path_info.status != "normal":
-            path += " ({:s})".format(path_info.status)
-
-        row = [
-            "{:#018x}".format(mount), "{:#018x}".format(vfsmnt), "{:#018x}".format(mnt_root), "{:#018x}".format(super_block),
-            fstype or "???", devname or "???", mark + path, self.get_mnt_flags_str(mount),
-        ]
-        if not self.args.verbose:
-            return row
+        flags = self.get_mnt_flags_str(mount)
+        if not verbose:
+            return KernelMount.MountInfo(
+                mount, vfsmnt, mnt_root, super_block, fstype, devname, path_info, flags, None, None, None, None,
+            )
 
         mount_id = None
         if self.offset_mnt_id is not None:
@@ -105594,48 +105644,132 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             master = read_int_from_memory(mount + self.offset_mnt_master, safe=True)
         else:
             master = None
-        if mount_id is None:
+        if master and not is_valid_addr(master):
+            master = None
+        propagation = self.get_mnt_propagation_str(mount)
+        return KernelMount.MountInfo(
+            mount, vfsmnt, mnt_root, super_block, fstype, devname, path_info, flags,
+            mount_id, group_id, master, propagation,
+        )
+
+
+@register_command
+class KernelMountCommand(GenericCommand, BufferingOutput):
+    """Dump the mount tree of each mount namespace."""
+
+    _cmdline_ = "kmount"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-p", "--pid", type=int, help="dump the mount namespace of this pid.")
+    parser.add_argument("-T", "--task", type=AddressUtil.parse_address, help="dump the mount namespace of this task_struct.")
+    parser.add_argument("-a", "--all", action="store_true", help="dump every mount namespace.")
+    parser.add_argument("-t", "--tasks", action="store_true", help="list the tasks of each mount namespace.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also show mnt_id, peer_group, mnt_master and propagation.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --pid 1337",
+        "{0:s} --all --tasks",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "- Walks `mnt_mounts/mnt_child`, so all mounts in the namespace are shown, including bind mounts sharing a `super_block`.",
+        "  `kfilesystems` instead shows filesystem types and all their `super_block`s, mounted or not.",
+        "- Mount namespaces are inferred from mounts reachable through tasks, so namespaces with no task are invisible.",
+        "- Without `--pid/--task`, the whole namespace is shown with absolute paths.",
+        "  With either option, output is rooted at `task->fs->root`; unreachable mounts are marked `outside-root`.",
+        "",
+        "Simplified mount tree structure:",
+        "",
+        "+-task_struct--+     +-fs_struct-+     +-path----+",
+        "| ...          |     | ...       |     | mnt     |--+",
+        "| fs           |---->| root      |---->| dentry  |  |",
+        "| ...          |     | pwd       |     +---------+  |",
+        "+--------------+     +-----------+                  |",
+        "                                                    |",
+        "    +-----------------------------------------------+",
+        "    |",
+        "    v",
+        "+-mount----------+<-+     +-mount----------+<-+     +-mount----------+",
+        "| mnt_parent     |--+<----| mnt_parent     |  +<----| mnt_parent     |",
+        "| mnt_mountpoint |     +--| mnt_mountpoint |     +--| mnt_mountpoint |",
+        "| mnt (vfsmount) |     |  | mnt (vfsmount) |     |  | mnt (vfsmount) |",
+        "|   mnt_root     |     |  |   mnt_root     |     |  |   mnt_root     |",
+        "|   mnt_sb       |-+   |  |   mnt_sb       |     |  |   mnt_sb       |",
+        "|   mnt_flags    | |   |  |   mnt_flags    |     |  |   mnt_flags    |",
+        "| mnt_mounts     |-|-+ |  | mnt_mounts     |--+  |  | mnt_mounts     |",
+        "| mnt_child      | | +-|->| mnt_child      |  +--|->| mnt_child      |",
+        "| mnt_devname    | |   |  | mnt_devname    |     |  | mnt_devname    |",
+        "+----------------+ |   |  +----------------+     |  +----------------+",
+        "                   |   +-->dentry                +-->dentry",
+        "                   v",
+        "            +-super_block-+     +-file_system_type-+",
+        '            | ...         |     | name             |-->"ext4"',
+        "            | s_type      |---->| ...              |",
+        "            | ...         |     +------------------+",
+        "            +-------------+",
+    ])
+
+    def initialize(self):
+        self.kmount = Kernel.mount()
+        ret = self.kmount.initialize(threads=self.args.pid is not None)
+        self.meta = Kernel.export_meta(self, self.kmount.meta)
+        return ret
+
+    def make_row(self, info, mark):
+        path = info.path_info.path or "???"
+        if info.path_info.status != "normal":
+            path += " ({:s})".format(info.path_info.status)
+
+        row = [
+            "{:#018x}".format(info.mount), "{:#018x}".format(info.vfsmnt), "{:#018x}".format(info.mnt_root),
+            "{:#018x}".format(info.super_block), info.fstype or "???", info.devname or "???", mark + path, info.flags,
+        ]
+        if not self.args.verbose:
+            return row
+
+        if info.mnt_id is None:
             mount_id = "?"
         else:
-            mount_id = str(mount_id)
-        if group_id is None:
+            mount_id = str(info.mnt_id)
+        if info.group_id is None:
             group_id = "?"
         else:
-            group_id = str(group_id)
-        if master is None:
+            group_id = str(info.group_id)
+        if info.master is None:
             master = "?"
-        elif master == 0:
+        elif info.master == 0:
             master = "none"
-        elif is_valid_addr(master):
-            master = "{:#x}".format(master)
         else:
-            master = "?"
-        row += [mount_id, group_id, master, self.get_mnt_propagation_str(mount)]
+            master = "{:#x}".format(info.master)
+        row += [mount_id, group_id, master, info.propagation]
         return row
 
     def dump_namespace(self, root_mount, tree_root, root):
-        info = self.namespaces.get(root_mount, {"mnt_ns": None, "tasks": []})
+        kmount = self.kmount
+        info = kmount.get_namespace(root_mount)
         if info["mnt_ns"] is not None:
             title = "mount namespace {:#x}".format(info["mnt_ns"])
         else:
             title = "mount namespace of root mount {:#x}".format(root_mount)
         self.out.append(titlify(title))
 
-        task_command = self.task_command
         tasks = info["tasks"]
         if tasks:
-            # the idle task heads the list, but it says nothing about who owns the namespace
-            sample = tasks[0]
-            for task in tasks:
-                if read_int32_from_memory(task + task_command.offset_pid) != 0:
-                    sample = task
-                    break
-            comm = read_cstring_from_memory(sample + task_command.offset_comm)
+            comm = kmount.get_sample_comm(tasks)
             self.quiet_info_add_out('root mount: {:#018x}, tasks: {:d} (e.g. "{:s}")'.format(root_mount, len(tasks), comm))
             if self.args.tasks:
                 for task in tasks:
-                    pid = read_int32_from_memory(task + task_command.offset_pid)
-                    comm = read_cstring_from_memory(task + task_command.offset_comm)
+                    pid, comm = kmount.task_command.get_pid_comm(task)
                     self.out.append('  task: {:#018x} (pid: {:d}, comm: "{:s}")'.format(task, pid, comm))
         else:
             self.quiet_info_add_out("root mount: {:#018x}, tasks: 0".format(root_mount))
@@ -105647,10 +105781,15 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         if self.args.verbose:
             legend += ["mnt_id", "peer_group", "mnt_master", "propagation"]
         rows = []
-        for mount, mark in self.walk_tree(tree_root):
-            row = self.get_mount_row(mount, mark, root)
-            if row is not None:
-                rows.append(row)
+        tree, error = kmount.walk_tree(tree_root)
+        for mount, mark in tree:
+            mount_info = kmount.get_mount_info(mount, root, self.args.verbose)
+            if mount_info is None:
+                self.warn_add_out("Unreadable mount: {:#x}".format(mount))
+                continue
+            rows.append(self.make_row(mount_info, mark))
+        if error is not None:
+            self.err_add_out(error)
         widths = [max(len(row[i]) for row in [legend] + rows) for i in range(len(legend))]
         fmt = " ".join("{{:{:d}s}}".format(width) for width in widths)
         if not self.args.quiet:
@@ -105677,12 +105816,13 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         if args.meta:
             return
 
-        ok, targets, root = self.resolve_target()
-        if not ok:
+        targets, root, error = self.kmount.resolve_targets(args.pid, args.task, args.all)
+        if error is not None:
+            err(error)
             return
 
-        if args.pid is None and args.task is None and len(self.namespaces) > len(targets):
-            self.quiet_info("{:d} more mount namespaces exist; use --all".format(len(self.namespaces) - len(targets)))
+        if args.pid is None and args.task is None and len(self.kmount.namespaces) > len(targets):
+            self.quiet_info("{:d} more mount namespaces exist; use --all".format(len(self.kmount.namespaces) - len(targets)))
 
         self.out = []
         for i, (root_mount, tree_root) in enumerate(targets):
