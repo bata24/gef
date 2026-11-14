@@ -86409,6 +86409,135 @@ class KernelMM:
                 return self.offset_vm_flags + current_arch.ptrsize * (i + 5)
         return None
 
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def get_offset_pgd(self, probe):
+        """Return offsetof(mm_struct, pgd). Without debug information, it is detected with `probe`,
+        i.e. (mm, ((vm_start, vm_end), ...)) of a task, whose VMAs the real pgd must map."""
+        # fast path
+        offset = GefUtil.offsetof("mm_struct", "pgd")
+        if offset is not None:
+            return offset
+
+        # slow path
+        # pgd is the mm field that, walked as a page table, maps exactly the mm's own VMAs. A live root
+        # register cannot tell it apart, because the stopped CPU may run another task or borrow init_mm.
+        mm, vmas = probe
+        if not vmas:
+            return None
+        data = read_memory(mm, 0x200, safe=True)
+        if data is None:
+            return None
+        # pgd is page-aligned, except that the x86-32 PAE PDPT and the ARM32 LPAE pgd are only 0x20-aligned,
+        # and that the ARM64 pgd is smaller than a page (down to 16 bytes) with 16KB or 64KB pages
+        align_mask = get_pagesize() - 1
+        if is_x86_32() and (get_register("cr4", use_monitor=True, use_mbed_exec=True) or 0) & (1 << 5):
+            align_mask = 0x1f
+        elif is_arm64():
+            align_mask = 0xf
+        elif is_arm32():
+            for suffix in ("", "_S"):
+                ttbcr = get_register("$TTBCR" + suffix)
+                if ttbcr is not None and ttbcr >> 31: # TTBCR.EAE marks LPAE
+                    align_mask = 0x1f
+                    break
+        # the fixed pages above every VMA are ignored (e.g., the old x86-64 vsyscall page is flagged USER)
+        user_top = max(end for _, end in vmas)
+        best_offset, best_cover = None, 0
+        for i, value in enumerate(slice_unpack(data, current_arch.ptrsize)):
+            if value == 0 or value & align_mask or not KernelAddressHeuristicFinderUtil.is_kernel_space(value):
+                continue
+            if not is_valid_addr(value):
+                continue
+            phys = AddrMap.v2p(value)
+            if phys is None:
+                continue
+            try:
+                maps = KernelMM.get_user_maps(phys)
+            except (gdb.error, gdb.MemoryError, OverflowError):
+                continue
+            # the real pgd maps only this task's VMAs; a stray pointer walked as a table maps elsewhere
+            low = [m for m in maps if m.vstart < user_top]
+            if not low or not all(any(start <= m.vstart < end for start, end in vmas) for m in low):
+                continue
+            cover = sum(any(m.vstart <= start < m.vend for m in maps) for start, _ in vmas)
+            if cover > best_cover:
+                best_offset, best_cover = i * current_arch.ptrsize, cover
+                if cover == len(vmas):
+                    break
+        if best_cover >= min(2, len(vmas)):
+            return best_offset
+        return None
+
+    @staticmethod
+    def get_user_maps(pgd_phys):
+        """Walk the page table at `pgd_phys` with `pagewalk` and return the user-land mappings."""
+        if is_x86_64():
+            # the user copy of KPTI has the NX bits of the user-land, and is fast to walk
+            commands = [
+                "pagewalk x64 --cr3 {:#x} --user-pt".format(pgd_phys),
+                "pagewalk x64 --cr3 {:#x}".format(pgd_phys),
+            ]
+        elif is_x86_32():
+            commands = ["pagewalk x86 --cr3 {:#x}".format(pgd_phys)]
+        elif is_arm32():
+            base = "pagewalk arm 1 --ttbr0 {:#x}".format(pgd_phys)
+            commands = [base]
+            for suffix in ("_S", ""):
+                ttbcr = get_register("$TTBCR" + suffix)
+                if ttbcr is None or not ttbcr >> 31:
+                    continue
+                # CPU_TTBR0_PAN narrows (T0SZ) and disables (EPD0) the kernel-mode TTBR0 walk; clear them to walk
+                if ttbcr & 0x80 or ttbcr & 7:
+                    commands = ["{:s} --ttbcr {:#x}".format(base, ttbcr & ~0x87), base]
+                break
+        elif is_arm64():
+            commands = ["pagewalk arm64 1 --only-TTBR0_EL1 --ttbr0 {:#x}".format(pgd_phys)]
+        elif is_riscv32() or is_riscv64():
+            satp = get_register("satp")
+            if satp is None:
+                return []
+            if is_riscv64():
+                satp = (satp & ~0xfff_ffff_ffff) | (pgd_phys >> 12)
+            else:
+                satp = (satp & ~0x3f_ffff) | (pgd_phys >> 12)
+            commands = ["pagewalk riscv --satp {:#x}".format(satp)]
+        for command in commands:
+            # a probing walk: a candidate root may fault during the detection of mm->pgd, and the traceback
+            # pagewalk then prints must not be echoed into the output of the caller
+            maps = AddrMap.probe_maps(command + " --quiet --no-pager --no-merge --disable-color")
+            maps = [entry for entry in maps if entry.is_userland()]
+            if maps:
+                return maps
+        return []
+
+    @staticmethod
+    def read_task_memory(maps, address, size):
+        """Read the memory of a task through its user-land mappings `maps` (see get_user_maps()),
+        stopping at the first page that is not mapped."""
+        data = b""
+        while len(data) < size:
+            current = address + len(data)
+            entry = AddrMap.find_virtual(current, maps=maps)
+            if entry is None:
+                break
+            chunk = read_physmem(entry.pstart + current - entry.vstart, min(size - len(data), entry.vend - current))
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    @staticmethod
+    def read_task_cstring(maps, address):
+        """Read a printable C string of a task through its user-land mappings `maps`, or return None."""
+        max_length = Config.get("context.nb_max_string_length")
+        data = KernelMM.read_task_memory(maps, address, max_length + 1)
+        ustr = String.bytes2str(data.split(b"\0")[0])
+        if not ustr or any(x not in String.STRING_PRINTABLE for x in ustr):
+            return None
+        if len(ustr) > max_length:
+            ustr = "{}[...]".format(ustr[:max_length])
+        return ustr
+
 
 class KernelPipe:
     """Resolve pipe layouts and read pipe buffers."""
@@ -99433,140 +99562,6 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
     ])
 
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    def get_offset_pgd(self, probe):
-        # fast path
-        offset = GefUtil.offsetof("mm_struct", "pgd")
-        if offset is not None:
-            return offset
-
-        # slow path
-        # pgd is the mm field that, walked as a page table, maps exactly the mm's own VMAs. A live root
-        # register cannot tell it apart, because the stopped CPU may run another task or borrow init_mm.
-        mm, vmas = probe
-        if not vmas:
-            return None
-        data = read_memory(mm, 0x200, safe=True)
-        if data is None:
-            return None
-        # pgd is page-aligned, except that the x86-32 PAE PDPT and the ARM32 LPAE pgd are only 0x20-aligned,
-        # and that the ARM64 pgd is smaller than a page (down to 16 bytes) with 16KB or 64KB pages
-        align_mask = get_pagesize() - 1
-        if is_x86_32() and (get_register("cr4", use_monitor=True, use_mbed_exec=True) or 0) & (1 << 5):
-            align_mask = 0x1f
-        elif is_arm64():
-            align_mask = 0xf
-        elif is_arm32():
-            for suffix in ("", "_S"):
-                ttbcr = get_register("$TTBCR" + suffix)
-                if ttbcr is not None and ttbcr >> 31: # TTBCR.EAE marks LPAE
-                    align_mask = 0x1f
-                    break
-        # the fixed pages above every VMA are ignored (e.g., the old x86-64 vsyscall page is flagged USER)
-        user_top = max(end for _, end in vmas)
-        best_offset, best_cover = None, 0
-        for i, value in enumerate(slice_unpack(data, current_arch.ptrsize)):
-            if value == 0 or value & align_mask or not KernelAddressHeuristicFinderUtil.is_kernel_space(value):
-                continue
-            if not is_valid_addr(value):
-                continue
-            phys = AddrMap.v2p(value)
-            if phys is None:
-                continue
-            try:
-                maps = self.get_user_maps(phys)
-            except (gdb.error, gdb.MemoryError, OverflowError):
-                continue
-            # the real pgd maps only this task's VMAs; a stray pointer walked as a table maps elsewhere
-            low = [m for m in maps if m.vstart < user_top]
-            if not low or not all(any(start <= m.vstart < end for start, end in vmas) for m in low):
-                continue
-            cover = sum(any(m.vstart <= start < m.vend for m in maps) for start, _ in vmas)
-            if cover > best_cover:
-                best_offset, best_cover = i * current_arch.ptrsize, cover
-                if cover == len(vmas):
-                    break
-        if best_cover >= min(2, len(vmas)):
-            return best_offset
-        return None
-
-    def find_task(self, pid):
-        task_command = self.task_command
-        for task in KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks):
-            if read_int32_from_memory(task + task_command.offset_pid, safe=True) == pid:
-                return task
-        return None
-
-    def get_user_maps(self, pgd_phys):
-        """Walk the page table at `pgd_phys` with `pagewalk` and return the user-land mappings."""
-        if is_x86_64():
-            # the user copy of KPTI has the NX bits of the user-land, and is fast to walk
-            commands = [
-                "pagewalk x64 --cr3 {:#x} --user-pt".format(pgd_phys),
-                "pagewalk x64 --cr3 {:#x}".format(pgd_phys),
-            ]
-        elif is_x86_32():
-            commands = ["pagewalk x86 --cr3 {:#x}".format(pgd_phys)]
-        elif is_arm32():
-            base = "pagewalk arm 1 --ttbr0 {:#x}".format(pgd_phys)
-            commands = [base]
-            for suffix in ("_S", ""):
-                ttbcr = get_register("$TTBCR" + suffix)
-                if ttbcr is None or not ttbcr >> 31:
-                    continue
-                # CPU_TTBR0_PAN narrows (T0SZ) and disables (EPD0) the kernel-mode TTBR0 walk; clear them to walk
-                if ttbcr & 0x80 or ttbcr & 7:
-                    commands = ["{:s} --ttbcr {:#x}".format(base, ttbcr & ~0x87), base]
-                break
-        elif is_arm64():
-            commands = ["pagewalk arm64 1 --only-TTBR0_EL1 --ttbr0 {:#x}".format(pgd_phys)]
-        elif is_riscv32() or is_riscv64():
-            satp = get_register("satp")
-            if satp is None:
-                return []
-            if is_riscv64():
-                satp = (satp & ~0xfff_ffff_ffff) | (pgd_phys >> 12)
-            else:
-                satp = (satp & ~0x3f_ffff) | (pgd_phys >> 12)
-            commands = ["pagewalk riscv --satp {:#x}".format(satp)]
-        for command in commands:
-            # capture the output instead of AddrMap.get_maps: a candidate root may fault during detection,
-            # and pagewalk then prints a traceback that run_pagewalk would re-echo into this command's output
-            try:
-                output = gdb.execute(command + " --quiet --no-pager --no-merge --disable-color", to_string=True)
-            except gdb.error:
-                continue
-            if "Exception raised" in output:
-                continue
-            maps = [entry for entry in AddrMap.parse_pagewalk_output(output) if entry.is_userland()]
-            if maps:
-                return maps
-        return []
-
-    def read_task_memory(self, address, size):
-        """Read the memory of the task, stopping at the first page that is not mapped."""
-        data = b""
-        while len(data) < size:
-            current = address + len(data)
-            entry = AddrMap.find_virtual(current, maps=self.maps)
-            if entry is None:
-                break
-            chunk = read_physmem(entry.pstart + current - entry.vstart, min(size - len(data), entry.vend - current))
-            if not chunk:
-                break
-            data += chunk
-        return data
-
-    def read_task_cstring(self, address):
-        max_length = Config.get("context.nb_max_string_length")
-        data = self.read_task_memory(address, max_length + 1)
-        ustr = String.bytes2str(data.split(b"\0")[0])
-        if not ustr or any(x not in String.STRING_PRINTABLE for x in ustr):
-            return None
-        if len(ustr) > max_length:
-            ustr = "{}[...]".format(ustr[:max_length])
-        return ustr
-
     def format_value(self, value):
         text = AddressUtil.format_address(value, long_fmt=True)
         entry = AddrMap.find_virtual(value, maps=self.maps)
@@ -99597,7 +99592,7 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
         while len(chain) < Config.get("dereference.max_recursion") - 1:
             if AddrMap.find_virtual(chain[-1], maps=self.maps) is None:
                 break
-            data = self.read_task_memory(chain[-1], ptrsize)
+            data = KernelMM.read_task_memory(self.maps, chain[-1], ptrsize)
             if len(data) != ptrsize:
                 break
             value = unpack(data)
@@ -99615,7 +99610,7 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
             if len(text) >= 2 and all(chr(x) in String.STRING_PRINTABLE for x in text):
                 ustr = None
                 if len(text) == ptrsize and len(chain) >= 2:
-                    ustr = self.read_task_cstring(chain[-2])
+                    ustr = KernelMM.read_task_cstring(self.maps, chain[-2])
                 fa = AddressUtil.format_address(chain[-1], long_fmt=True)
                 if ustr:
                     last = "{:s} {:s}".format(fa, Color.colorify(repr(ustr), string_color))
@@ -99671,7 +99666,7 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Failed to initialize")
             return
 
-        task = self.find_task(args.pid)
+        task = self.task_command.get_task_by_pid(args.pid, safe=True)
         if task is None:
             err("No task matched pid {:d}".format(args.pid))
             return
@@ -99692,7 +99687,9 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
                 err("Could not resolve the VMA layout to locate mm->pgd")
                 return
             vmas = tuple((area.start, area.end) for area in self.kmm.get_task_maps(task))
-        offset_pgd = self.get_offset_pgd((mm, vmas))
+            for message in self.kmm.pop_warnings():
+                self.quiet_warn(message)
+        offset_pgd = Kernel.mm().get_offset_pgd((mm, vmas))
         if offset_pgd is None:
             err("Could not find mm_struct->pgd")
             return
@@ -99705,14 +99702,14 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("{:s} task: {:#x}, mm: {:#x}, pgd: {:#x} (phys: {:#x})".format(label, task, mm, pgd, pgd_phys))
 
         try:
-            self.maps = self.get_user_maps(pgd_phys)
+            self.maps = KernelMM.get_user_maps(pgd_phys)
         except (gdb.error, gdb.MemoryError, OverflowError):
             self.maps = []
         if not self.maps:
             err("Could not walk the page table of {:s}".format(label))
             return
 
-        data = self.read_task_memory(target, dump_size)
+        data = KernelMM.read_task_memory(self.maps, target, dump_size)
         self.out = []
         if args.telescope_like:
             self.make_telescope_out(target, data)
@@ -195221,8 +195218,24 @@ class AddrMap:
         return maps
 
     @staticmethod
+    def run_pagewalk(command, probe=False):
+        """Run a pagewalk command and return its raw output, which is cached for the current stop and CPU.
+        A traceback in the output is echoed, and "" is returned instead of the output.
+        `probe=True` is for a walk that may fail, e.g. one given a candidate page table root:
+        the output is not cached, and a failure (a traceback or gdb.error) silently returns ""."""
+        if not probe:
+            return AddrMap.run_pagewalk_cached(command)
+        try:
+            res = gdb.execute(command, to_string=True)
+        except gdb.error:
+            return ""
+        if "Exception raised" in res:
+            return "" # the output is polluted by the traceback, so it must not be parsed
+        return res
+
+    @staticmethod
     @Cache.cache_until_next(per_cpu=True)
-    def run_pagewalk(command):
+    def run_pagewalk_cached(command):
         """Run a pagewalk command and cache its raw output for the current stop and CPU."""
         if is_kgdb():
             info("Start `pagewalk`")
@@ -195231,6 +195244,12 @@ class AddrMap:
             gef_print(res)
             return "" # the output is polluted by the traceback, so it must not be parsed
         return res
+
+    @staticmethod
+    def probe_maps(command):
+        """Return the address mappings of a pagewalk `command` that may fail (see run_pagewalk(probe=True)).
+        Unlike get_maps(command=...), the result is not cached, and nothing is warned or echoed."""
+        return AddrMap.parse_pagewalk_output(AddrMap.run_pagewalk(command, probe=True))
 
     @staticmethod
     @Cache.cache_until_next(per_cpu=True)
