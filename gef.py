@@ -212940,9 +212940,9 @@ class KtraceBreakpoint(gdb.Breakpoint):
 
     def stop(self):
         Cache.reset_gef_caches()
-        KmallocTracerCommand.clear_disabled_breakpoints("KtraceRetBreakpoint", owner=self.owner)
+        KernelAllocTracer.clear_disabled_breakpoints("KtraceRetBreakpoint", owner=self.owner)
 
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
 
         # get args
         arg_key_color = Config.get("theme.registers_register_name")
@@ -212990,7 +212990,7 @@ class KtraceRetBreakpoint(gdb.Breakpoint):
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
