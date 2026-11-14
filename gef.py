@@ -70625,8 +70625,8 @@ class KernelAddressHeuristicFinderUtil:
         def idr_marker_offset(x):
             """Return the offset of IDR_RT_MARKER that IDR_INIT() stores into xa_flags, or None.
             The marker is ROOT_IS_IDR plus the free mark of the empty tree, so only the
-            low flag bits and one or two bits at __GFP_BITS_SHIFT (23 to 27 depending on
-            the version and CONFIG_LOCKDEP) are ever set, and xa_head follows it.
+            low flag bits and one or two bits at __GFP_BITS_SHIFT (23 to 29 depending on
+            the version, CONFIG_LOCKDEP and CONFIG_CMA) are ever set, and xa_head follows it.
             This recognizes an idr that `is_idr()` cannot see because it is still empty.
             The offset of xa_flags depends on sizeof(spinlock_t), which grows a lot with
             CONFIG_DEBUG_SPINLOCK or CONFIG_PREEMPT_RT, so it is searched instead of assumed."""
@@ -70637,7 +70637,7 @@ class KernelAddressHeuristicFinderUtil:
                 marker = v & ~0xFF
                 if ((v & 0xFF) not in (0, 4)
                         or not any(marker == bits << shift
-                                   for bits in (1, 3) for shift in range(23, 28))):
+                                   for bits in (1, 3) for shift in range(23, 30))):
                     continue
                 head_addr = x + align_to_ptrsize(offset + 4)
                 if not is_valid_addr(head_addr):
@@ -88237,7 +88237,7 @@ class KernelIpcs:
             flags = [read_int32_from_memory(address - delta, safe=True) for delta in (4, ptr)]
             xarray_markers = [
                 f for f in flags
-                if f is not None and (f == 4 or any(f == 4 | bits << shift for bits in (1, 3) for shift in range(23, 28)))
+                if f is not None and (f == 4 or any(f == 4 | bits << shift for bits in (1, 3) for shift in range(23, 30)))
             ]
             if self.tree_kind == "xarray":
                 markers = xarray_markers
@@ -88612,7 +88612,9 @@ class KernelIpcs:
         for i in range(3):
             base = ipc_ns + self.offset_ids + size * i
             head = read_int_from_memory(base + offset, safe=True)
-            if head is None or head and not self.is_ipc_pointer(head):
+            if head is None:
+                return False
+            if head and not self.is_ipc_pointer(head):
                 return False
             layers = read_int32_from_memory(base + offset + self.offset_idr_layers, safe=True)
             in_use = read_int32_from_memory(base)
