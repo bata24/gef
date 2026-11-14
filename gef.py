@@ -38403,6 +38403,32 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enforcing", "bold green"), additional))
         return
 
+    @staticmethod
+    def find_file_system(name):
+        """Return whether a filesystem of the type `name` that `kfilesystems` lists has a super_block (is mounted),
+        or None if it lists nothing. It is False if kfilesystems shows only an error.
+        A type that is only registered is listed without a super_block, so it does not count."""
+        kversion = Kernel.version()
+        if kversion is None or kversion < "3.3":
+            # kfilesystems does not support it, and shows only the error
+            return False
+        found = None
+        try:
+            kfs = Kernel.file_system()
+            if not kfs.initialize():
+                return None
+            for kind, value in kfs.parse_file_systems(skip_mount_path=True):
+                if kind != "entry":
+                    continue
+                if value.name is None:
+                    # kfilesystems cannot print this entry, and shows only the error
+                    return False
+                found = bool(found) or (value.name == name and value.super_block is not None)
+        except gdb.error:
+            # kfilesystems stops with the error, and shows only the error
+            return False
+        return found
+
     def check_smack(self):
         cfg = "SMACK"
         smack_init = Ksym.get_addr("smack_init")
@@ -38411,13 +38437,13 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), additional))
             return
 
-        kfilesystems_ret = gdb.execute("kfilesystems --quiet --no-pager --skip-mount-path", to_string=True)
-        if not kfilesystems_ret:
+        smackfs_found = self.find_file_system("smackfs")
+        if smackfs_found is None:
             additional = "smack_init: Found"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
             return
 
-        if "smackfs" in kfilesystems_ret:
+        if smackfs_found:
             additional = "smack_init: Found, smackfs: Mounted"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
@@ -83923,6 +83949,8 @@ class KernelFileSystem:
 
     MAX_FILE_SYSTEM_TYPES = 0x400
 
+    FsEntry = collections.namedtuple("FsEntry", "fst name super_block devname major minor mount parsed_mount mount_point")
+
     @classmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_instance(cls):
@@ -83935,7 +83963,10 @@ class KernelFileSystem:
         self.file_systems = None
         self.kpath = None
         self.kpath_ready = False
+        self.offset_name = 0
+        self.offset_s_dev = None
         self.offset_s_type = None
+        self.offset_mount_mnt_devname = None
         self.offset_mount_next_for_sb = None
         self.sample_mount = None
         return
@@ -83953,8 +83984,44 @@ class KernelFileSystem:
         self.ptrsize = current_arch.ptrsize
         self.kpath = None
         self.kpath_ready = False
+        self.offset_mount_mnt_devname = None
         self.offset_mount_next_for_sb = None
         self.sample_mount = None
+
+        """
+        struct super_block {
+            struct list_head s_list;
+            dev_t s_dev; // u32
+            unsigned char s_dirt; // ~v3.5
+            unsigned char s_blocksize_bits;
+            unsigned long s_blocksize;
+            loff_t s_maxbytes;
+            struct file_system_type *s_type;  <-- points back to the file_system_type
+            ...
+            struct hlist_node s_instances;  <-- fs_supers points here
+            ...
+        } __randomize_layout;
+        """
+        # super_block->{s_dev,s_type}
+        # They stay as they are if the layout below is not resolved, e.g. before v3.3,
+        # where struct mount and super_block->s_mounts do not exist yet.
+        kversion = Kernel.version()
+        offsetof = GefUtil.offsetof
+        self.offset_s_dev = offsetof("super_block", "s_dev")
+        if self.offset_s_dev is None:
+            self.offset_s_dev = current_arch.ptrsize * 2
+        self.offset_s_type = offsetof("super_block", "s_type")
+        if self.offset_s_type is None:
+            # loff_t uses 8-byte alignment on ARM32 and RISCV32, unlike the i386 ABI.
+            if is_64bit() or is_arm32() or is_riscv32():
+                loff_t_align = 8
+            else:
+                loff_t_align = 4
+            s_maxbytes_end = current_arch.ptrsize * 3 + 8
+            offset_s_maxbytes = align(s_maxbytes_end, loff_t_align)
+            self.offset_s_type = offset_s_maxbytes + 8
+        if kversion < "3.3":
+            return None
 
         # file_systems
         self.file_systems = KernelAddressHeuristicFinder.get_file_systems()
@@ -83986,8 +84053,6 @@ class KernelFileSystem:
             struct lock_class_key i_alloc_sem_key; // ~v3.0
         };
         """
-        kversion = Kernel.version()
-        offsetof = GefUtil.offsetof
         use_debug_info = False
 
         offset_name = offsetof("file_system_type", "name")
@@ -84051,30 +84116,12 @@ class KernelFileSystem:
                 self.meta.append(("err", "The debug information may not match the running kernel"))
             return None
 
-        """
-        struct super_block {
-            struct list_head s_list;
-            dev_t s_dev; // u32
-            unsigned char s_dirt; // ~v3.5
-            unsigned char s_blocksize_bits;
-            unsigned long s_blocksize;
-            loff_t s_maxbytes;
-            struct file_system_type *s_type;  <-- points back to the file_system_type
-            ...
-            struct hlist_node s_instances;  <-- fs_supers points here
-            ...
-        } __randomize_layout;
-        """
         # super_block->s_dev
-        self.offset_s_dev = offsetof("super_block", "s_dev")
-        if self.offset_s_dev is None:
-            self.offset_s_dev = current_arch.ptrsize * 2
         self.meta.append(("info", "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
 
         # super_block->s_instances
         self.offset_s_instances = offsetof("super_block", "s_instances")
-        self.offset_s_type = offsetof("super_block", "s_type")
-        if self.offset_s_instances is not None and self.offset_s_type is not None:
+        if self.offset_s_instances is not None and offsetof("super_block", "s_type") is not None:
             use_debug_info = True
             self.meta.append(("info", "struct super_block layout: debug information"))
         else:
@@ -84282,7 +84329,10 @@ class KernelFileSystem:
                         base = 0
                     else:
                         # s_mounts points to mount->mnt_instance
-                        deltas = (0, -current_arch.ptrsize, current_arch.ptrsize)
+                        deltas = (0, -current_arch.ptrsize, current_arch.ptrsize,
+                                  -current_arch.ptrsize * 2, current_arch.ptrsize * 2,
+                                  -current_arch.ptrsize * 3, current_arch.ptrsize * 3,
+                                  -current_arch.ptrsize * 4, current_arch.ptrsize * 4)
                         base = offset_after_mnt_child
                     for delta in deltas:
                         offset_mount_mnt_instance = base + delta
@@ -84374,11 +84424,64 @@ class KernelFileSystem:
             return read_int_from_memory(mnt_instance)
         return read_int_from_memory(mnt_instance + self.offset_mount_next_for_sb)
 
+    def get_offset_mnt_devname(self, mount):
+        """Return offsetof(mount, mnt_devname). Before v3.3, where struct mount does not exist yet,
+        it is resolved in struct vfsmount with the mounts of the tree that `mount` belongs to.
+
+        struct vfsmount { // ~v3.2
+            ...
+            struct list_head mnt_mounts;
+            struct list_head mnt_child;
+            int mnt_flags;
+        #ifdef CONFIG_FSNOTIFY
+            __u32 mnt_fsnotify_mask;
+            struct hlist_head mnt_fsnotify_marks;
+        #endif
+            const char *mnt_devname;
+            ...
+        };
+        """
+        if self.initialized:
+            return self.offset_mount_mnt_devname
+        if "3.3" <= Kernel.version():
+            return None
+        if self.offset_mount_mnt_devname is not None:
+            return self.offset_mount_mnt_devname
+
+        self.offset_mount_mnt_devname = GefUtil.offsetof("vfsmount", "mnt_devname")
+        if self.offset_mount_mnt_devname is not None:
+            return self.offset_mount_mnt_devname
+
+        kpath = Kernel.path()
+        offset_mnt_flags = kpath.get_offset_mnt_flags(mount)
+        if offset_mnt_flags is None:
+            return None
+        base = align(offset_mnt_flags + 4, current_arch.ptrsize)
+        candidates = (base, align(offset_mnt_flags + 8, current_arch.ptrsize) + current_arch.ptrsize)
+        mounts = list(kpath.iter_mounts(kpath.get_root_mount(mount), max_mounts=16))
+        scores = []
+        for offset in candidates:
+            score = 0
+            for sample in mounts:
+                name_ptr = read_int_from_memory(sample + offset, safe=True)
+                if not is_valid_addr(name_ptr):
+                    continue
+                name = read_cstring_from_memory(name_ptr, max_length=64, safe=True)
+                if name and all(0x20 <= ord(char) < 0x7f for char in name):
+                    score += 1
+            scores.append(score)
+        if max(scores) > 0 and scores.count(max(scores)) == 1:
+            self.offset_mount_mnt_devname = candidates[scores.index(max(scores))]
+        return self.offset_mount_mnt_devname
+
     def get_dev_name(self, mount):
         """Return mount->mnt_devname, the source of the mount as mount(2) received it."""
         if mount is None or mount < 0 or not is_valid_addr(mount):
             return None
-        devname_addr = mount + self.offset_mount_mnt_devname
+        offset_mnt_devname = self.get_offset_mnt_devname(mount)
+        if offset_mnt_devname is None:
+            return None
+        devname_addr = mount + offset_mnt_devname
         if not is_valid_addr(devname_addr):
             return None
         devname_p = read_int_from_memory(devname_addr, safe=True)
@@ -84404,11 +84507,10 @@ class KernelFileSystem:
 
     def find_offset_s_type(self, sb, fst):
         """Return offsetof(super_block, s_type), found by the pointer back to the file_system_type."""
-        # s_maxbytes is an 8-byte aligned loff_t, so the offset is not a multiple of ptrsize on 32-bit
-        offset_s_type = (((current_arch.ptrsize * 3 + 8) + 7) & ~7) + 8
         try:
-            if read_int_from_memory(sb + offset_s_type) == fst:
-                return offset_s_type
+            # the offset from the debug information or the nominal layout is tried first
+            if read_int_from_memory(sb + self.offset_s_type) == fst:
+                return self.offset_s_type
             for i in range(3, 0x20):
                 if read_int_from_memory(sb + current_arch.ptrsize * i) == fst:
                     return current_arch.ptrsize * i
@@ -84464,6 +84566,134 @@ class KernelFileSystem:
         except (gdb.MemoryError, OverflowError):
             pass
         return False
+
+    @staticmethod
+    def get_dev_num(dev):
+        """Return (major, minor, the block device name guessed from them) of the dev_t `dev`."""
+        major, minor = KernelDevice.split_devt(dev)
+        name = KernelBlockDevice.get_bdev_name(major, minor)
+        return major, minor, name
+
+    def get_mount_point(self, mnt_instance):
+        """Return (mount, mount point) of the mount that `mnt_instance` (an entry of super_block->s_mounts) belongs to,
+        ("-", "-") if no mount of the super_block is reached from the root, or None if it cannot be resolved."""
+        if not self.kpath_ready or not is_valid_addr(mnt_instance):
+            return None
+        mount = self.get_mount(mnt_instance)
+        # the s_mounts list head also looks like a mnt_instance, so reject what is not a mount
+        if not self.kpath.is_mount(mount):
+            return None
+        vfsmnt = mount + self.offset_mount_mnt
+        dentry = read_int_from_memory(vfsmnt + self.offset_vfsmount_mnt_root)
+
+        path_info = self.kpath.prepend_path(dentry, vfsmnt, unknown="???")
+        if path_info.status in ("cyclic", "unreadable"):
+            return None
+        filepath = path_info.path
+
+        # The reason is unclear, but this works.
+        if path_info.crossed is False and filepath == "/":
+            next_mnt_instance = self.get_next_mnt_instance(mnt_instance)
+            if next_mnt_instance:
+                ret = self.get_mount_point(next_mnt_instance)
+                if ret:
+                    return ret
+            return "-", "-"
+
+        mount = self.get_mount(mnt_instance)
+        return mount, filepath
+
+    def parse_super_block(self, fst, super_block, skip_mount_path=False):
+        """Return the FsEntry of `super_block` of the file_system_type `fst`.
+        parsed_mount is the mount whose mount point is resolved, or "-"; `skip_mount_path` skips resolving it."""
+        # name
+        name = self.get_fst_name(fst)
+
+        # dev
+        dev = read_int32_from_memory(super_block + self.offset_s_dev)
+        major, minor, devname = self.get_dev_num(dev)
+
+        # mount
+        s_mounts = read_int_from_memory(super_block + self.offset_s_mounts)
+        mount = self.get_mount(s_mounts)
+
+        # mount points
+        if skip_mount_path:
+            parsed_mount, mount_point = "-", "???"
+        else:
+            ret = self.get_mount_point(s_mounts)
+            if ret is None:
+                parsed_mount, mount_point = "-", "???"
+            else:
+                parsed_mount, mount_point = ret
+
+        # devname
+        if devname == "???":
+            devname = self.get_dev_name(self.get_mount(s_mounts)) or "???"
+        else:
+            devname += " (guessed)"
+        return KernelFileSystem.FsEntry(fst, name, super_block, devname, major, minor, mount, parsed_mount, mount_point)
+
+    def parse_file_system_type(self, fst, skip_mount_path=False):
+        """Yield ("entry", FsEntry) for each super_block of the file_system_type `fst`, or one FsEntry whose members
+        after `name` are None if it has no super_block. Yield ("warn", message) where the walk stops halfway."""
+        # fs_supers
+        fs_supers = read_int_from_memory(fst + self.offset_fs_supers)
+
+        if fs_supers == 0:
+            # fast return
+            name = self.get_fst_name(fst)
+            yield "entry", KernelFileSystem.FsEntry(fst, name, None, None, None, None, None, None, None)
+            return
+
+        s_instances = fs_supers
+        seen = set()
+
+        # parse more
+        while s_instances:
+            if s_instances in seen:
+                yield "warn", "Stopped at cyclic s_instances: {:#x}".format(s_instances)
+                break
+            if len(seen) >= 0x10000:
+                yield "warn", "Stopped at s_instances traversal limit: {:#x}".format(s_instances)
+                break
+            if not is_valid_addr(s_instances):
+                yield "warn", "Stopped at unreadable s_instances: {:#x}".format(s_instances)
+                break
+            seen.add(s_instances)
+            super_block = s_instances - self.offset_s_instances
+            # parse super_block
+            yield "entry", self.parse_super_block(fst, super_block, skip_mount_path)
+            # go to next
+            next_s_instances = read_int_from_memory(s_instances, safe=True)
+            if next_s_instances is None:
+                yield "warn", "Stopped at unreadable s_instances: {:#x}".format(s_instances)
+                break
+            s_instances = next_s_instances
+        return
+
+    def parse_file_systems(self, skip_mount_path=False):
+        """Walk every registered file_system_type in file_systems, and yield what parse_file_system_type() yields
+        for each. Yield ("warn", message) where the walk stops halfway."""
+        fst = read_int_from_memory(self.file_systems)
+        if fst:
+            fst -= self.offset_hlist_node
+        seen = set()
+        while fst != 0:
+            if fst in seen:
+                yield "warn", "Stopped at cyclic file_system_type: {:#x}".format(fst)
+                break
+            if not is_valid_addr(fst):
+                yield "warn", "Stopped at unreadable file_system_type: {:#x}".format(fst)
+                break
+            seen.add(fst)
+            # parse file_system_type
+            yield from self.parse_file_system_type(fst, skip_mount_path)
+            # go to next
+            fst = read_int_from_memory(fst + self.offset_link)
+            if fst:
+                fst -= self.offset_hlist_node
+        return
 
 
 class KernelDevice:
@@ -101138,255 +101368,6 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    @staticmethod
-    def get_bdev_name(major, minor):
-        # https://www.kernel.org/doc/Documentation/admin-guide/devices.txt
-        # https://github.com/lrs-lang/lib/blob/master/src/dev/lib.rs
-        dev_name_list = {
-            0: "???",
-            4: "/dev/root",
-            7: "/dev/loop{:d}",
-            9: "/dev/md{:d}",
-            11: "/dev/scd{0:d} (sr{0:d})",
-            12: "/dev/dos_cd{:d}",
-            15: "/dev/sonycd",
-            16: "/dev/gscd",
-            17: "/dev/optcd",
-            18: "/dev/sjcd",
-            20: "/dev/hitcd",
-            23: "/dev/mcd",
-            24: "/dev/cdu535",
-            29: "/dev/aztcd",
-            30: "/dev/cm205cd",
-            32: "/dev/cm206cd",
-            35: "/dev/slram",
-            37: "/dev/z2ram",
-            41: "/dev/bpcd",
-            43: "/dev/nb{:d}",
-            46: "/dev/pcd{:d}",
-            47: "/dev/pf{:d}",
-            59: "/dev/pda{:d}",
-            92: "/dev/ppdd{:d}",
-            97: "/dev/pktcdvd",
-            99: "/dev/jsfd",
-            103: "/dev/audit",
-            115: "/dev/nwfs/v{:d}",
-            147: "/dev/drbd{:d}",
-            152: "/dev/etherd/{:d}",
-            199: "/dev/vx/dsk/*/*",
-            201: "/dev/vx/dmp/*/*",
-            258: "/dev/blockrom{:d}",
-        }
-
-        if major in dev_name_list:
-            return dev_name_list[major].format(minor)
-
-        def common_pattern(kind_sep, kind_max, devstr, sym_start="a"):
-            kind = minor // kind_sep
-            num = minor % kind_sep
-            if kind < kind_max:
-                dev = "/dev/{:s}{:s}".format(devstr, chr(ord(sym_start) + kind))
-                if num:
-                    dev = "{:s}{:d}".format(dev, num)
-                return dev
-            return "???"
-
-        def common_pattern_num_p(kind_sep, kind_max, devstr, kind_offset=0):
-            kind = minor // kind_sep
-            num = minor % kind_sep
-            if kind_max is None or kind < kind_max:
-                dev = "/dev/{:s}{:d}".format(devstr, kind + kind_offset)
-                if num:
-                    dev = "{:s}p{:d}".format(dev, num)
-                return dev
-            return "???"
-
-        def iterate_pattern(kind_sep, kind_max, dev_str, sym_start):
-
-            def gen():
-                cs = "abcdefghijklmnopqrstuvwxyz"
-                yield from cs
-                for c1 in cs:
-                    for c2 in cs:
-                        yield c1 + c2
-                return
-
-            name_list = list(gen())
-            kind = minor // kind_sep
-            num = minor % kind_sep
-            if kind < (kind_max or len(name_list)):
-                offset = name_list.index(sym_start)
-                dev = "/dev/{:s}{:s}".format(dev_str, name_list[offset + kind])
-                if num:
-                    dev = "{:s}{:d}".format(dev, num)
-                return dev
-            return "???"
-
-        if major == 1:
-            if 0 <= minor < 250:
-                return "/dev/ram{:d}".format(minor)
-            elif minor == 250:
-                return "/dev/initrd"
-        elif major == 2:
-            if 0 <= minor < 128:
-                num = minor % 4
-            elif 128 <= minor < 256:
-                num = 4 + minor % 4
-            else:
-                return "???"
-            fd_type = (minor % 128) & ~0b11
-            type_dic = {
-                0: "",
-                4: "d360",
-                8: "h1200",
-                12: "u360",
-                16: "u720",
-                20: "h360",
-                24: "h720",
-                28: "u1440",
-                32: "u2880",
-                36: "CompaQ",
-                40: "h1440",
-                44: "u1680",
-                48: "h410",
-                52: "u820",
-                56: "h1476",
-                60: "u1722",
-                64: "h420",
-                68: "u830",
-                72: "h1494",
-                76: "u1743",
-                80: "h880",
-                84: "u1040",
-                88: "u1120",
-                92: "h1600",
-                96: "u1760",
-                100: "u1920",
-                104: "u3200",
-                108: "u3520",
-                112: "u3840",
-                116: "u1840",
-                120: "u800",
-                124: "u1600",
-            }
-            if fd_type in type_dic:
-                return "/dev/fd{:d}{:s}".format(num, type_dic[fd_type])
-        elif major == 3:
-            return common_pattern(64, 2, "hd", sym_start="a")
-        elif major == 8:
-            return iterate_pattern(16, 16, "sd", sym_start="a")
-        elif major == 13:
-            return common_pattern(64, 4, "xd")
-        elif major == 14:
-            return common_pattern(64, 4, "dos_hd")
-        elif major == 19:
-            if 0 <= minor < 8:
-                return "/dev/double{:d}".format(minor)
-            elif 128 <= minor < 136:
-                return "/dev/cdouble{:d}".format(minor - 128)
-        elif major == 21:
-            return common_pattern(64, 2, "mfm")
-        elif major == 22:
-            return common_pattern(64, 2, "hd", sym_start="c")
-        elif 25 <= major < 28:
-            if 0 <= minor < 4:
-                return "/dev/sbpcd{:d}".format(minor + (major - 25) * 4)
-        elif major == 28: # 28 are duplicates
-            if is_m68k():
-                return common_pattern(16, 16, "ad")
-            else:
-                if 0 <= minor < 4:
-                    return "/dev/sbpcd{:d}".format(minor + (major - 25) * 4)
-        elif major == 31:
-            if 0 <= minor < 8:
-                return "/dev/rom{:d}".format(minor)
-            elif 8 <= minor < 16:
-                return "/dev/rrom{:d}".format(minor - 8)
-            elif 16 <= minor < 24:
-                return "/dev/flash{:d}".format(minor - 16)
-            elif 24 <= minor < 32:
-                return "/dev/rflash{:d}".format(minor - 24)
-        elif 33 <= major < 35:
-            return common_pattern(64, 2, "hd", sym_start=["e", "g"][major - 33])
-        elif major == 36:
-            return common_pattern(64, 4, "ed")
-        elif major == 40:
-            if minor == 0:
-                return "/dev/eza"
-            elif 1 <= minor < 64:
-                return "/dev/eza{:d}".format(minor)
-        elif major == 44:
-            return common_pattern(16, 16, "ftl")
-        elif major == 45:
-            return common_pattern(16, 4, "pd")
-        elif 48 <= major < 56:
-            return common_pattern_num_p(8, 32, "rd/c{:d}d".format(major - 48))
-        elif 56 <= major < 58:
-            return common_pattern(64, 2, "hd", sym_start=["i", "k"][major - 56])
-        elif major == 64:
-            if minor == 0:
-                return "/dev/scramdisk/master"
-            elif 1 <= minor:
-                return "/dev/scramdisk/{:d}".format(minor)
-        elif 65 <= major < 72:
-            return iterate_pattern(16, 16, "sd", sym_start=["q", "ag", "aw", "bm", "cc", "cs", "di"][major - 65])
-        elif 72 <= major < 80:
-            return common_pattern_num_p(16, 16, "ida/c{:d}d".format(major - 72))
-        elif 80 <= major < 88:
-            return iterate_pattern(16, 16, "i2o/hd", sym_start=["a", "q", "ag", "aw", "bm", "cc", "cs", "di"][major - 80])
-        elif 88 <= major < 92:
-            return common_pattern(64, 2, "hd", sym_start=["m", "o", "q", "s"][major - 88])
-        elif major == 93:
-            return common_pattern(16, 16, "nftl")
-        elif major == 94:
-            return common_pattern(4, 26, "dasd")
-        elif major == 96:
-            return common_pattern(16, 16, "inftl")
-        elif major == 98:
-            return common_pattern(16, 26, "ubd")
-        elif major == 101:
-            return common_pattern_num_p(16, 16, "amiraid/ar")
-        elif major == 102:
-            return common_pattern(16, 16, "cbd/")
-        elif 104 <= major < 112:
-            return common_pattern_num_p(16, 16, "cciss/c{:d}d".format(major - 104))
-        elif major == 112:
-            return iterate_pattern(8, 64, "iseries/vd", sym_start="a")
-        elif major == 113:
-            return iterate_pattern(1, None, "iseries/vcd", sym_start="a")
-        elif major == 114:
-            return common_pattern_num_p(16, 16, "ataraid/d")
-        elif major == 116:
-            return common_pattern_num_p(16, 16, "umem/d")
-        elif major == 117:
-            if minor == 0:
-                return "/dev/evms/block_device"
-            elif 1 <= minor < 128:
-                return "/dev/evms/legacyname{:d}".format(minor)
-            elif 128 <= minor < 256:
-                return "/dev/evms/EVMSname{:d}".format(256 - minor)
-        elif 128 <= major < 136:
-            return iterate_pattern(16, 16, "sd", sym_start=["dy", "eo", "fe", "fu", "gk", "ha", "hq", "ig"][major - 128])
-        elif 136 <= major < 144:
-            return common_pattern_num_p(16, 16, "rd/c{:d}d".format(major - 136 + 8))
-        elif major == 153:
-            return common_pattern_num_p(16, 16, "emd/")
-        elif 160 <= major < 162:
-            return common_pattern_num_p(32, 8, "carmel/", kind_offset=(major - 160) * 8) # codespell:ignore
-        elif major == 179:
-            return common_pattern_num_p(8, None, "mmcblk")
-        elif major == 180:
-            return common_pattern(8, 26, "ub")
-        elif major == 202:
-            return common_pattern(16, 16, "xvd")
-        elif 240 <= major < 255: # LOCAL/EXPERIMENTAL USE, but maybe this is virtio when qemu-system
-            return common_pattern(16, 16, "vd")
-        elif major == 256:
-            return common_pattern(16, 16, "rfd")
-        elif major == 257:
-            return common_pattern(8, 8, "ssfdc")
-        return "???"
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -104222,116 +104203,6 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             return None
         return True
 
-    def get_dev_num(self, dev):
-        major = dev >> 20
-        minor = dev & ((1 << 20) - 1)
-        name = KernelBlockDevicesCommand.get_bdev_name(major, minor)
-        return major, minor, name
-
-    def get_mount_point(self, mnt_instance):
-        kfs = self.kfs
-        if not kfs.kpath_ready or not is_valid_addr(mnt_instance):
-            return None
-        mount = kfs.get_mount(mnt_instance)
-        # the s_mounts list head also looks like a mnt_instance, so reject what is not a mount
-        if not kfs.kpath.is_mount(mount):
-            return None
-        vfsmnt = mount + kfs.offset_mount_mnt
-        dentry = read_int_from_memory(vfsmnt + kfs.offset_vfsmount_mnt_root)
-
-        path_info = kfs.kpath.prepend_path(dentry, vfsmnt, unknown="???")
-        if path_info.status in ("cyclic", "unreadable"):
-            return None
-        filepath = path_info.path
-
-        # The reason is unclear, but this works.
-        if path_info.crossed is False and filepath == "/":
-            next_mnt_instance = kfs.get_next_mnt_instance(mnt_instance)
-            if next_mnt_instance:
-                ret = self.get_mount_point(next_mnt_instance)
-                if ret:
-                    return ret
-            return "-", "-"
-
-        mount = kfs.get_mount(mnt_instance)
-        return mount, filepath
-
-    def parse_super_block(self, fst, super_block):
-        kfs = self.kfs
-
-        # name
-        name = kfs.get_fst_name(fst)
-
-        # dev
-        dev = read_int32_from_memory(super_block + kfs.offset_s_dev)
-        major, minor, devname = self.get_dev_num(dev)
-
-        # mount
-        s_mounts = read_int_from_memory(super_block + kfs.offset_s_mounts)
-        mount = kfs.get_mount(s_mounts)
-
-        # mount points
-        if self.args.skip_mount_path:
-            parsed_mount, mount_point = "-", "???"
-        else:
-            ret = self.get_mount_point(s_mounts)
-            if ret is None:
-                parsed_mount, mount_point = "-", "???"
-            else:
-                parsed_mount, mount_point = ret
-                if isinstance(parsed_mount, int):
-                    parsed_mount = "{:#018x}".format(parsed_mount)
-
-        # devname
-        if devname == "???":
-            devname = kfs.get_dev_name(kfs.get_mount(s_mounts)) or "???"
-        else:
-            devname += " (guessed)"
-
-        # dump
-        self.out.append("{:#018x} {:12s} {:#018x} {:20s} {:<6d} {:<6d} {:#018x} {:18s} {:s}".format(
-            fst, name, super_block, devname, major, minor, mount, parsed_mount, mount_point,
-        ))
-        return
-
-    def parse_file_system_type(self, fst):
-        # fs_supers
-        fs_supers = read_int_from_memory(fst + self.kfs.offset_fs_supers)
-
-        if fs_supers == 0:
-            # fast return
-            name = self.kfs.get_fst_name(fst)
-            self.out.append("{:#018x} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}".format(
-                fst, name, "-", "-", "-", "-", "-", "-", "-",
-            ))
-            return
-
-        s_instances = fs_supers
-        seen = set()
-
-        # parse more
-        while s_instances:
-            if s_instances in seen:
-                self.quiet_warn("Stopped at cyclic s_instances: {:#x}".format(s_instances))
-                break
-            if len(seen) >= 0x10000:
-                self.quiet_warn("Stopped at s_instances traversal limit: {:#x}".format(s_instances))
-                break
-            if not is_valid_addr(s_instances):
-                self.quiet_warn("Stopped at unreadable s_instances: {:#x}".format(s_instances))
-                break
-            seen.add(s_instances)
-            super_block = s_instances - self.kfs.offset_s_instances
-            # parse super_block
-            self.parse_super_block(fst, super_block)
-            # go to next
-            next_s_instances = read_int_from_memory(s_instances, safe=True)
-            if next_s_instances is None:
-                self.quiet_warn("Stopped at unreadable s_instances: {:#x}".format(s_instances))
-                break
-            s_instances = next_s_instances
-        return
-
     def parse_file_systems(self):
         if not self.args.quiet:
             fmt = "{:18s} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}"
@@ -104341,24 +104212,22 @@ class KernelFileSystemsCommand(GenericCommand, BufferingOutput):
             ]
             self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        fst = read_int_from_memory(self.kfs.file_systems)
-        if fst:
-            fst -= self.kfs.offset_hlist_node
-        seen = set()
-        while fst != 0:
-            if fst in seen:
-                self.quiet_warn("Stopped at cyclic file_system_type: {:#x}".format(fst))
-                break
-            if not is_valid_addr(fst):
-                self.quiet_warn("Stopped at unreadable file_system_type: {:#x}".format(fst))
-                break
-            seen.add(fst)
-            # parse file_system_type
-            self.parse_file_system_type(fst)
-            # go to next
-            fst = read_int_from_memory(fst + self.kfs.offset_link)
-            if fst:
-                fst -= self.kfs.offset_hlist_node
+        for kind, value in self.kfs.parse_file_systems(self.args.skip_mount_path):
+            if kind == "warn":
+                self.quiet_warn(value)
+                continue
+            if value.super_block is None:
+                self.out.append("{:#018x} {:12s} {:18s} {:20s} {:6s} {:6s} {:18s} {:18s} {:s}".format(
+                    value.fst, value.name, "-", "-", "-", "-", "-", "-", "-",
+                ))
+                continue
+            parsed_mount = value.parsed_mount
+            if isinstance(parsed_mount, int):
+                parsed_mount = "{:#018x}".format(parsed_mount)
+            self.out.append("{:#018x} {:12s} {:#018x} {:20s} {:<6d} {:<6d} {:#018x} {:18s} {:s}".format(
+                value.fst, value.name, value.super_block, value.devname, value.major, value.minor,
+                value.mount, parsed_mount, value.mount_point,
+            ))
         return
 
     @Decorator.parse_args
