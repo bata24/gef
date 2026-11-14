@@ -2997,6 +2997,39 @@ class Elf:
             symbols.add(dynstr[name_offset:end])
         return symbols
 
+    def get_symbol_values(self, names):
+        """Return {name: st_value} of the defined .symtab symbols named in `names` (the first one of each name)."""
+        symtab = self.read_shdr(".symtab")
+        strtab = self.read_shdr(".strtab")
+        if not symtab or not strtab:
+            return {}
+
+        # A name may be the tail of a longer string, so do not require a preceding NUL
+        name_offsets = {}
+        for name in names:
+            needle = String.str2bytes(name) + b"\0"
+            pos = strtab.find(needle)
+            while pos != -1:
+                name_offsets[pos] = name
+                pos = strtab.find(needle, pos + 1)
+
+        if self.e_endianness == Elf.LITTLE_ENDIAN:
+            endian = "<"
+        else:
+            endian = ">"
+        if self.e_class == Elf.ELF_64_BITS:
+            # Elf64_Sym: st_name, st_info, st_other, st_shndx, st_value, st_size
+            fmt, index_shndx, index_value = "IBBHQQ", 3, 4
+        else:
+            # Elf32_Sym: st_name, st_value, st_size, st_info, st_other, st_shndx
+            fmt, index_shndx, index_value = "IIIBBH", 5, 1
+        ret = {}
+        for sym in struct.iter_unpack(endian + fmt, symtab):
+            name = name_offsets.get(sym[0])
+            if name and sym[index_shndx] and name not in ret: # skip SHN_UNDEF
+                ret[name] = sym[index_value]
+        return ret
+
     def get_wx_load_ranges(self):
         """Return direct RWX PT_LOAD ranges and page-rounded W/X overlaps."""
         load_segments = [
@@ -20400,9 +20433,7 @@ class EnvpCommand(GenericCommand, BufferingOutput):
                 paddr = int(symbol.value().address)
                 if os.path.basename(gdb.solib_name(paddr) or "") != name:
                     # Older GDB versions can resolve the hidden libc symbol to the loader's copy.
-                    symbols = KernelLoadCommand.get_elf_symbols(
-                        Elf(symbol.symtab.objfile.filename), ("__environ_array_list", "setenv"),
-                    )
+                    symbols = Elf(symbol.symtab.objfile.filename).get_symbol_values(("__environ_array_list", "setenv"))
                     setenv = self.get_address_from_symbol("&setenv")
                     if setenv and os.path.basename(gdb.solib_name(setenv) or "") == name and len(symbols) == 2:
                         paddr = setenv + symbols["__environ_array_list"] - symbols["setenv"]
@@ -99653,39 +99684,6 @@ class KernelLoadCommand(GenericCommand):
         return
 
     @staticmethod
-    def get_elf_symbols(elf, names):
-        symtab = elf.read_shdr(".symtab")
-        strtab = elf.read_shdr(".strtab")
-        if not symtab or not strtab:
-            return {}
-
-        # A name may be the tail of a longer string, so do not require a preceding NUL
-        name_offsets = {}
-        for name in names:
-            needle = String.str2bytes(name) + b"\0"
-            pos = strtab.find(needle)
-            while pos != -1:
-                name_offsets[pos] = name
-                pos = strtab.find(needle, pos + 1)
-
-        if elf.e_endianness == Elf.LITTLE_ENDIAN:
-            endian = "<"
-        else:
-            endian = ">"
-        if elf.e_class == Elf.ELF_64_BITS:
-            # Elf64_Sym: st_name, st_info, st_other, st_shndx, st_value, st_size
-            fmt, index_shndx, index_value = "IBBHQQ", 3, 4
-        else:
-            # Elf32_Sym: st_name, st_value, st_size, st_info, st_other, st_shndx
-            fmt, index_shndx, index_value = "IIIBBH", 5, 1
-        ret = {}
-        for sym in struct.iter_unpack(endian + fmt, symtab):
-            name = name_offsets.get(sym[0])
-            if name and sym[index_shndx] and name not in ret: # skip SHN_UNDEF
-                ret[name] = sym[index_value]
-        return ret
-
-    @staticmethod
     def is_valid_slide(slide):
         return slide & get_pagesize_mask_low() == 0
 
@@ -99711,7 +99709,7 @@ class KernelLoadCommand(GenericCommand):
         stext = Ksym.get_addr("_stext")
         if stext is None:
             return None
-        elf_stext = self.get_elf_symbols(elf, ["_stext"]).get("_stext")
+        elf_stext = elf.get_symbol_values(["_stext"]).get("_stext")
         if elf_stext is None:
             return None
         slide = stext - elf_stext
@@ -99868,7 +99866,7 @@ class KernelLoadCommand(GenericCommand):
             names = ["handle_exception"]
         else:
             return None
-        elf_symbols = self.get_elf_symbols(elf, names)
+        elf_symbols = elf.get_symbol_values(names)
         for name in names:
             if name not in elf_symbols:
                 continue
