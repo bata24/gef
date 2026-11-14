@@ -75371,50 +75371,11 @@ class KernelAddressHeuristicFinder:
                 if vmemmap_base:
                     return read_int_from_memory(vmemmap_base)
 
-            def get_min_page(r):
-                if r is None:
-                    return None
-                min_page = None
-                for x in r:
-                    x = int(x, 16)
-                    if not is_valid_addr(x):
-                        continue
-                    if min_page is None or x < min_page:
-                        min_page = x
-                return min_page
-
-            # plan 3 (from slub-dump / slub-tiny-dump)
-            allocator = Kernel.get_slab_type()
-            if allocator in ["SLUB", "SLUB_TINY"]:
-                command = {"SLUB": "slub-dump --node --skip-sheaf", "SLUB_TINY": "slub-tiny-dump"}[allocator]
-                for n in [8, 16, 32, 64, 128, 192, 256, 512]:
-                    # this is called from page2virt, and slub-dump calls page2virt again to warm it up.
-                    # `--skip-page2virt` is needed here, the same as in `Kernel.get_page_virt_pair()`,
-                    # otherwise page2virt recurses into itself dozens of times.
-                    ret = gdb.execute(
-                        "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
-                        to_string=True,
-                    )
-                    r = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
-                    min_page = get_min_page(r)
-                    if min_page is not None:
-                        return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
-
-            # plan 4 (from slab-dump)
-            if allocator == "SLAB":
-                ret = gdb.execute("slab-dump --simple --no-pager --quiet kmalloc-256", to_string=True)
-                r = re.findall(r"node\[\d+\]\.slabs_(?:partial|full): (0x\S+)", Color.remove_color(ret))
-                min_page = get_min_page(r)
-                if min_page is not None:
-                    return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
-
-            # plan 5 (from slob-dump)
-            if allocator == "SLOB":
-                ret = gdb.execute("slob-dump --simple --large --no-pager --quiet", to_string=True)
-                r = re.findall(r"page: (0x\S+)", Color.remove_color(ret))
-                min_page = get_min_page(r)
-                if min_page is not None:
-                    return min_page & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
+            # plan 3 (from the slab pages of kmalloc caches)
+            for pages in Kernel.get_kmalloc_pages():
+                valid = [page for page, _ in pages if is_valid_addr(page)]
+                if valid:
+                    return min(valid) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
         return None
 
     @staticmethod
@@ -80334,7 +80295,7 @@ class Kernel:
 
     @staticmethod
     def slab_page_size():
-        if not (is_x86_64() or is_x86_32() or is_arm64() or is_arm32()) and (is_riscv64() or is_riscv32()):
+        if is_riscv64() or is_riscv32():
             return 0x1000
         return KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
@@ -80474,85 +80435,13 @@ class Kernel:
     def get_page_virt_pair():
         if not is_alive():
             return None
-        allocator = Kernel.get_slab_type()
-
-        kversion = Kernel.version()
-        if is_kgdb() and allocator in ("SLAB", "SLUB_TINY") and kversion and kversion >= "3.13":
-            if allocator == "SLAB":
-                resolver = Kernel.slab()
-                if resolver.initialize():
-                    caches = resolver.walk_caches(["kmalloc-256"], [], simple=True)
-                    for cache in caches[1:]:
-                        for node in cache.get("nodes", []):
-                            for page in node.values():
-                                for entry in page:
-                                    if entry.get("s_mem_base"):
-                                        return entry["address"], entry["s_mem_base"]
-            else:
-                resolver = Kernel.slub_tiny()
-                if resolver.initialize():
-                    for size in (8, 16, 32, 64, 128, 192, 256, 512):
-                        caches = resolver.walk_caches(["kmalloc-{:d}".format(size)], simple=True, skip_page2virt=True)
-                        for cache in caches[1:]:
-                            for node in cache.get("nodes", []):
-                                for page in node:
-                                    if page.get("virt_addr"):
-                                        return page["address"], page["virt_addr"]
-            return False
-
-        if allocator in ["SLUB", "SLUB_TINY"]:
-            # get valid page and vaddr pair
-            command = {"SLUB": "slub-dump --node --skip-sheaf", "SLUB_TINY": "slub-tiny-dump"}[allocator]
-            for n in [8, 16, 32, 64, 128, 192, 256, 512]:
-                # this function calls slub-dump, but it called from slub-dump itself.
-                # * get_page_virt_pair
-                #   -> slub-dump    <-- first
-                #     -> page2virt
-                #       -> get_VMEMMAP_START
-                #         -> get_page_virt_pair
-                #           -> slub-dump    <-- recursively
-                # To avoid infinite recursion, must add the `--skip-page2virt` option
-                # when calling slub-dump from page2virt.
-                ret = gdb.execute(
-                    "{:s} --simple --no-pager --quiet --skip-page2virt kmalloc-{:d}".format(command, n),
-                    to_string=True,
-                )
-                r1 = re.findall(r"(?:active|partial|node) page: (0x\S\S+)", Color.remove_color(ret))
-                r2 = re.findall(r"virtual address: (0x\S+|\?\?\?)", Color.remove_color(ret))
-                valid_pairs = [(p, v) for p, v in zip(r1, r2) if v != "???"]
-                if valid_pairs:
-                    page = int(valid_pairs[0][0], 16)
-                    vaddr = int(valid_pairs[0][1], 16)
-                    break
-            else:
-                return False
-
-        elif allocator == "SLAB":
-            if Kernel.version() < "3.13":
-                return Kernel.slab().get_legacy_page_virt_pair()
-            # get valid page and vaddr pair
-            ret = gdb.execute("slab-dump --simple --cpu 0 --no-pager --quiet kmalloc-256", to_string=True)
-            r1 = re.search(r"node\[\d+\]\.slabs_(?:partial|full): (0x\S+)", Color.remove_color(ret))
-            r2 = re.search(r"virtual address \(s_mem & ~0x[0-9a-f]+\): (0x\S+)", Color.remove_color(ret))
-            if not r1 or not r2:
-                return False
-            page = int(r1.group(1), 16)
-            vaddr = int(r2.group(1), 16)
-
-        elif allocator == "SLOB":
-            # get valid page and vaddr pair
-            ret = gdb.execute("slob-dump --simple --large --no-pager --quiet", to_string=True)
-            r1 = re.search(r"page: (0x\S+)", Color.remove_color(ret))
-            r2 = re.search(r"virtual address: (0x\S+)", Color.remove_color(ret))
-            if not r1 or not r2:
-                return False
-            page = int(r1.group(1), 16)
-            vaddr = int(r2.group(1), 16)
-
-        else:
-            return False
-
-        return page, vaddr
+        if Kernel.get_slab_type() == "SLAB" and Kernel.version() < "3.13":
+            return Kernel.slab().get_legacy_page_virt_pair()
+        for pages in Kernel.get_kmalloc_pages():
+            for page, virt in pages:
+                if page and virt is not None:
+                    return page, virt
+        return False
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
@@ -80571,6 +80460,53 @@ class Kernel:
         if keep_color:
             return ret
         return ret_plain
+
+    @staticmethod
+    def get_kmalloc_pages():
+        """Return [[(page, virt), ...], ...] of the slab pages of kmalloc caches: kmalloc-8 to kmalloc-512 of SLUB
+        and SLUB_TINY, kmalloc-256 of SLAB and the large free list of SLOB."""
+        # This is called from page2virt itself.
+        # * get_page_virt_pair
+        #   -> walk_caches    <-- first
+        #     -> page2virt
+        #       -> get_VMEMMAP_START
+        #         -> get_page_virt_pair
+        #           -> walk_caches    <-- recursively
+        # To avoid infinite recursion, `skip_page2virt` must be set when walking the caches from page2virt,
+        # otherwise page2virt recurses into itself dozens of times.
+        allocator = Kernel.get_slab_type()
+        names = ["kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 128, 192, 256, 512]]
+        groups = []
+        if allocator == "SLUB":
+            resolver = Kernel.slub()
+            if not resolver.initialize():
+                return groups
+            for name in names:
+                caches = resolver.walk_caches([name], list(range(resolver.ncpus)), simple=True, skip_page2virt=True,
+                                              cpu_sheaves=False)
+                pages = [page for cache in caches[1:] for page, _ in KernelSlub.get_cache_pages(cache)]
+                groups.append([(page["address"], page.get("virt_addr")) for page in pages])
+        elif allocator == "SLUB_TINY":
+            resolver = Kernel.slub_tiny()
+            if not resolver.initialize():
+                return groups
+            for name in names:
+                caches = resolver.walk_caches([name], simple=True, skip_page2virt=True)
+                pages = [page for cache in caches[1:] for page in KernelSlubTiny.get_cache_pages(cache)]
+                groups.append([(page["address"], page.get("virt_addr")) for page in pages])
+        elif allocator == "SLAB":
+            resolver = Kernel.slab()
+            if not resolver.initialize():
+                return groups
+            for cache in resolver.walk_caches(["kmalloc-256"], [], simple=True)[1:]:
+                groups.append([(page["address"], page.get("s_mem_base")) for page in KernelSlab.get_cache_pages(cache)])
+        elif allocator == "SLOB":
+            resolver = Kernel.slob()
+            if not resolver.initialize():
+                return groups
+            _, freelist = resolver.walk_caches([], simple=True, medium=False, small=False)
+            groups.append([(page["address"], page["virt_addr"]) for page in freelist["large"]])
+        return groups
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
@@ -157011,7 +156947,29 @@ class ConstGrepCommand(GenericCommand):
         return
 
 
-class KernelSlub:
+class KernelSlabAllocator:
+    """The common part of the slab allocator resolvers (KernelSlub, KernelSlubTiny, KernelSlab and KernelSlob).
+    The subclass resolves `slab_caches`, `kmem_cache_offset_list` and `kmem_cache_offset_name`."""
+
+    @Cache.cache_until_next
+    def parse_kmem_caches_for_initialize(self):
+        # `slab_caches` is a static list head, so it should not be broken.
+        return KernelListHead(self.slab_caches).parse() or []
+
+    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
+        if point_to_base:
+            addr += self.kmem_cache_offset_list
+        if reverse_walk:
+            return read_int_from_memory(addr) - self.kmem_cache_offset_list
+        else:
+            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
+
+    def get_name(self, addr):
+        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
+        return read_cstring_from_memory(name_addr)
+
+
+class KernelSlub(KernelSlabAllocator):
     """Resolve SLUB layouts and read slab caches and free lists."""
 
     """
@@ -157536,17 +157494,17 @@ class KernelSlub:
             return None
         return self.walk_caches(list(target_names), list(range(self.ncpus)))[1:]
 
+    def walk_cache_list(self, target_names=(), reverse_walk=False):
+        """Return the kmem_caches in slab_caches as `slub-dump --list` lists them (only the members of each kmem_cache
+        itself are parsed). As walk_caches() returns, [0] is slab_caches itself."""
+        return self.walk_caches(list(target_names), None, names_only=True, reverse_walk=reverse_walk)
+
     @staticmethod
     @Cache.cache_this_session(per_inferior=True)
     def warmup_page2virt():
         if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
-            gdb.execute("page2virt 0", to_string=True)
+            Kernel.page2virt(0)
         return
-
-    @Cache.cache_until_next
-    def parse_kmem_caches_for_initialize(self):
-        # `slab_caches` is a static list head, so it should not be broken.
-        return KernelListHead(self.slab_caches).parse() or []
 
     def resolve_kmem_cache_offset_list(self):
         """
@@ -157712,9 +157670,6 @@ class KernelSlub:
                 # random may happen to be a valid address, so some are acceptable
                 if is_valid_addr(val):
                     count += 1
-                    if count >= 3:
-                        found = False
-                        break
                 else:
                     if val > 0xff_ffff:
                         count -= 1
@@ -157727,8 +157682,11 @@ class KernelSlub:
                     seen.add(val)
 
             if found:
+                # Judge the whole sample; the first keys may all happen to be mapped addresses.
+                if count >= 3:
+                    found = False
                 # Too few random numbers
-                if len(seen) < 10:
+                elif len(seen) < 10:
                     found = False
 
                 # Occurrences of non-negative small integers are stochastically rare
@@ -158595,18 +158553,6 @@ class KernelSlub:
             flags.append(hex(unparsed_flags))
         return "|".join(flags) or "none"
 
-    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
-        if point_to_base:
-            addr += self.kmem_cache_offset_list
-        if reverse_walk:
-            return read_int_from_memory(addr) - self.kmem_cache_offset_list
-        else:
-            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
-
-    def get_name(self, addr):
-        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
-        return read_cstring_from_memory(name_addr)
-
     def get_random(self, addr):
         if self.kmem_cache_offset_random is None:
             return 0
@@ -158621,11 +158567,11 @@ class KernelSlub:
     def page2virt(self, page, kmem_cache, freelist_fastpath=(), *, skip_page2virt=False):
         pagesize = Kernel.slab_page_size()
         if self.slab_virtual_enabled:
-            ret = gdb.execute("slab-virtual --quiet to_virt {:#x}".format(page["address"]), to_string=True)
-            r = re.search(r"Virt: (\S+)", ret)
-            if r:
-                return int(r.group(1), 16)
-            return None
+            kslabv = Kernel.slab_virtual()
+            if not kslabv.initialize():
+                return None
+            virt, _ = kslabv.slab_to_virt(page["address"])
+            return virt
 
         if not skip_page2virt:
             r = Kernel.page2virt(page["address"])
@@ -159208,9 +159154,86 @@ class KernelSlub:
                 self.walk_caches_node_page(kmem_cache, simple=simple, skip_page2virt=skip_page2virt, slub_debug_y=slub_debug_y)
         return parsed_caches
 
+    @staticmethod
+    def get_cache_pages(kmem_cache):
+        """Return [(page, freelist_fastpath), ...] of the slab pages of the parsed `kmem_cache`: the active and partial
+        pages of each cpu, then the node pages. freelist_fastpath is the freelist of kmem_cache_cpu for the active page,
+        otherwise []."""
+        pages = []
+        for kmem_cache_cpu in kmem_cache.get("kmem_cache_cpu", {}).values():
+            pages.append((kmem_cache_cpu["active_page"], kmem_cache_cpu["freelist"]))
+            pages += [(page, []) for page in kmem_cache_cpu.get("partial_pages", [])]
+        for node_pages in kmem_cache.get("nodes_partial", []) + kmem_cache.get("nodes_full", []):
+            pages += [(page, []) for page in node_pages]
+        return pages
+
+    @staticmethod
+    def get_page_layout(kmem_cache, page, freelist_fastpath, freelist_sheaf):
+        """Return [(index, chunk, state, next), ...] of the objects in `page`. The state is "fast" or "slow" with the
+        next chunk of the freelist, "sheaf", "never-used" or "in-use"."""
+        pagesize = Kernel.slab_page_size()
+        freelist = page["freelist"]
+        end_virt = page["virt_addr"] + page["num_pages"] * pagesize
+        start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
+        layout = []
+        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"])):
+            if chunk + kmem_cache["size"] > end_virt:
+                break
+            if chunk in freelist_fastpath[:-1]:
+                layout.append((idx, chunk, "fast", freelist_fastpath[freelist_fastpath.index(chunk) + 1]))
+            elif chunk in freelist[:-1]:
+                layout.append((idx, chunk, "slow", freelist[freelist.index(chunk) + 1]))
+            elif chunk in freelist_sheaf:
+                layout.append((idx, chunk, "sheaf", None))
+            elif page["objects"] <= idx:
+                layout.append((idx, chunk, "never-used", None))
+            else:
+                layout.append((idx, chunk, "in-use", None))
+        return layout
+
+
+class SlabDumpCommandMixin:
+    """The common part of the slab allocator dump commands (slub-dump, slub-tiny-dump, slab-dump and slob-dump)."""
+
+    def dump_names(self, parsed_caches, address_color=None):
+        """Append the cache list of --list/--list-no-sort to self.out. The kmem_cache address is colored by
+        `address_color` if specified."""
+        name_width = max((len(k["name"]) for k in parsed_caches[1:]), default=4)
+
+        if not self.args.quiet:
+            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
+            legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        if self.args.list_no_sort:
+            target_caches = parsed_caches[1:]
+        else:
+            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
+
+        for kmem_cache in target_caches:
+            objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
+            chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
+            chunk_name = kmem_cache["name"]
+            if address_color is None:
+                address = "{:#x}".format(kmem_cache["address"])
+            else:
+                address = Color.colorify_hex(kmem_cache["address"], address_color)
+            self.out.append("{:18s} {:18s} {:{:d}s} {:s}".format(objsz, chunksz, chunk_name, name_width, address))
+        return
+
+    # for slub-dump and slub-tiny-dump
+    @Cache.cache_this_session
+    def warmup_page2virt(self):
+        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
+            args = self.args # backup
+            KernelSlub.warmup_page2virt()
+            # self.args will be overwritten. this is workaround.
+            self.args = args # revert
+        return
+
 
 @register_command
-class SlubDumpCommand(GenericCommand, BufferingOutput):
+class SlubDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     """Dump SLUB free-list reachable from slab_caches."""
 
     _cmdline_ = "slub-dump"
@@ -159476,8 +159499,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
     ]
     _note2_ = "\n".join(_note2_)
 
-    def dump_page_print_layout(self, tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf):
-        pagesize = Kernel.slab_page_size()
+    def dump_page_print_layout(self, tag, kmem_cache, page, freelist_fastpath, freelist_sheaf):
         used_address_color = Config.get("theme.heap_chunk_address_used")
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
@@ -159485,41 +159507,22 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("        layout: Failed to get the first page")
             return
 
-        end_virt = page["virt_addr"] + page["num_pages"] * pagesize
-        start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
-
-        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"])):
-            if chunk + kmem_cache["size"] > end_virt:
-                break
-            if chunk in freelist_fastpath[:-1]:
-                next_chunk = freelist_fastpath[freelist_fastpath.index(chunk) + 1]
-                if isinstance(next_chunk, str):
-                    next_msg = "next: {:s}".format(next_chunk)
-                else:
-                    next_msg = "next: {:#x}".format(next_chunk)
-                chunk_s = Color.colorify_hex(chunk, freed_address_color)
-                is_freed = True
-            elif chunk in freelist[:-1]:
-                next_chunk = freelist[freelist.index(chunk) + 1]
-                if isinstance(next_chunk, str):
-                    next_msg = "next: {:s}".format(next_chunk)
-                else:
-                    next_msg = "next: {:#x}".format(next_chunk)
-                if tag == "active":
-                    next_msg += " (slow path)"
-                chunk_s = Color.colorify_hex(chunk, freed_address_color)
-                is_freed = True
-            elif chunk in freelist_sheaf:
+        for idx, chunk, state, next_chunk in KernelSlub.get_page_layout(kmem_cache, page, freelist_fastpath, freelist_sheaf):
+            is_freed = state not in ("in-use", "never-used")
+            if not is_freed:
+                next_msg = state
+            elif state == "sheaf":
                 next_msg = "in-use (sheaf)"
-                chunk_s = Color.colorify_hex(chunk, freed_address_color)
-                is_freed = True
+            elif isinstance(next_chunk, str):
+                next_msg = "next: {:s}".format(next_chunk)
             else:
-                if page["objects"] <= idx:
-                    next_msg = "never-used"
-                else:
-                    next_msg = "in-use"
+                next_msg = "next: {:#x}".format(next_chunk)
+            if state == "slow" and tag == "active":
+                next_msg += " (slow path)"
+            if is_freed:
+                chunk_s = Color.colorify_hex(chunk, freed_address_color)
+            else:
                 chunk_s = Color.colorify_hex(chunk, used_address_color)
-                is_freed = False
             if idx == 0:
                 layout_label = "layout:"
             else:
@@ -159651,7 +159654,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("        frozen: {:d}".format(page["frozen"]))
 
         # print layout
-        self.dump_page_print_layout(tag, kmem_cache, page, freelist, freelist_fastpath, freelist_sheaf)
+        self.dump_page_print_layout(tag, kmem_cache, page, freelist_fastpath, freelist_sheaf)
 
         # print freelist
         self.dump_page_print_freelist(tag, kmem_cache, page, freelist, freelist_fastpath)
@@ -159885,28 +159888,6 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("    next: {:s}".format(next_addr_s))
         return
 
-    def dump_names(self, parsed_caches):
-        slab_address_color = Config.get("theme.heap_slab_address")
-        name_width = max((len(k["name"]) for k in parsed_caches[1:]), default=4)
-
-        if not self.args.quiet:
-            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
-            legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        if self.args.list_no_sort:
-            target_caches = parsed_caches[1:]
-        else:
-            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
-
-        for kmem_cache in target_caches:
-            objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
-            chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
-            chunk_name = kmem_cache["name"]
-            address = Color.colorify_hex(kmem_cache["address"], slab_address_color)
-            self.out.append("{:18s} {:18s} {:{:d}s} {:s}".format(objsz, chunksz, chunk_name, name_width, address))
-        return
-
     def slubwalk(self, target_names, cpu):
         if self.args.no_byte_swap is None:
             byte_swap = None
@@ -159950,9 +159931,13 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
                 self.quiet_warn("CONFIG_SLAB_VIRTUAL is disabled. option `--tlbflush-queue` is ignored")
             return
 
+        if self.args.list or self.args.list_no_sort:
+            parsed_caches = self.kslub.walk_cache_list(target_names, reverse_walk=self.args.reverse_walk)
+            self.dump_names(parsed_caches, Config.get("theme.heap_slab_address"))
+            return
+
         parsed_caches = self.kslub.walk_caches(
             target_names, target_cpus,
-            names_only=self.args.list or self.args.list_no_sort,
             reverse_walk=self.args.reverse_walk,
             simple=self.args.simple,
             quiet=self.args.quiet,
@@ -159963,20 +159948,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
             node=self.dump_target_node,
             cpu_sheaves=self.dump_target_cpu_sheaves,
         )
-        if self.args.list or self.args.list_no_sort:
-            self.dump_names(parsed_caches)
-            return
-
         self.dump_caches(target_names, target_cpus, parsed_caches)
-        return
-
-    @Cache.cache_this_session
-    def warmup_page2virt(self):
-        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
-            args = self.args # backup
-            KernelSlub.warmup_page2virt()
-            # self.args will be overwritten. this is workaround.
-            self.args = args # revert
         return
 
     def setup(self, args):
@@ -160071,7 +160043,7 @@ class SlubDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
-class KernelSlubTiny:
+class KernelSlubTiny(KernelSlabAllocator):
     """Resolve SLUB-TINY layouts and read slab caches and free lists."""
 
     """
@@ -160254,11 +160226,6 @@ class KernelSlubTiny:
             return None
         return self.walk_caches(list(target_names))[1:]
 
-    @Cache.cache_until_next
-    def parse_kmem_caches_for_initialize(self):
-        # `slab_caches` is a static list head, so it should not be broken.
-        return KernelListHead(self.slab_caches).parse() or []
-
     def resolve_kmem_cache_offset_list(self):
         # fast path
         self.kmem_cache_offset_list = GefUtil.offsetof("kmem_cache", "list")
@@ -160381,25 +160348,12 @@ class KernelSlubTiny:
                 return
         return
 
-    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
-        if point_to_base:
-            addr += self.kmem_cache_offset_list
-        if reverse_walk:
-            return read_int_from_memory(addr) - self.kmem_cache_offset_list
-        else:
-            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
-
-    def get_name(self, addr):
-        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
-        return read_cstring_from_memory(name_addr)
-
     def page2virt(self, page, kmem_cache, *, skip_page2virt=False):
         pagesize = Kernel.slab_page_size()
         if not skip_page2virt:
-            ret = gdb.execute("page2virt {:#x}".format(page["address"]), to_string=True)
-            r = re.search(r"Virt: (\S+)", ret)
-            if r:
-                return int(r.group(1), 16)
+            r = Kernel.page2virt(page["address"])
+            if r is not None:
+                return r
 
         # set up for heuristic search from freelist
         freelist = page["freelist"]
@@ -160583,9 +160537,34 @@ class KernelSlubTiny:
 
         return parsed_caches
 
+    @staticmethod
+    def get_cache_pages(kmem_cache):
+        """Return [page, ...] of the node pages of the parsed `kmem_cache`."""
+        return [page for node_pages in kmem_cache.get("nodes", []) for page in node_pages]
+
+    @staticmethod
+    def get_page_layout(kmem_cache, page):
+        """Return [(index, chunk, state, next), ...] of the objects in `page`. The state is "freed" with the next
+        chunk of the freelist, "never-used" or "in-use". The left red zone is the first "never-used" entry."""
+        pagesize = Kernel.slab_page_size()
+        freelist = page["freelist"]
+        end_virt = page["virt_addr"] + page["num_pages"] * pagesize
+        start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
+        layout = []
+        if kmem_cache["red_left_pad"]:
+            layout.append((0, page["virt_addr"], "never-used", None))
+        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"]), start=len(layout)):
+            if chunk in freelist[:-1]:
+                layout.append((idx, chunk, "freed", freelist[freelist.index(chunk) + 1]))
+            elif page["objects"] <= idx:
+                layout.append((idx, chunk, "never-used", None))
+            else:
+                layout.append((idx, chunk, "in-use", None))
+        return layout
+
 
 @register_command
-class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
+class SlubTinyDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     """Dump SLUB-TINY free-list reachable from slab_caches."""
 
     _cmdline_ = "slub-tiny-dump"
@@ -160655,8 +160634,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         "* SLUB-TINY was introduced in kernel 6.2.",
     ])
 
-    def dump_page_print_layout(self, kmem_cache, page, freelist):
-        pagesize = Kernel.slab_page_size()
+    def dump_page_print_layout(self, kmem_cache, page):
         used_address_color = Config.get("theme.heap_chunk_address_used")
         freed_address_color = Config.get("theme.heap_chunk_address_freed")
 
@@ -160664,30 +160642,16 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("        layout: Failed to get the first page")
             return
 
-        end_virt = page["virt_addr"] + page["num_pages"] * pagesize
-        start_addr = page["virt_addr"] + kmem_cache["red_left_pad"]
-
-        if kmem_cache["red_left_pad"]:
-            chunk_s = Color.colorify_hex(page["virt_addr"], used_address_color)
-            self.out.append("        {:7s}   {:#05x} {:s} ({:s})".format("layout:", 0, chunk_s, "never-used"))
-            start_idx = 1
-        else:
-            start_idx = 0
-
-        for idx, chunk in enumerate(range(start_addr, end_virt, kmem_cache["size"]), start=start_idx):
-            if chunk in freelist[:-1]:
-                next_chunk = freelist[freelist.index(chunk) + 1]
-                if isinstance(next_chunk, str):
-                    next_msg = "next: {:s}".format(next_chunk)
-                else:
-                    next_msg = "next: {:#x}".format(next_chunk)
+        for idx, chunk, state, next_chunk in KernelSlubTiny.get_page_layout(kmem_cache, page):
+            if state != "freed":
+                next_msg = state
+                chunk_s = Color.colorify_hex(chunk, used_address_color)
+            elif isinstance(next_chunk, str):
+                next_msg = "next: {:s}".format(next_chunk)
                 chunk_s = Color.colorify_hex(chunk, freed_address_color)
             else:
-                if page["objects"] <= idx:
-                    next_msg = "never-used"
-                else:
-                    next_msg = "in-use"
-                chunk_s = Color.colorify_hex(chunk, used_address_color)
+                next_msg = "next: {:#x}".format(next_chunk)
+                chunk_s = Color.colorify_hex(chunk, freed_address_color)
             if idx == 0:
                 layout_msg = "layout:"
             else:
@@ -160794,7 +160758,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("        frozen: {:d}".format(page["frozen"]))
 
         # print layout
-        self.dump_page_print_layout(kmem_cache, page, freelist)
+        self.dump_page_print_layout(kmem_cache, page)
 
         # print freelist
         self.dump_page_print_freelist(kmem_cache, page, freelist)
@@ -160841,27 +160805,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
 
-    def dump_names(self, parsed_caches):
-        name_width = max((len(k["name"]) for k in parsed_caches[1:]), default=4)
-
-        if not self.args.quiet:
-            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
-            legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        if self.args.list_no_sort:
-            target_caches = parsed_caches[1:]
-        else:
-            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
-
-        for kmem_cache in target_caches:
-            objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
-            chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
-            chunk_name = kmem_cache["name"]
-            address = kmem_cache["address"]
-            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
-        return
-
     def slub_tiny_walk(self, target_names):
         self.kslub_tiny = Kernel.slub_tiny()
         if self.args.rescan:
@@ -160891,15 +160834,6 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
             return
 
         self.dump_caches(target_names, parsed_caches)
-        return
-
-    @Cache.cache_this_session
-    def warmup_page2virt(self):
-        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
-            args = self.args # backup
-            KernelSlub.warmup_page2virt()
-            # self.args will be overwritten. this is workaround.
-            self.args = args # revert
         return
 
     def get_kmem_caches(self, target_names):
@@ -160947,7 +160881,7 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
-class KernelSlab:
+class KernelSlab(KernelSlabAllocator):
     """Resolve SLAB layouts and read slab caches and free lists."""
 
     """
@@ -161411,11 +161345,6 @@ class KernelSlab:
             return None
         return self.walk_caches(list(target_names), list(range(self.ncpus)))[1:]
 
-    @Cache.cache_until_next
-    def parse_kmem_caches_for_initialize(self):
-        # `slab_caches` is a static list head, so it should not be broken.
-        return KernelListHead(self.slab_caches).parse() or []
-
     def iter_slab_pages_for_initialize(self):
         for entry in self.parse_kmem_caches_for_initialize():
             cache = entry - self.kmem_cache_offset_list
@@ -161533,18 +161462,6 @@ class KernelSlab:
                 self.kmem_cache_node_offset_slabs_partial = candidate_offset
                 return
         return
-
-    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
-        if point_to_base:
-            addr += self.kmem_cache_offset_list
-        if reverse_walk:
-            return read_int_from_memory(addr) - self.kmem_cache_offset_list
-        else:
-            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
-
-    def get_name(self, addr):
-        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
-        return read_cstring_from_memory(name_addr)
 
     def get_array_cache_cpu(self, addr, cpu):
         kversion = Kernel.version()
@@ -161724,9 +161641,40 @@ class KernelSlab:
 
         return parsed_caches
 
+    @staticmethod
+    def get_cache_pages(kmem_cache):
+        """Return [page, ...] of slabs_partial, slabs_full and slabs_free of each node of the parsed `kmem_cache`."""
+        return [page for slabs in kmem_cache.get("nodes", []) for pages in slabs.values() for page in pages]
+
+    @staticmethod
+    def get_page_layout(kmem_cache, page):
+        """Return [(index, chunk, state, next), ...] of the objects in `page`. The state is "freed" with the next
+        index of the freelist (None at the end), "array_cache", "never-used" or "in-use".
+        The colour offset is the first "never-used" entry, whose index is None."""
+        pagesize = Kernel.slab_page_size()
+        freelist = page["freelist"]
+        end_virt = page["s_mem_base"] + kmem_cache["pagesperslab"] * pagesize
+        layout = []
+        if page["s_mem"] != page["s_mem_base"]:
+            layout.append((None, page["s_mem_base"], "never-used", None))
+        for idx, chunk in enumerate(range(page["s_mem"], end_virt, kmem_cache["size"])):
+            if idx in freelist:
+                next_idx = freelist.index(idx) + 1
+                if next_idx == len(freelist):
+                    layout.append((idx, chunk, "freed", None))
+                else:
+                    layout.append((idx, chunk, "freed", freelist[next_idx]))
+            elif "array_cache" in kmem_cache and chunk in kmem_cache["array_cache"]["freelist_all"]:
+                layout.append((idx, chunk, "array_cache", None))
+            elif kmem_cache["objperslab"] <= idx:
+                layout.append((idx, chunk, "never-used", None))
+            else:
+                layout.append((idx, chunk, "in-use", None))
+        return layout
+
 
 @register_command
-class SlabDumpCommand(GenericCommand, BufferingOutput):
+class SlabDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     """Dump SLAB free-list reachable from slab_caches."""
 
     _cmdline_ = "slab-dump"
@@ -161806,7 +161754,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
     ])
 
     def dump_page(self, page, kmem_cache, tag):
-        pagesize = Kernel.slab_page_size()
         heap_page_color = Config.get("theme.heap_page_address")
         label_inactive_color = Config.get("theme.heap_label_inactive")
         used_address_color = Config.get("theme.heap_chunk_address_used")
@@ -161835,30 +161782,23 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             return
 
         # print layout
-        freelist = page["freelist"]
-        end_virt = page["s_mem_base"] + kmem_cache["pagesperslab"] * pagesize
-
-        if colour_off:
-            chunk_s = Color.colorify_hex(page["s_mem_base"], used_address_color)
-            self.out.append("        {:7s}   ---- {:s} ({:s})".format("layout:", chunk_s, "never-used"))
-
-        for idx, chunk in enumerate(range(page["s_mem"], end_virt, kmem_cache["size"])):
-            if idx in freelist:
-                idxidx = freelist.index(idx)
-                if idxidx == len(freelist) - 1:
-                    next_msg = "next: None"
-                else:
-                    next_idx = freelist[idxidx + 1]
-                    next_msg = "next: {:#x}".format(next_idx)
+        for idx, chunk, state, next_idx in KernelSlab.get_page_layout(kmem_cache, page):
+            if idx is None:
+                # colour offset
+                chunk_s = Color.colorify_hex(chunk, used_address_color)
+                self.out.append("        {:7s}   ---- {:s} ({:s})".format("layout:", chunk_s, "never-used"))
+                continue
+            if state == "freed" and next_idx is None:
+                next_msg = "next: None"
                 chunk_s = Color.colorify_hex(chunk, freed_address_color)
-            elif "array_cache" in kmem_cache and chunk in kmem_cache["array_cache"]["freelist_all"]:
+            elif state == "freed":
+                next_msg = "next: {:#x}".format(next_idx)
+                chunk_s = Color.colorify_hex(chunk, freed_address_color)
+            elif state == "array_cache":
                 next_msg = "in-use (array_cache)"
                 chunk_s = Color.colorify_hex(chunk, freed_address_color)
             else:
-                if kmem_cache["objperslab"] <= idx:
-                    next_msg = "never-used"
-                else:
-                    next_msg = "in-use"
+                next_msg = state
                 chunk_s = Color.colorify_hex(chunk, used_address_color)
             if idx == 0:
                 layout_label = "layout:"
@@ -161890,10 +161830,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
                     self.out.append(line)
 
         # print freelist
-        if freelist == []:
+        if page["freelist"] == []:
             self.out.append("        freelist: (none)")
         else:
-            for i, idx in enumerate(freelist):
+            for i, idx in enumerate(page["freelist"]):
                 chunk = page["s_mem"] + kmem_cache["size"] * idx
                 msg = Color.colorify_hex(chunk, freed_address_color)
                 if i == 0:
@@ -162000,27 +161940,6 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("    next: {:#x}".format(kmem_cache["next"]))
         return
 
-    def dump_names(self, parsed_caches):
-        name_width = max((len(k["name"]) for k in parsed_caches[1:]), default=4)
-
-        if not self.args.quiet:
-            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
-            legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        if self.args.list_no_sort:
-            target_caches = parsed_caches[1:]
-        else:
-            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
-
-        for kmem_cache in target_caches:
-            objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
-            chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
-            chunk_name = kmem_cache["name"]
-            address = kmem_cache["address"]
-            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
-        return
-
     def slabwalk(self, target_names, cpu):
         self.kslab = Kernel.slab()
         if self.args.rescan:
@@ -162098,7 +162017,7 @@ class SlabDumpCommand(GenericCommand, BufferingOutput):
         return
 
 
-class KernelSlob:
+class KernelSlob(KernelSlabAllocator):
     """Resolve SLOB layouts and read slab caches and free lists."""
 
     """
@@ -162322,18 +162241,6 @@ class KernelSlob:
         parsed_caches, _ = self.walk_caches(list(target_names), names_only=True)
         return parsed_caches[1:]
 
-    def get_next_kmem_cache(self, addr, point_to_base=True, *, reverse_walk=False):
-        if point_to_base:
-            addr += self.kmem_cache_offset_list
-        if reverse_walk:
-            return read_int_from_memory(addr) - self.kmem_cache_offset_list
-        else:
-            return read_int_from_memory(addr + current_arch.ptrsize) - self.kmem_cache_offset_list
-
-    def get_name(self, addr):
-        name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
-        return read_cstring_from_memory(name_addr)
-
     def walk_freelist(self, head, page, *, simple=False):
         if simple:
             return []
@@ -162442,7 +162349,7 @@ class KernelSlob:
 
 
 @register_command
-class SlobDumpCommand(GenericCommand, BufferingOutput):
+class SlobDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     """Dump SLOB free-list reachable from slab_caches."""
 
     _cmdline_ = "slob-dump"
@@ -162564,27 +162471,6 @@ class SlobDumpCommand(GenericCommand, BufferingOutput):
             self.dump_freelist("free_slob_medium", parsed_freelist["medium"])
         if self.args.small:
             self.dump_freelist("free_slob_small", parsed_freelist["small"])
-        return
-
-    def dump_names(self, parsed_caches):
-        name_width = max((len(k["name"]) for k in parsed_caches[1:]), default=4)
-
-        if not self.args.quiet:
-            fmt = "{:<18s} {:<18s} {:" + str(name_width) + "s} {:20s}"
-            legend = ["Object Size", "Chunk Size", "Name", "kmem_cache"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        if self.args.list_no_sort:
-            target_caches = parsed_caches[1:]
-        else:
-            target_caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
-
-        for kmem_cache in target_caches:
-            objsz = "{0:d} ({0:#x})".format(kmem_cache["object_size"])
-            chunksz = "{0:d} ({0:#x})".format(kmem_cache["size"])
-            chunk_name = kmem_cache["name"]
-            address = kmem_cache["address"]
-            self.out.append("{:18s} {:18s} {:{:d}s} {:#x}".format(objsz, chunksz, chunk_name, name_width, address))
         return
 
     def slobwalk(self, target_names):
@@ -213579,11 +213465,7 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
         kmem_cache = kmem_caches[0]
         pages = []
         if allocator == "SLUB":
-            for kmem_cache_cpu in kmem_cache.get("kmem_cache_cpu", {}).values():
-                pages += [kmem_cache_cpu["active_page"]] + kmem_cache_cpu["partial_pages"]
-            for page_list in kmem_cache.get("nodes_partial", []) + kmem_cache.get("nodes_full", []):
-                pages += page_list
-            pages = [(p.get("virt_addr"), p.get("num_pages")) for p in pages]
+            pages = [(p.get("virt_addr"), p.get("num_pages")) for p, _ in KernelSlub.get_cache_pages(kmem_cache)]
             # v6.18~: a sheaf holds freed objects whose slab no list may reach
             for chunk in KernelSlub.get_sheaf_objects(kmem_cache):
                 if not isinstance(chunk, int) or not chunk:
@@ -213596,12 +213478,9 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
                 else:
                     pages.append((chunk & -pagesize, 1))
         elif allocator == "SLUB_TINY":
-            for page_list in kmem_cache["nodes"]:
-                pages += [(p.get("virt_addr"), p.get("num_pages")) for p in page_list]
+            pages = [(p.get("virt_addr"), p.get("num_pages")) for p in KernelSlubTiny.get_cache_pages(kmem_cache)]
         elif allocator == "SLAB":
-            for slabs_list in kmem_cache["nodes"]:
-                for page_list in slabs_list.values():
-                    pages += [(p.get("s_mem_base"), kmem_cache["pagesperslab"]) for p in page_list]
+            pages = [(p.get("s_mem_base"), kmem_cache["pagesperslab"]) for p in KernelSlab.get_cache_pages(kmem_cache)]
 
         seen = set()
         for vaddr, num_pages in pages:
