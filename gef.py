@@ -88502,6 +88502,18 @@ class KernelSkbuff:
         return {"address": data, "headlen": headlen, "size": size, "data": raw}
 
     @staticmethod
+    def get_data_dump(info):
+        """Return the hexdump lines of the first 64 bytes of the linear packet data (from data to head + tail)."""
+        data, headlen, size, raw = info["address"], info["headlen"], info["size"], info["data"]
+        if headlen == 0:
+            return ["data: (no linear data)"]
+        if raw is None:
+            return ["data: ??? (unreadable @ {:#018x})".format(data)]
+        lines = ["data (first {:#x} of {:#x} linear bytes @ {:#018x}):".format(size, headlen, data)]
+        lines += hexdump(raw, 0x10, show_symbol=False, base=data, unit=1).splitlines()
+        return lines
+
+    @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_dwarf_layout():
         """Return the member offsets of struct sk_buff from DWARF, or None."""
@@ -166458,7 +166470,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if layout is None:
             self.out.append("{:s}data: ??? (the sk_buff layout could not be resolved)".format(prefix))
             return
-        for line in KernelSkbCommand.get_data_dump(kskb.get_data(layout)):
+        for line in KernelSkbuff.get_data_dump(kskb.get_data(layout)):
             self.out.append(prefix + line)
         return
 
@@ -166692,18 +166704,6 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
             self.out.append("    frag_list: {:#018x}".format(frag_list))
         return
 
-    @staticmethod
-    def get_data_dump(info):
-        """Return the hexdump lines of the first 64 bytes of the linear packet data (from data to head + tail)."""
-        data, headlen, size, raw = info["address"], info["headlen"], info["size"], info["data"]
-        if headlen == 0:
-            return ["data: (no linear data)"]
-        if raw is None:
-            return ["data: ??? (unreadable @ {:#018x})".format(data)]
-        lines = ["data (first {:#x} of {:#x} linear bytes @ {:#018x}):".format(size, headlen, data)]
-        lines += hexdump(raw, 0x10, show_symbol=False, base=data, unit=1).splitlines()
-        return lines
-
     def dump_skb(self, skb, layout):
         info = self.kskb.get_skb(skb, layout)
         head = layout["head_value"]
@@ -166753,7 +166753,7 @@ class KernelSkbCommand(GenericCommand, BufferingOutput):
         self.dump_shared_info(head, end)
 
         if self.args.dump:
-            for line in self.get_data_dump(self.kskb.get_data(layout)):
+            for line in self.kskb.get_data_dump(self.kskb.get_data(layout)):
                 self.out.append("  " + line)
         return
 
