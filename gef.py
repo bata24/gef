@@ -80329,6 +80329,11 @@ class Kernel:
         return KernelClockSource.get_instance()
 
     @staticmethod
+    def timer():
+        """Return the timer wheel and hrtimer resolver."""
+        return KernelTimer.get_instance()
+
+    @staticmethod
     def slub(no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
         """Return the SLUB resolver."""
         return KernelSlub.get_instance(no_xor, byte_swap, offset_random, offset_node)
@@ -106566,99 +106571,35 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelTimerCommand(GenericCommand, BufferingOutput):
-    """Dump the timer."""
+class KernelTimer:
+    """Resolve the timer wheel (timer_list/tvec_base/timer_base) and the hrtimer bases, and walk the queued timers."""
 
-    _cmdline_ = "ktimer"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    group = parser.add_mutually_exclusive_group()
-    group.add_argument("--classic-only", action="store_true", help="dump only classic timers.")
-    group.add_argument("--hr-only", action="store_true", help="dump only high-resolution timers.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
-
-    _note_ = "\n".join([
-        "Simplified timer structure (per-cpu):",
-        "",
-        "+-timer_bases[0]-----+    +-timer_list--+    +-timer_list--+",
-        "| ...                |    | entry       |    | entry       |",
-        "| vectors[0]         |--->|   next      |--->|   next      |--->...",
-        "| ...                |    |   pprev     |    |   pprev     |",
-        "| vectors[512or576]  |    | expires     |    | expires     |",
-        "| ...                |    | function    |    | function    |",
-        "+-timer_bases[1]-----+    | ...         |    | ...         |",
-        "| ...                |    +-------------+    +-------------+",
-        "| vectors[0]         |",
-        "| ...                |",
-        "| vectors[512or576]  |",
-        "| ...                |",
-        "+-timer_bases[2]-----+ <-- v6.10~",
-        "| ...                |",
-        "+--------------------+",
-        "",
-        "Before v4.8, each cpu has one `tvec_base` (pointed by `tvec_bases` before v4.2) with 512 buckets",
-        "(tv1 to tv5). They are `struct list_head` before v4.2, and `struct hlist_head` after.",
-        "",
-        "Simplified hrtimer structure (per-cpu):",
-        "",
-        "+-hrtimer_cpu_bases--+",
-        "| ...                |",
-        "| clock_bases[0]     |   +--->+-hrtimer-------+",
-        "|   ...              |   |    | node          |",
-        "|   clockid          |   |    |   node        |",
-        "|   ...              |   |    |     color     |",
-        "|   active           |   |    |     right     |--->hrtimer",
-        "|      rb_root       |   |    |     left      |--->hrtimer",
-        "|        rb_root     |---+    |   prev(v7.1~) |--->hrtimer",
-        "|        ...         |        |   next(v7.1~) |--->hrtimer",
-        "|   get_time(~v6.17) |        |   expires     |",
-        "|   ...              |        | ...           |",
-        "| ...                |        | function      |",
-        "| clock_bases[8]     |        | ...           |",
-        "|   ...              |        +---------------+",
-        "+--------------------+",
-        "",
-        "- Classic timers are sorted by `time_to_expired`, the signed difference from `jiffies` in unsigned long.",
-        "- hrtimers are sorted by `expires`, since they are listed in the order of the rbtree.",
-        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
-        "  They are verified by `timer_base.cpu` and `hrtimer_clock_base.cpu_base` and `index`.",
-    ])
-
-    clockid_dict = {
-        0: "CLOCK_REALTIME",
-        1: "CLOCK_MONOTONIC",
-        2: "CLOCK_PROCESS_CPUTIME_ID",
-        3: "CLOCK_THREAD_CPUTIME_ID",
-        4: "CLOCK_MONOTONIC_RAW",
-        5: "CLOCK_REALTIME_COARSE",
-        6: "CLOCK_MONOTONIC_COARSE",
-        7: "CLOCK_BOOTTIME",
-        8: "CLOCK_REALTIME_ALARM",
-        9: "CLOCK_BOOTTIME_ALARM",
-        10: "CLOCK_SGI_CYCLE",
-        11: "CLOCK_TAI",
-    }
+    def __init__(self):
+        self.meta = []
+        self.incomplete = []
+        return
 
     def initialize(self, classic=True, high_resolution=True):
+        """Resolve the layouts of the timer wheel (`classic`) and the hrtimer bases (`high_resolution`).
+        Return True if either of them is resolved. `classic_timer_initialized` and `hrtimer_initialized` tell which."""
         self.meta = []
         self.incomplete = []
         self.klayout = Kernel.layout()
-        self.module_text_ranges = None
-        self.cpu_masks = None
+        self.text = KernelText(self.klayout)
 
         # resolve __per_cpu_offset
         self.percpu = Kernel.per_cpu()
         if self.percpu.per_cpu_offset is None:
-            self.meta.append((self.quiet_info, "__per_cpu_offset: Not found"))
+            self.meta.append(("info", "__per_cpu_offset: Not found"))
         else:
-            self.meta.append((self.quiet_info, "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
+            self.meta.append(("info", "__per_cpu_offset: {:#x}".format(self.percpu.per_cpu_offset)))
         self.classic = None
+        self.classic_bases = []
         self.hrtimer = None
         if classic:
             self.classic = self.get_classic_layout()
@@ -106675,12 +106616,12 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             Cache.clear_cache_for(self.resolve_classic_layout)
             layout = self.resolve_classic_layout()
         if layout is None:
-            self.meta.extend(Kernel.export_meta(self, self.classic_meta))
+            self.meta.extend(self.classic_meta)
             return None
         if not layout["verified"]:
             # resolve it again the next time
             Cache.clear_cache_for(self.resolve_classic_layout)
-        self.meta.extend(Kernel.export_meta(self, layout["meta"]))
+        self.meta.extend(layout["meta"])
         return layout
 
     def get_hrtimer_layout(self):
@@ -106690,15 +106631,15 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             Cache.clear_cache_for(self.resolve_hrtimer_members)
             layout = self.resolve_hrtimer_bases()
         if layout is None:
-            self.meta.extend(Kernel.export_meta(self, self.hrtimer_meta))
+            self.meta.extend(self.hrtimer_meta)
             return None
-        self.meta.extend(Kernel.export_meta(self, layout["meta"]))
+        self.meta.extend(layout["meta"])
 
         members = self.resolve_hrtimer_members()
         if members is None:
             # every rbtree is empty now, so the offsets are not verified and must not be cached
             members = self.guess_hrtimer_members()
-        self.meta.extend(Kernel.export_meta(self, members["meta"]))
+        self.meta.extend(members["meta"])
         return {**layout, **members}
 
     def resolve_timer_list(self, meta, kind):
@@ -106979,8 +106920,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         layout["meta"] = meta
         return layout
 
-    def iter_classic_bases(self, layout):
-        """Yield (cpu, the index of timer_base or None, the address of timer_base/tvec_base)."""
+    def iter_classic_bases(self, layout, record=True):
+        """Yield (cpu, the index of timer_base or None, the address of timer_base/tvec_base).
+        The cpus whose tvec_base is unreadable are skipped, and added to self.incomplete if `record` is True."""
         if layout["kind"] == "wheel":
             for cpu, addr in self.percpu.possible_addrs_of(layout["timer_bases"]):
                 for n in range(layout["nr_bases"]):
@@ -106992,7 +106934,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             if layout["pointer"]:
                 base = read_int_from_memory(slot, safe=True)
                 if not base or not is_valid_addr(base):
-                    self.incomplete.append("tvec_bases of cpu{:d} is unreadable".format(cpu))
+                    if record:
+                        self.incomplete.append("tvec_bases of cpu{:d} is unreadable".format(cpu))
                     continue
             yield cpu, None, base
         return
@@ -107007,7 +106950,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         return bool(first) and read_int_from_memory(first + ptrsize, safe=True) == head
 
     def verify_classic_layout(self, layout):
-        for cpu, _n, base in self.iter_classic_bases(layout):
+        # collect_classic_timers() records the unreadable tvec_bases
+        for cpu, _n, base in self.iter_classic_bases(layout, record=False):
             return self.verify_classic_base(layout, cpu, base)
         return False
 
@@ -107029,7 +106973,8 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         return nodes, None
 
     def collect_classic_timers(self):
-        """Return [{"cpu", "base", "timer", "expires", "function"}, ...] of every queued timer_list."""
+        """Return [{"cpu", "base", "timer", "expires", "function"}, ...] of every queued timer_list.
+        The bases visited are kept in self.classic_bases as [(cpu, the index of timer_base or None, address), ...]."""
         layout = self.classic
         ptrsize = current_arch.ptrsize
         is_hlist = layout["kind"] != "tvec_list"
@@ -107038,7 +106983,9 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         else:
             sizeof_head = ptrsize * 2
         timers = []
+        self.classic_bases = []
         for cpu, n, base in self.iter_classic_bases(layout):
+            self.classic_bases.append((cpu, n, base))
             if n is not None:
                 name = "cpu{:d} {:s}".format(cpu, "timer_base[{:d}]".format(n))
             else:
@@ -107086,68 +107033,11 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         timers = self.collect_classic_timers()
         return {"timers": timers, "incomplete": self.incomplete}
 
-    def time_to_expire(self, expires, now):
+    @staticmethod
+    def time_to_expire(expires, now):
         """Return `expires - now` as the kernel does in `time_after()`, which wraps in unsigned long."""
         bits = current_arch.ptrsize * 8
         return u2i(expires - now, bits)
-
-    def get_cpu_label(self, cpu):
-        states = []
-        if self.cpu_masks:
-            possible = self.cpu_masks.get("possible")
-            present = self.cpu_masks.get("present")
-            online = self.cpu_masks.get("online")
-            if possible is not None:
-                if cpu in possible:
-                    states.append("possible")
-                else:
-                    states.append("impossible")
-            if present is not None:
-                if cpu in present:
-                    states.append("present")
-                else:
-                    states.append("not present")
-            if online is not None:
-                if cpu in online:
-                    states.append("online")
-                else:
-                    states.append("offline")
-        label = "cpu{:d}".format(cpu)
-        if states:
-            label += " ({:s})".format(", ".join(states))
-        return label
-
-    def dump_timer(self):
-        layout = self.classic
-        jiffies = read_int_from_memory(layout["jiffies"], safe=True)
-        if jiffies is None:
-            self.err_add_out("jiffies is unreadable")
-            return
-
-        timers = {}
-        for timer in self.collect_classic_timers():
-            timers.setdefault((timer["cpu"], timer["base"]), []).append(timer)
-
-        for cpu, n, base in self.iter_classic_bases(layout):
-            if n is None:
-                self.out.append(titlify("{:s} tvec_base: {:#x}".format(self.get_cpu_label(cpu), base)))
-            else:
-                self.out.append(titlify("{:s} timer_base[{:d}]: {:#x}".format(self.get_cpu_label(cpu), n, base)))
-
-            # print legend
-            if not self.args.quiet:
-                fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
-                legend = ["timer_list", "expires", "time_to_expired", "function", "symbol"]
-                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-            entries = timers.get((cpu, n), [])
-            for timer in sorted(entries, key=lambda x: self.time_to_expire(x["expires"], jiffies)):
-                tte = self.time_to_expire(timer["expires"], jiffies)
-                self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:s}".format(
-                    timer["timer"], timer["expires"], tte,
-                    Symbol.format(timer["function"], missing="NO_SYMBOL", show_address=True, nocolor=True),
-                ).rstrip())
-        return
 
     def verify_hrtimer_bases(self, layout, cpu_base):
         """Check `clock_base[i].cpu_base == cpu_base` and `clock_base[i].index == i`."""
@@ -107395,14 +107285,7 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
     def is_callback(self, address):
         """Return True if `address` is in the kernel text or the text of a loaded module."""
-        if not address or not is_valid_addr(address):
-            return False
-        if self.klayout.text_base is not None and self.klayout.text_end is not None:
-            if self.klayout.text_base <= address < self.klayout.text_end:
-                return True
-        if self.module_text_ranges is None:
-            self.module_text_ranges = Kernel.modules().get_text_ranges()
-        return any(start <= address < end for start, end, _module, _name in self.module_text_ranges)
+        return self.text.contains(address)
 
     def guess_offset_active(self):
         """Return the offset of `active` in `struct hrtimer_clock_base` expected from the version."""
@@ -107631,7 +107514,14 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 return nodes, "unreadable at {:#x}".format(parent)
         return nodes, None
 
-    def dump_hrtimer(self):
+    def read_jiffies(self):
+        """Return the current `jiffies` of the resolved timer wheel, or None if it is unreadable."""
+        return read_int_from_memory(self.classic["jiffies"], safe=True)
+
+    def iter_hrtimer_clock_bases(self):
+        """Yield {"cpu", "index", "address", "clockid", "get_time"} of each hrtimer_clock_base that matches the layout.
+        `get_time` is None if the member does not exist (v6.18 or later). The ones that do not match the layout or are
+        unreadable are skipped and recorded in `incomplete`."""
         layout = self.hrtimer
         for cpu, cpu_base, n, htb in self.iter_clock_bases():
             name = "cpu{:d} hrtimer_clock_base[{:d}]".format(cpu, n)
@@ -107644,18 +107534,194 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 self.incomplete.append("{:s} clockid is unreadable".format(name))
                 continue
             if layout["offset_get_time"] is None: # v6.18 or later
-                self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}]".format(
-                    self.get_cpu_label(cpu), n, htb,
-                    self.clockid_dict.get(clockid, "UNKNOWN"),
-                )).rstrip())
+                get_time = None
             else:
                 get_time = read_int_from_memory(htb + layout["offset_get_time"], safe=True)
                 if get_time is None:
                     self.incomplete.append("{:s} get_time is unreadable".format(name))
                     continue
+            yield {"cpu": cpu, "index": n, "address": htb, "clockid": clockid, "get_time": get_time}
+        return
+
+    def read_hrtimers(self, clock_base):
+        """Return [{"hrtimer", "expires", "function"}, ...] of the hrtimers queued to `clock_base` (yielded by
+        `iter_hrtimer_clock_bases()`) in the order of the rbtree. A broken rbtree and the hrtimers that are unreadable
+        or do not point back to `clock_base` are recorded in `incomplete`. An hrtimer whose callback is outside the
+        kernel/module text is recorded there too, but it is still returned."""
+        layout = self.hrtimer
+        htb = clock_base["address"]
+        name = "cpu{:d} hrtimer_clock_base[{:d}]".format(clock_base["cpu"], clock_base["index"])
+        timers = []
+        nodes, reason = self.walk_rbtree(htb + layout["offset_active"])
+        if reason:
+            self.incomplete.append("the rbtree of {:s} is {:s}".format(name, reason))
+        for hrtimer in nodes:
+            expires = read_int64_from_memory(hrtimer + layout["offset_expires"], safe=True)
+            function = read_int_from_memory(hrtimer + layout["offset_function"], safe=True)
+            if expires is None or function is None:
+                self.incomplete.append("hrtimer {:#x} is unreadable".format(hrtimer))
+                continue
+            timer_base = read_int_from_memory(hrtimer + layout["offset_base"], safe=True)
+            if timer_base != htb:
+                self.incomplete.append("hrtimer {:#x} does not point back to {:s}".format(hrtimer, name))
+                continue
+            if not self.is_callback(function):
+                self.incomplete.append(
+                    "hrtimer {:#x} callback {:#x} is outside kernel/module text".format(hrtimer, function)
+                )
+            timers.append({"hrtimer": hrtimer, "expires": expires, "function": function})
+        return timers
+
+
+@register_command
+class KernelTimerCommand(GenericCommand, BufferingOutput):
+    """Dump the timer."""
+
+    _cmdline_ = "ktimer"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--classic-only", action="store_true", help="dump only classic timers.")
+    group.add_argument("--hr-only", action="store_true", help="dump only high-resolution timers.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Simplified timer structure (per-cpu):",
+        "",
+        "+-timer_bases[0]-----+    +-timer_list--+    +-timer_list--+",
+        "| ...                |    | entry       |    | entry       |",
+        "| vectors[0]         |--->|   next      |--->|   next      |--->...",
+        "| ...                |    |   pprev     |    |   pprev     |",
+        "| vectors[512or576]  |    | expires     |    | expires     |",
+        "| ...                |    | function    |    | function    |",
+        "+-timer_bases[1]-----+    | ...         |    | ...         |",
+        "| ...                |    +-------------+    +-------------+",
+        "| vectors[0]         |",
+        "| ...                |",
+        "| vectors[512or576]  |",
+        "| ...                |",
+        "+-timer_bases[2]-----+ <-- v6.10~",
+        "| ...                |",
+        "+--------------------+",
+        "",
+        "Before v4.8, each cpu has one `tvec_base` (pointed by `tvec_bases` before v4.2) with 512 buckets",
+        "(tv1 to tv5). They are `struct list_head` before v4.2, and `struct hlist_head` after.",
+        "",
+        "Simplified hrtimer structure (per-cpu):",
+        "",
+        "+-hrtimer_cpu_bases--+",
+        "| ...                |",
+        "| clock_bases[0]     |   +--->+-hrtimer-------+",
+        "|   ...              |   |    | node          |",
+        "|   clockid          |   |    |   node        |",
+        "|   ...              |   |    |     color     |",
+        "|   active           |   |    |     right     |--->hrtimer",
+        "|      rb_root       |   |    |     left      |--->hrtimer",
+        "|        rb_root     |---+    |   prev(v7.1~) |--->hrtimer",
+        "|        ...         |        |   next(v7.1~) |--->hrtimer",
+        "|   get_time(~v6.17) |        |   expires     |",
+        "|   ...              |        | ...           |",
+        "| ...                |        | function      |",
+        "| clock_bases[8]     |        | ...           |",
+        "|   ...              |        +---------------+",
+        "+--------------------+",
+        "",
+        "- Classic timers are sorted by `time_to_expired`, the signed difference from `jiffies` in unsigned long.",
+        "- hrtimers are sorted by `expires`, since they are listed in the order of the rbtree.",
+        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
+        "  They are verified by `timer_base.cpu` and `hrtimer_clock_base.cpu_base` and `index`.",
+    ])
+
+    clockid_dict = {
+        0: "CLOCK_REALTIME",
+        1: "CLOCK_MONOTONIC",
+        2: "CLOCK_PROCESS_CPUTIME_ID",
+        3: "CLOCK_THREAD_CPUTIME_ID",
+        4: "CLOCK_MONOTONIC_RAW",
+        5: "CLOCK_REALTIME_COARSE",
+        6: "CLOCK_MONOTONIC_COARSE",
+        7: "CLOCK_BOOTTIME",
+        8: "CLOCK_REALTIME_ALARM",
+        9: "CLOCK_BOOTTIME_ALARM",
+        10: "CLOCK_SGI_CYCLE",
+        11: "CLOCK_TAI",
+    }
+
+    def get_cpu_label(self, cpu):
+        states = []
+        if self.cpu_masks:
+            possible = self.cpu_masks.get("possible")
+            present = self.cpu_masks.get("present")
+            online = self.cpu_masks.get("online")
+            if possible is not None:
+                if cpu in possible:
+                    states.append("possible")
+                else:
+                    states.append("impossible")
+            if present is not None:
+                if cpu in present:
+                    states.append("present")
+                else:
+                    states.append("not present")
+            if online is not None:
+                if cpu in online:
+                    states.append("online")
+                else:
+                    states.append("offline")
+        label = "cpu{:d}".format(cpu)
+        if states:
+            label += " ({:s})".format(", ".join(states))
+        return label
+
+    def dump_timer(self):
+        jiffies = self.ktimer.read_jiffies()
+        if jiffies is None:
+            self.err_add_out("jiffies is unreadable")
+            return
+
+        timers = {}
+        for timer in self.ktimer.collect_classic_timers():
+            timers.setdefault((timer["cpu"], timer["base"]), []).append(timer)
+
+        # the same bases as collect_classic_timers(), which already recorded the unreadable ones
+        for cpu, n, base in self.ktimer.classic_bases:
+            if n is None:
+                self.out.append(titlify("{:s} tvec_base: {:#x}".format(self.get_cpu_label(cpu), base)))
+            else:
+                self.out.append(titlify("{:s} timer_base[{:d}]: {:#x}".format(self.get_cpu_label(cpu), n, base)))
+
+            # print legend
+            if not self.args.quiet:
+                fmt = "{:18s}  {:18s}  {:23s}  {:18s} {:s}"
+                legend = ["timer_list", "expires", "time_to_expired", "function", "symbol"]
+                self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+            entries = timers.get((cpu, n), [])
+            for timer in sorted(entries, key=lambda x: self.ktimer.time_to_expire(x["expires"], jiffies)):
+                tte = self.ktimer.time_to_expire(timer["expires"], jiffies)
+                self.out.append("{:#018x}  {:#018x}  {:#018x} tick  {:s}".format(
+                    timer["timer"], timer["expires"], tte,
+                    Symbol.format(timer["function"], missing="NO_SYMBOL", show_address=True, nocolor=True),
+                ).rstrip())
+        return
+
+    def dump_hrtimer(self):
+        for clock_base in self.ktimer.iter_hrtimer_clock_bases():
+            cpu, n, htb = clock_base["cpu"], clock_base["index"], clock_base["address"]
+            if clock_base["get_time"] is None: # v6.18 or later
+                self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}]".format(
+                    self.get_cpu_label(cpu), n, htb,
+                    self.clockid_dict.get(clock_base["clockid"], "UNKNOWN"),
+                )).rstrip())
+            else:
                 self.out.append(titlify("{:s} hrtimer_clock_base[{:d}]: {:#x}  [{:s}; get_time: {:s}]".format(
-                    self.get_cpu_label(cpu), n, htb, self.clockid_dict.get(clockid, "UNKNOWN"),
-                    Symbol.format(get_time, missing="NO_SYMBOL", show_address=True, nocolor=True),
+                    self.get_cpu_label(cpu), n, htb, self.clockid_dict.get(clock_base["clockid"], "UNKNOWN"),
+                    Symbol.format(clock_base["get_time"], missing="NO_SYMBOL", show_address=True, nocolor=True),
                 )).rstrip())
 
             # print legend
@@ -107664,26 +107730,10 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
                 legend = ["hrtimer", "expires", "time_to_expired", "function", "symbol"]
                 self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-            nodes, reason = self.walk_rbtree(htb + layout["offset_active"])
-            if reason:
-                self.incomplete.append("the rbtree of {:s} is {:s}".format(name, reason))
-            for hrtimer in nodes:
-                expires = read_int64_from_memory(hrtimer + layout["offset_expires"], safe=True)
-                function = read_int_from_memory(hrtimer + layout["offset_function"], safe=True)
-                if expires is None or function is None:
-                    self.incomplete.append("hrtimer {:#x} is unreadable".format(hrtimer))
-                    continue
-                timer_base = read_int_from_memory(hrtimer + layout["offset_base"], safe=True)
-                if timer_base != htb:
-                    self.incomplete.append("hrtimer {:#x} does not point back to {:s}".format(hrtimer, name))
-                    continue
-                if not self.is_callback(function):
-                    self.incomplete.append(
-                        "hrtimer {:#x} callback {:#x} is outside kernel/module text".format(hrtimer, function)
-                    )
+            for timer in self.ktimer.read_hrtimers(clock_base):
                 self.out.append("{:#018x}  {:#018x}  {:23s}  {:s}".format(
-                    hrtimer, expires, "? (too hard to calc)",
-                    Symbol.format(function, missing="NO_SYMBOL", show_address=True, nocolor=True),
+                    timer["hrtimer"], timer["expires"], "? (too hard to calc)",
+                    Symbol.format(timer["function"], missing="NO_SYMBOL", show_address=True, nocolor=True),
                 ).rstrip())
         return
 
@@ -107703,18 +107753,20 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
 
         self.quiet_info("Wait for memory scan")
 
-        ret = self.initialize(classic=not args.hr_only, high_resolution=not args.classic_only)
-        self.cpu_masks = self.percpu.get_cpu_masks()
+        self.ktimer = Kernel.timer()
+        ret = self.ktimer.initialize(classic=not args.hr_only, high_resolution=not args.classic_only)
+        meta = Kernel.export_meta(self, self.ktimer.meta)
+        self.cpu_masks = self.ktimer.percpu.get_cpu_masks()
         for name, cpus in self.cpu_masks.items():
             if cpus is None:
                 value = "unknown"
             else:
                 value = ", ".join(str(cpu) for cpu in sorted(cpus)) or "none"
-            self.meta.append((self.quiet_info, "cpu {:s}: {:s}".format(name, value)))
-        failed = ((not args.hr_only and not self.classic_timer_initialized)
-                  or (not args.classic_only and not self.hrtimer_initialized))
+            meta.append((self.quiet_info, "cpu {:s}: {:s}".format(name, value)))
+        failed = ((not args.hr_only and not self.ktimer.classic_timer_initialized)
+                  or (not args.classic_only and not self.ktimer.hrtimer_initialized))
         if args.meta or failed:
-            for func, line in self.meta:
+            for func, line in meta:
                 func(line)
         if not ret:
             return
@@ -107723,11 +107775,11 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        if self.classic_timer_initialized:
+        if self.ktimer.classic_timer_initialized:
             self.dump_timer()
-        if self.hrtimer_initialized:
+        if self.ktimer.hrtimer_initialized:
             self.dump_hrtimer()
-        for reason in self.incomplete:
+        for reason in self.ktimer.incomplete:
             self.warn_add_out("Incomplete: {:s}".format(reason))
         self.print_output(check_terminal_size=True)
         return
