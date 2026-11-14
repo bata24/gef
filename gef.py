@@ -86459,26 +86459,11 @@ class KernelPipe:
         return None
 
     def get_pipe_files(self):
-        """Parse `ktask --print-fd` and return ([(file, inode), ...], error)."""
-        ret = gdb.execute("ktask --no-pager --user-process-only --print-fd", to_string=True)
-        ret = Color.remove_color(ret)
-        if "Exception raised" in ret or "Disabled --print-fd" in ret:
-            return None, "Could not enumerate pipe files; see `ktask --print-fd`"
-        pipe_files = []
-        for line in ret.splitlines():
-            m = re.search(r"\d+\s+\S+\s+(0x\S+) 0x\S+ (0x\S+) pipe:\[\d+\]", line)
-            if not m:
-                continue
-            file = int(m.group(1), 16)
-            inode = int(m.group(2), 16)
-            pipe_files.append((file, inode))
-        if pipe_files:
-            return pipe_files, None
-
-        for line in ret.splitlines():
-            if line.startswith("[!]"):
-                return None, line[3:].lstrip()
-        return pipe_files, None
+        """Return ([(file, inode), ...], error) of the pipes opened by the user processes."""
+        files, error = KernelTask.get_user_files()
+        if files is None:
+            return None, error
+        return [(file["file"], file["inode"]) for _, file in files if file["path"].startswith("pipe:[")], None
 
     def get_pipe(self, inode):
         """Return the pipe of `inode` as a dict. "buffers" is None if the ring state is unexpected."""
@@ -86812,15 +86797,15 @@ class KernelPipe:
             if v < 0x10000 or not is_valid_addr(v):
                 continue
             # skip invalid chunk
-            ret = Kernel.get_slab_contains(v)
-            if ret is None:
+            obj = Kernel.get_slab_object(v, allow_unaligned=False)
+            if obj is None:
                 continue
             # pipe_inode_info is allocated from kmalloc-192 (x64) or kmalloc-256 (arm64).
             # sometimes it is allocated from kmalloc-512, kmalloc-128, kmalloc-96 and kmalloc-64.
             # Other candidates found are kmalloc-2k, kmalloc-1024 and inode_cache (these are false positives),
             # so these should be excluded.
             # RT and lockdep can increase pipe_inode_info to the 1k cache; validate this case across all pipe inodes.
-            match = re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512|1k)(?=\s|$)", ret)
+            match = re.search(r"kmalloc(-cg)?-(64|96|128|192|256|512|1k)$", obj["name"])
             if not match:
                 continue
             offset_i_pipe = current_arch.ptrsize * i
@@ -86829,8 +86814,8 @@ class KernelPipe:
                 pipes = [read_int_from_memory(pipe_inode + offset_i_pipe) for pipe_inode in inodes]
                 if len(set(pipes)) != len(pipes):
                     continue
-                if any(not re.search(r"kmalloc(-cg)?-1k(?=\s|$)", Kernel.get_slab_contains(pipe) or "")
-                       for pipe in pipes):
+                objs = [Kernel.get_slab_object(pipe, allow_unaligned=False) for pipe in pipes]
+                if any(not obj or not re.search(r"kmalloc(-cg)?-1k$", obj["name"]) for obj in objs):
                     continue
             if self.get_offset_head_or_nrbuf(pipe_files, offset_i_pipe) is not None:
                 return offset_i_pipe
@@ -87072,15 +87057,15 @@ class KernelPipe:
             if image_range and image_range[0] <= v < image_range[1]:
                 continue
             # skip invalid chunk
-            ret = Kernel.get_slab_contains(v)
-            if ret is None:
+            obj = Kernel.get_slab_object(v, allow_unaligned=False)
+            if obj is None:
                 continue
             # pipe_inode_info is allocated from kmalloc-1k (x64) or kmalloc-512 (x86)
-            if re.search(r"kmalloc(-cg)?-(1k|1024|512)", ret):
+            if re.search(r"kmalloc(-cg)?-(1k|1024|512)", obj["name"]):
                 self.meta.append(("info", "offset of bufs is found by heuristic way3-1"))
                 return current_arch.ptrsize * i
             # before v5.5, pipe_buffer is allocated not from slub, but `user` is allocated from slub.
-            if not self.ring_buffer and "uid_cache" in ret:
+            if not self.ring_buffer and "uid_cache" in obj["name"]:
                 self.meta.append(("info", "offset of bufs is found by heuristic way3-2"))
                 return current_arch.ptrsize * (i - 1)
         return None
