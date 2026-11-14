@@ -80324,6 +80324,11 @@ class Kernel:
         return KernelSched.get_instance()
 
     @staticmethod
+    def clocksource():
+        """Return the clocksource resolver."""
+        return KernelClockSource.get_instance()
+
+    @staticmethod
     def slub(no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
         """Return the SLUB resolver."""
         return KernelSlub.get_instance(no_xor, byte_swap, offset_random, offset_node)
@@ -92538,6 +92543,50 @@ class KernelModule:
             return offset_address
 
         return None
+
+
+class KernelText:
+    """Tell whether an address is in the kernel text or the text of a loaded module, e.g., to verify a callback.
+    It is shared by the resolvers that check function pointers (`KernelClockSource`, `KernelTimer`, `KernelWorkqueue`).
+    The text ranges of the loaded modules are read at the first lookup that needs them and kept by this object,
+    so a resolver creates a new one at each invocation, since modules may have been loaded or unloaded."""
+
+    def __init__(self, klayout):
+        self.klayout = klayout
+        self.module_text_ranges = None
+        return
+
+    def get_module_text_ranges(self):
+        """Return [(start, end, module, name), ...] of the loaded modules. See `KernelModule.get_text_ranges()`."""
+        if self.module_text_ranges is None:
+            self.module_text_ranges = Kernel.modules().get_text_ranges()
+        return self.module_text_ranges
+
+    def in_kernel_text(self, address):
+        """Return True if `address` is in the kernel text, or False if the kernel text is unknown."""
+        if self.klayout.text_base is None or self.klayout.text_end is None:
+            return False
+        return self.klayout.text_base <= address < self.klayout.text_end
+
+    def in_module_text(self, address):
+        """Return True if `address` is in the text of a loaded module."""
+        return any(start <= address < end for start, end, _module, _name in self.get_module_text_ranges())
+
+    def find_module(self, address=None, module=None):
+        """Return the name of the loaded module whose text contains `address`, or which is `module`.
+        The first module that matches decides it, even if its name is unreadable (None)."""
+        for start, end, addr, name in self.get_module_text_ranges():
+            if start <= (address or 0) < end or addr == module:
+                return name
+        return None
+
+    def contains(self, address):
+        """Return True if `address` is a valid address in the kernel text or the text of a loaded module."""
+        if not address or not is_valid_addr(address):
+            return False
+        if self.in_kernel_text(address):
+            return True
+        return self.in_module_text(address)
 
 
 class KernelSysctl:
@@ -106064,53 +106113,127 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelClockSourceCommand(GenericCommand, BufferingOutput):
-    """Dump the clocksource list."""
+class KernelClockSource:
+    """Resolve clocksource_list and the clocksource layout, and read the clocksources."""
 
-    _cmdline_ = "kclock-source"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
+    def __init__(self):
+        self.meta = []
+        return
 
-    _note_ = "\n".join([
-        "Simplified clocksource structure:",
-        "",
-        "                        +-clocksource-+",
-        "                        | read        |",
-        "+-clocksource_list-+    | ...         |",
-        "| list_head        |--->| list        |--->...",
-        "+------------------+    | ...         |",
-        "                        +-------------+",
-        "",
-        "- The list is sorted by `rating` in descending order. `active` is the one `curr_clocksource` points to.",
-        "- `frequency` is derived from `mult` and `shift` (ns = (cycles * mult) >> shift), and `bits` from `mask`.",
-        "- `flags`: CONT (IS_CONTINUOUS), VERIFY (MUST_VERIFY), CALIB (CALIBRATED), WD (WATCHDOG),",
-        "  HRES (VALID_FOR_HRES), UNSTABLE, NONSTOP (SUSPEND_NONSTOP), RESELECT,",
-        "  VERIFY_PERCPU (~v7.0) or INLINE (CAN_INLINE_READ; v7.1~), COUPLED (HAS_COUPLED_CLOCK_EVENT), WDTEST, WDTEST_PERCPU.",
-        "- The module is shown for a clocksource registered by a loadable module.",
-        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
-    ])
+    def initialize(self):
+        self.meta = []
+        self.incomplete = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return False
+        self.klayout = Kernel.layout()
+        self.text = KernelText(self.klayout)
+        self.use_type_info = False
 
-    FLAGS = [
-        (0x1, "CONT"),
-        (0x2, "VERIFY"),
-        (0x4, "CALIB"),
-        (0x10, "WD"),
-        (0x20, "HRES"),
-        (0x40, "UNSTABLE"),
-        (0x80, "NONSTOP"),
-        (0x100, "RESELECT"),
-        (0x200, "VERIFY_PERCPU"),
-        (0x400, "COUPLED"),
-        (0x800, "WDTEST"),
-        (0x1000, "WDTEST_PERCPU"),
-    ]
+        self.clocksource_list = KernelAddressHeuristicFinder.get_clocksource_list()
+        if self.clocksource_list is None:
+            self.meta.append(("err", "Could not find clocksource_list"))
+            return False
+        self.meta.append(("info", "clocksource_list: {:#x}".format(self.clocksource_list)))
+
+        lh = KernelListHead(self.clocksource_list)
+        self.nodes = [node for node in lh.iter_entries() if is_valid_addr(node)]
+        if lh.broken:
+            self.incomplete.append("clocksource_list is broken at {:#x}".format(lh.broken_at))
+            backward = KernelListHead(self.clocksource_list)
+            tail = [node for node in backward.iter_entries(backward=True) if is_valid_addr(node)]
+            self.nodes = list(dict.fromkeys(self.nodes + tail[::-1]))
+        if not self.nodes:
+            self.meta.append(("err", "clocksource_list is empty"))
+            return False
+        try:
+            valid_list = is_double_link_list(self.clocksource_list)
+        except gdb.MemoryError:
+            valid_list = False
+        if not valid_list:
+            self.incomplete.append("clocksource_list has inconsistent links")
+
+        layout = self.resolve_layout()
+        if layout is not None:
+            valid = sum(
+                self.is_clocksource(node - layout["list"], layout, check_callback=False)
+                for node in self.nodes
+            )
+            if valid >= max(1, len(self.nodes) - 1):
+                self.offsets = dict(layout)
+                self.use_type_info = True
+                sources = dict.fromkeys(self.offsets, "debug info")
+            else:
+                self.meta.append(("warn", "The debug information of struct clocksource does not match clocksource_list"))
+                layout = None
+        if layout is None:
+            self.offsets = self.find_offsets()
+            if self.offsets is None:
+                self.meta.append(("err", "Could not determine offsetof(clocksource, list) from clocksource_list"))
+                return False
+            clocksources = [node - self.offsets["list"] for node in self.nodes]
+            clocksources = [cs for cs in clocksources if self.is_clocksource(cs, self.offsets)]
+            self.offsets["rating"] = self.find_offset_rating(clocksources)
+            self.offsets["flags"] = self.find_offset_flags(clocksources)
+            self.offsets["owner"] = None
+            sources = dict.fromkeys(self.offsets, "heuristic")
+            sources["owner"] = "the module text of read"
+
+        if self.use_type_info:
+            clocksources = [
+                node - self.offsets["list"]
+                for node in self.nodes
+                if self.is_clocksource(node - self.offsets["list"], self.offsets, check_callback=False)
+            ]
+            self.validate_type_info_offsets(clocksources, sources)
+
+        for name, offset in self.offsets.items():
+            label = "offsetof(clocksource, {:s})".format(name)
+            if offset is None:
+                self.meta.append(("info", "{:s}: - ({:s})".format(label, sources[name])))
+            else:
+                self.meta.append(("info", "{:s}: {:#x} ({:s})".format(label, offset, sources[name])))
+        self.meta.append(("info", "clocksource count: {:d}".format(len(self.nodes))))
+        return True
+
+    def read_clocksource(self, node):
+        """Return the clocksource of `node` in clocksource_list as a dict, or None if it is corrupted.
+        "rating" and "flags" are None if their offsets are unknown. "module" is falsy for a built-in one."""
+        cs = node - self.offsets["list"]
+        if not self.is_clocksource(cs, self.offsets, check_callback=not self.use_type_info):
+            return None
+
+        read = read_int_from_memory(cs + self.offsets["read"])
+        mask = read_int64_from_memory(cs + self.offsets["mask"])
+        mult = read_int32_from_memory(cs + self.offsets["mult"])
+        shift = read_int32_from_memory(cs + self.offsets["shift"])
+        rating = flags = None
+        if self.offsets["rating"] is not None:
+            rating = read_int32_from_memory(cs + self.offsets["rating"], signed=True, safe=True)
+        if self.offsets["flags"] is not None:
+            flags = read_int_from_memory(cs + self.offsets["flags"], safe=True)
+        if self.offsets["owner"] is None:
+            module = self.find_module(address=read)
+        else:
+            owner = read_int_from_memory(cs + self.offsets["owner"], safe=True)
+            module = owner and (self.find_module(module=owner) or "{:#x}".format(owner))
+        return {
+            "address": cs,
+            "name": self.read_name(read_int_from_memory(cs + self.offsets["name"])),
+            "read": read,
+            "mask": mask,
+            "mult": mult,
+            "shift": shift,
+            "rating": rating,
+            "flags": flags,
+            "module": module,
+        }
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def resolve_layout(self):
@@ -106121,33 +106244,6 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         if None in [layout[name] for name in ("list", "read", "mask", "mult", "shift", "name")]:
             return None
         return layout
-
-    def find_module(self, address=None, module=None):
-        """Return the name of the loaded module whose text contains `address`, or which is `module`."""
-        if self.module_text_ranges is None:
-            self.module_text_ranges = Kernel.modules().get_text_ranges()
-        for start, end, addr, name in self.module_text_ranges:
-            if start <= (address or 0) < end or addr == module:
-                return name
-        return None
-
-    def is_callback(self, address):
-        """Return True if `address` is in the kernel text or the text of a loaded module."""
-        if not address or not is_valid_addr(address):
-            return False
-        if self.klayout.text_base is not None and self.klayout.text_end is not None:
-            if self.klayout.text_base <= address < self.klayout.text_end:
-                return True
-        return self.find_module(address) is not None
-
-    def read_name(self, address):
-        if is_valid_addr(address):
-            name = read_cstring_from_memory(address, safe=True)
-        else:
-            name = None
-        if not name or len(name) > 64 or not name.isprintable():
-            return None
-        return name
 
     def is_clocksource(self, cs, offsets, check_callback=True):
         """Check the members of the clocksource at `cs` that every registered one has."""
@@ -106165,6 +106261,24 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             return False
         # a clocksource can be registered by a module (e.g., scx200_hrt), so its `read` is in the module
         return not check_callback or self.is_callback(read)
+
+    def read_name(self, address):
+        if is_valid_addr(address):
+            name = read_cstring_from_memory(address, safe=True)
+        else:
+            name = None
+        if not name or len(name) > 64 or not name.isprintable():
+            return None
+        return name
+
+    def is_callback(self, address):
+        """Return True if `address` is in the kernel text or the text of a loaded module.
+        A module whose name is unreadable also counts; its name is looked up only to display it."""
+        return self.text.contains(address)
+
+    def find_module(self, address=None, module=None):
+        """Return the name of the loaded module whose text contains `address`, or which is `module`."""
+        return self.text.find_module(address, module)
 
     def find_offsets(self):
         """Return {member: offset} found from the nodes of clocksource_list, or None.
@@ -106283,9 +106397,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
             ratings = [read_int32_from_memory(cs + rating_offset, signed=True, safe=True) for cs in clocksources]
             if None not in ratings and (not any(ratings) or any(rating < 0 or rating >= 0x10000 for rating in ratings)
                                         or ratings != sorted(ratings, reverse=True)):
-                self.meta.append(
-                    (self.quiet_warn, "clocksource.rating has unusual values; keeping the debug information offset")
-                )
+                self.meta.append(("warn", "clocksource.rating has unusual values; keeping the debug information offset"))
 
         flags_offset = self.offsets["flags"]
         if flags_offset is None:
@@ -106294,9 +106406,7 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         else:
             flags = [read_int_from_memory(cs + flags_offset, safe=True) for cs in clocksources]
             if None not in flags and any(value >= 0x2000 for value in flags):
-                self.meta.append(
-                    (self.quiet_warn, "clocksource.flags has unknown high bits; keeping the debug information offset")
-                )
+                self.meta.append(("warn", "clocksource.flags has unknown high bits; keeping the debug information offset"))
 
         owner_offset = self.offsets["owner"]
         if owner_offset is None:
@@ -106319,85 +106429,56 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         if owner_offset is None:
             self.offsets["owner"] = None
             sources["owner"] = "the module text of read"
-            self.meta.append(
-                (self.quiet_warn, "The debug information offset of clocksource.owner does not match clocksource_list")
-            )
+            self.meta.append(("warn", "The debug information offset of clocksource.owner does not match clocksource_list"))
 
-    def initialize(self):
-        self.meta = []
-        self.incomplete = []
-        self.kversion = Kernel.version()
-        self.klayout = Kernel.layout()
-        self.module_text_ranges = None
-        self.use_type_info = False
 
-        self.clocksource_list = KernelAddressHeuristicFinder.get_clocksource_list()
-        if self.clocksource_list is None:
-            self.meta.append((self.quiet_err, "Could not find clocksource_list"))
-            return False
-        self.meta.append((self.quiet_info, "clocksource_list: {:#x}".format(self.clocksource_list)))
+@register_command
+class KernelClockSourceCommand(GenericCommand, BufferingOutput):
+    """Dump the clocksource list."""
 
-        lh = KernelListHead(self.clocksource_list)
-        self.nodes = [node for node in lh.iter_entries() if is_valid_addr(node)]
-        if lh.broken:
-            self.incomplete.append("clocksource_list is broken at {:#x}".format(lh.broken_at))
-            backward = KernelListHead(self.clocksource_list)
-            tail = [node for node in backward.iter_entries(backward=True) if is_valid_addr(node)]
-            self.nodes = list(dict.fromkeys(self.nodes + tail[::-1]))
-        if not self.nodes:
-            self.meta.append((self.quiet_err, "clocksource_list is empty"))
-            return False
-        try:
-            valid_list = is_double_link_list(self.clocksource_list)
-        except gdb.MemoryError:
-            valid_list = False
-        if not valid_list:
-            self.incomplete.append("clocksource_list has inconsistent links")
+    _cmdline_ = "kclock-source"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
 
-        layout = self.resolve_layout()
-        if layout is not None:
-            valid = sum(
-                self.is_clocksource(node - layout["list"], layout, check_callback=False)
-                for node in self.nodes
-            )
-            if valid >= max(1, len(self.nodes) - 1):
-                self.offsets = dict(layout)
-                self.use_type_info = True
-                sources = dict.fromkeys(self.offsets, "debug info")
-            else:
-                self.meta.append(
-                    (self.quiet_warn, "The debug information of struct clocksource does not match clocksource_list")
-                )
-                layout = None
-        if layout is None:
-            self.offsets = self.find_offsets()
-            if self.offsets is None:
-                self.meta.append((self.quiet_err, "Could not determine offsetof(clocksource, list) from clocksource_list"))
-                return False
-            clocksources = [node - self.offsets["list"] for node in self.nodes]
-            clocksources = [cs for cs in clocksources if self.is_clocksource(cs, self.offsets)]
-            self.offsets["rating"] = self.find_offset_rating(clocksources)
-            self.offsets["flags"] = self.find_offset_flags(clocksources)
-            self.offsets["owner"] = None
-            sources = dict.fromkeys(self.offsets, "heuristic")
-            sources["owner"] = "the module text of read"
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
 
-        if self.use_type_info:
-            clocksources = [
-                node - self.offsets["list"]
-                for node in self.nodes
-                if self.is_clocksource(node - self.offsets["list"], self.offsets, check_callback=False)
-            ]
-            self.validate_type_info_offsets(clocksources, sources)
+    _note_ = "\n".join([
+        "Simplified clocksource structure:",
+        "",
+        "                        +-clocksource-+",
+        "                        | read        |",
+        "+-clocksource_list-+    | ...         |",
+        "| list_head        |--->| list        |--->...",
+        "+------------------+    | ...         |",
+        "                        +-------------+",
+        "",
+        "- The list is sorted by `rating` in descending order. `active` is the one `curr_clocksource` points to.",
+        "- `frequency` is derived from `mult` and `shift` (ns = (cycles * mult) >> shift), and `bits` from `mask`.",
+        "- `flags`: CONT (IS_CONTINUOUS), VERIFY (MUST_VERIFY), CALIB (CALIBRATED), WD (WATCHDOG),",
+        "  HRES (VALID_FOR_HRES), UNSTABLE, NONSTOP (SUSPEND_NONSTOP), RESELECT,",
+        "  VERIFY_PERCPU (~v7.0) or INLINE (CAN_INLINE_READ; v7.1~), COUPLED (HAS_COUPLED_CLOCK_EVENT), WDTEST, WDTEST_PERCPU.",
+        "- The module is shown for a clocksource registered by a loadable module.",
+        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
+    ])
 
-        for name, offset in self.offsets.items():
-            label = "offsetof(clocksource, {:s})".format(name)
-            if offset is None:
-                self.meta.append((self.quiet_info, "{:s}: - ({:s})".format(label, sources[name])))
-            else:
-                self.meta.append((self.quiet_info, "{:s}: {:#x} ({:s})".format(label, offset, sources[name])))
-        self.meta.append((self.quiet_info, "clocksource count: {:d}".format(len(self.nodes))))
-        return True
+    FLAGS = [
+        (0x1, "CONT"),
+        (0x2, "VERIFY"),
+        (0x4, "CALIB"),
+        (0x10, "WD"),
+        (0x20, "HRES"),
+        (0x40, "UNSTABLE"),
+        (0x80, "NONSTOP"),
+        (0x100, "RESELECT"),
+        (0x200, "VERIFY_PERCPU"),
+        (0x400, "COUPLED"),
+        (0x800, "WDTEST"),
+        (0x1000, "WDTEST_PERCPU"),
+    ]
 
     def format_frequency(self, mult, shift):
         if not mult or shift > 64:
@@ -106412,45 +106493,11 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
         if flags is None:
             return "-"
         names, unknown = GefUtil.flags_to_names(flags, self.FLAGS)
-        if "VERIFY_PERCPU" in names and self.kversion >= "7.1":
+        if "VERIFY_PERCPU" in names and self.kclocksource.kversion >= "7.1":
             names[names.index("VERIFY_PERCPU")] = "INLINE"
         if unknown:
             names.append("{:#x}".format(unknown))
         return "|".join(names) or "0"
-
-    def read_clocksource(self, node):
-        cs = node - self.offsets["list"]
-        if not self.is_clocksource(cs, self.offsets, check_callback=not self.use_type_info):
-            return None
-
-        read = read_int_from_memory(cs + self.offsets["read"])
-        mask = read_int64_from_memory(cs + self.offsets["mask"])
-        mult = read_int32_from_memory(cs + self.offsets["mult"])
-        shift = read_int32_from_memory(cs + self.offsets["shift"])
-        rating = flags = None
-        if self.offsets["rating"] is not None:
-            rating = read_int32_from_memory(cs + self.offsets["rating"], signed=True, safe=True)
-        if self.offsets["flags"] is not None:
-            flags = read_int_from_memory(cs + self.offsets["flags"], safe=True)
-        if self.offsets["owner"] is None:
-            module = self.find_module(address=read)
-        else:
-            owner = read_int_from_memory(cs + self.offsets["owner"], safe=True)
-            module = owner and (self.find_module(module=owner) or "{:#x}".format(owner))
-        if rating is None:
-            rating_text = "-"
-        else:
-            rating_text = str(rating)
-        return {
-            "address": cs,
-            "name": self.read_name(read_int_from_memory(cs + self.offsets["name"])),
-            "read": read,
-            "bits": mask.bit_length(),
-            "frequency": self.format_frequency(mult, shift),
-            "rating": rating_text,
-            "flags": self.format_flags(flags),
-            "module": module,
-        }
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -106460,23 +106507,25 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        ret = self.initialize()
+        self.kclocksource = Kernel.clocksource()
+        ret = self.kclocksource.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kclocksource.meta):
                 func(line)
         if not ret:
             return
 
+        incomplete = list(self.kclocksource.incomplete)
         entries = []
-        for node in self.nodes:
-            entry = self.read_clocksource(node)
+        for node in self.kclocksource.nodes:
+            entry = self.kclocksource.read_clocksource(node)
             if entry is None:
-                self.incomplete.append("the clocksource of the node {:#x} is corrupted".format(node))
+                incomplete.append("the clocksource of the node {:#x} is corrupted".format(node))
                 continue
             entries.append(entry)
 
         if args.meta:
-            for reason in self.incomplete:
+            for reason in incomplete:
                 self.quiet_warn("Incomplete: {:s}".format(reason))
             return
 
@@ -106484,27 +106533,33 @@ class KernelClockSourceCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         width = AddressUtil.get_format_address_width()
-        flags_width = max([5] + [len(entry["flags"]) for entry in entries])
+        flags_list = [self.format_flags(entry["flags"]) for entry in entries]
+        flags_width = max([5] + [len(flags) for flags in flags_list])
         fmt = "{:<{w}s} {:20s} {:8s} {:>6s} {:>13s} {:>4s} {:<{fw}s} "
         if not args.quiet:
             legend = ["address", "name", "status", "rating", "frequency", "bits", "flags"]
             legend = fmt.format(*legend, w=width, fw=flags_width) + "{:<{w}s} {:s}".format("read", "symbol", w=width)
             self.out.append(GefUtil.make_legend(legend))
 
-        for entry in entries:
+        for entry, flags in zip(entries, flags_list):
             if entry["address"] == active:
                 status = "active"
             else:
                 status = ""
+            if entry["rating"] is None:
+                rating = "-"
+            else:
+                rating = str(entry["rating"])
+            frequency = self.format_frequency(entry["mult"], entry["shift"])
             line = fmt.format(
-                "{:#0{:d}x}".format(entry["address"], width), entry["name"], status, entry["rating"],
-                entry["frequency"], str(entry["bits"]), entry["flags"], w=width, fw=flags_width,
+                "{:#0{:d}x}".format(entry["address"], width), entry["name"], status, rating,
+                frequency, str(entry["mask"].bit_length()), flags, w=width, fw=flags_width,
             )
             line += Symbol.format(entry["read"], missing="NO_SYMBOL", show_address=True, nocolor=True)
             if entry["module"]:
                 line += "  [module: {:s}]".format(entry["module"])
             self.out.append(line)
-        for reason in self.incomplete:
+        for reason in incomplete:
             self.warn_add_out("Incomplete: {:s}".format(reason))
 
         self.print_output(check_terminal_size=True)
