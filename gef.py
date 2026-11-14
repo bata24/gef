@@ -96376,13 +96376,11 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
 
     _note_ = "\n".join([
         "False means explicitly unsupported; None means not found; '-' means unavailable or not run.",
+        "Candidate lists pass when they include the symbol-backed address; source labels are ignored.",
         "$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.",
     ])
 
-    unsupported_riscv = {
-        "get_apparmor_enabled", "get_apparmor_initialized", "get_mmap_min_addr",
-        "get_n_tty_ops", "get_selinux_state", "get_slab_kset", "get_tty_ldiscs",
-    }
+    unsupported_riscv = {"get_n_tty_ops", "get_tty_ldiscs"}
 
     def invoke(self, args, from_tty):
         gdb.set_convenience_variable("ks_selftest_failures", -1)
@@ -96390,6 +96388,43 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def direct_symbol_name(finder_name):
+        if finder_name in ("get_PAGE_OFFSET", "get_VMALLOC_START", "get_VMEMMAP_START"):
+            if is_x86_64():
+                return {
+                    "get_PAGE_OFFSET": "page_offset_base",
+                    "get_VMALLOC_START": "vmalloc_base",
+                    "get_VMEMMAP_START": "vmemmap_base",
+                }[finder_name]
+            return None
+        if finder_name == "get_sys_call_table_riscv_compat":
+            if is_riscv64():
+                return "compat_sys_call_table"
+            return None
+        if finder_name == "find_per_cpu_unit_size":
+            if is_arm32():
+                return "pcpu_unit_size"
+            return None
+        if finder_name == "get_arm64_sparsemem":
+            if is_arm64():
+                return "mem_section"
+            return None
+        if finder_name == "get_node_data0" and Ksym.get_addr("node_data") is not None:
+            return None
+        if finder_name in ("get_loadpin_enabled", "get_loadpin_enforce"):
+            if not Ksym.get_addrs("loadpin_read_file", match="split"):
+                return None
+            kversion = Kernel.version()
+            if kversion is None:
+                return None
+            if finder_name == "get_loadpin_enabled" and kversion >= "4.20":
+                return None
+            if finder_name == "get_loadpin_enforce" and kversion < "4.20":
+                return None
+            symbol_name = finder_name[len("get_loadpin_"):]
+            if len(Ksym.get_addrs(symbol_name)) != 1:
+                return None
+            return symbol_name
+
         if finder_name == "get_sys_call_table_x86":
             if is_x86_64():
                 return "ia32_sys_call_table"
@@ -96412,15 +96447,32 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             "get_sys_call_table_riscv": "sys_call_table",
             "get_per_cpu_offset": "__per_cpu_offset",
             "get_PAGE_OFFSET_base": "page_offset_base",
+            "get_node_data0": "contig_page_data",
+            "find_per_cpu_static_range": "__per_cpu_start",
             "get_current_clocksource": "curr_clocksource",
             "get_log_buffer": "log_buf",
+            "get_printk_text_ring_symbols": "log_end",
+            "get_printk_ring_candidates": "prb",
             "get_vmap_nodes_busy_head": "vmap_nodes",
         }
         return exceptions.get(finder_name, finder_name[len("get_"):])
 
     @staticmethod
     def finders():
-        finders = []
+        finders = {
+            "get_saved_command_line": KernelAddressHeuristicFinder.get_saved_command_line,
+            "get_PAGE_OFFSET": KernelAddressHeuristicFinder._get_PAGE_OFFSET,
+            "get_VMALLOC_START": KernelAddressHeuristicFinder._get_VMALLOC_START,
+            "get_VMEMMAP_START": KernelAddressHeuristicFinder._get_VMEMMAP_START,
+            "get_node_data0": KernelAddressHeuristicFinder.get_node_data0,
+            "get_loadpin_enabled": KernelAddressHeuristicFinder.get_loadpin_enabled,
+            "get_loadpin_enforce": KernelAddressHeuristicFinder.get_loadpin_enforce,
+            "get_sys_call_table_riscv_compat": functools.partial(
+                KernelAddressHeuristicFinder.get_sys_call_table_riscv, compat=True,
+            ),
+            "find_per_cpu_static_range": KernelAddressHeuristicFinder.find_per_cpu_static_range,
+            "find_per_cpu_unit_size": KernelAddressHeuristicFinder.find_per_cpu_unit_size,
+        }
         for name in dir(KernelAddressHeuristicFinder):
             if not name.startswith("get_"):
                 continue
@@ -96429,13 +96481,24 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             while hasattr(implementation, "__wrapped__"):
                 implementation = implementation.__wrapped__
             if "USE_DIRECTLY" in implementation.__code__.co_names:
-                finders.append((name, finder))
-        return finders
+                finders[name] = finder
+        return sorted(finders.items())
 
     @staticmethod
-    def invoke_finder(finder, args):
+    def invoke_finder(finder, args, name):
         try:
-            return finder(*args), None
+            value = finder(*args)
+            if name == "get_arm64_sparsemem" and value is not None:
+                value = value["mem_section"]
+            elif name == "get_printk_text_ring_symbols":
+                value = value[:3]
+                if value[0] is None or value[1] is None:
+                    value = None
+            elif name == "get_printk_ring_candidates":
+                value = tuple(address for address, _ in value) or None
+            elif name == "find_per_cpu_static_range" and None in value:
+                value = None
+            return value, None
         except Exception as exception:
             return None, "{:s}: {:s}".format(type(exception).__name__, str(exception))
 
@@ -96451,6 +96514,10 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             return str(value)
         if isinstance(value, int):
             return "{:#x}".format(value)
+        if isinstance(value, tuple):
+            return "({:s})".format(
+                ", ".join(KernelAddressHeuristicSelftestCommand.format_result(item, None) for item in value),
+            )
         return str(value)
 
     @Decorator.parse_args
@@ -96487,24 +96554,53 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
                     continue
 
                 finder_args = ()
-                if name in ("get_current_clocksource", "get_log_buffer"):
-                    try:
-                        if name == "get_current_clocksource":
-                            current_clocksource = read_int_from_memory(symbol_address)
-                            finder_args = ((current_clocksource,),)
-                        else:
-                            length_address = Ksym.get_addr("log_buf_len")
-                            if length_address is None:
-                                direct_results[name] = (None, None, False, ())
-                                continue
-                            finder_args = (read_int32_from_memory(length_address),)
-                    except (gdb.MemoryError, MemoryError) as exception:
-                        message = "{:s}: {:s}".format(type(exception).__name__, str(exception))
-                        direct_results[name] = (None, message, True, ())
-                        errors.append("{:s} direct: {:s}".format(name, message))
-                        continue
+                try:
+                    if name == "get_current_clocksource":
+                        current_clocksource = read_int_from_memory(symbol_address)
+                        finder_args = ((current_clocksource,),)
+                    elif name == "get_log_buffer":
+                        length_address = Ksym.get_addr("log_buf_len")
+                        if length_address is None:
+                            direct_results[name] = (None, None, False, ())
+                            continue
+                        finder_args = (read_int32_from_memory(length_address),)
+                    elif name in ("find_per_cpu_static_range", "find_per_cpu_unit_size"):
+                        start = Ksym.get_addr("__per_cpu_start")
+                        end = Ksym.get_addr("__per_cpu_end")
+                        if start is None or end is None:
+                            direct_results[name] = (None, None, False, ())
+                            continue
+                        offsets = Kernel.per_cpu().offsets
+                        if not offsets:
+                            direct_results[name] = (None, None, False, ())
+                            continue
+                        finder_args = (offsets,)
+                        if name == "find_per_cpu_unit_size":
+                            finder_args = (offsets, align_to_pagesize(end - start))
 
-                value, error = self.invoke_finder(finder, finder_args)
+                    if name in ("get_saved_command_line", "get_node_data0", "get_loadpin_enabled", "get_loadpin_enforce"):
+                        value, error = symbol_address, None
+                    elif name in ("get_PAGE_OFFSET", "get_VMALLOC_START", "get_VMEMMAP_START", "get_printk_ring_candidates"):
+                        value, error = read_int_from_memory(symbol_address), None
+                    elif name == "find_per_cpu_static_range":
+                        value, error = (start, end), None
+                    elif name == "find_per_cpu_unit_size":
+                        value, error = read_int32_from_memory(symbol_address), None
+                    elif name == "get_printk_text_ring_symbols":
+                        length_address = Ksym.get_addr("log_buf_len")
+                        buffer_address = Ksym.get_addr("log_buf")
+                        if length_address is None or buffer_address is None:
+                            direct_results[name] = (None, None, False, ())
+                            continue
+                        value, error = (symbol_address, length_address, buffer_address), None
+                    else:
+                        value, error = self.invoke_finder(finder, finder_args, name)
+                except (gdb.MemoryError, MemoryError) as exception:
+                    message = "{:s}: {:s}".format(type(exception).__name__, str(exception))
+                    direct_results[name] = (None, message, True, ())
+                    errors.append("{:s} direct: {:s}".format(name, message))
+                    continue
+
                 direct_results[name] = (value, error, True, finder_args)
                 if error is not None:
                     errors.append("{:s} direct: {:s}".format(name, error))
@@ -96517,7 +96613,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
                 if not available or error is not None or direct is None or direct is False:
                     heuristic_results[name] = (None, None)
                     continue
-                value, error = self.invoke_finder(finder, finder_args)
+                value, error = self.invoke_finder(finder, finder_args, name)
                 heuristic_results[name] = (value, error)
                 if error is not None:
                     errors.append("{:s} heuristic: {:s}".format(name, error))
@@ -96536,6 +96632,8 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             elif direct_error is not None or heuristic_error is not None:
                 verdict = "ERROR"
             elif direct == heuristic:
+                verdict = "OK"
+            elif name == "get_printk_ring_candidates" and heuristic is not None and direct in heuristic:
                 verdict = "OK"
             elif heuristic is None:
                 verdict = "MISS"
