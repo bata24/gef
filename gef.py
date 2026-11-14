@@ -80919,21 +80919,10 @@ class KernelLayout:
         # Do not use Ksym.get_addr.
 
         if is_x86():
-            if is_qemu_system():
-                # [5.8~]
-                # 0   #DE: Divide-by-zero ... 0x0010:0xffffffff82c01030 <asm_exc_divide_error>
-                # [~5.7]
-                # 0   #DE: Divide-by-zero ... 0x0010:0xffffffff8178cfc0 <divide_error>
-                res = gdb.execute("idtinfo -n", to_string=True)
-                r = re.search(r"Divide-by-zero.+\S+:(\S+)\s+<", res)
-                if r:
-                    div0_handler = int(r.group(1), 16)
-                    if is_valid_addr(div0_handler):
-                        return div0_handler
-
-            elif is_vmware():
+            if is_qemu_system() or is_vmware():
+                # the #DE handler is asm_exc_divide_error [5.8~] or divide_error [~5.7]
                 base, limit = GefUtil.get_x86_descriptor_table_register("idtr")
-                if base is not None:
+                if base is not None and is_valid_addr(base):
                     idt_data = read_memory(base, min(limit + 1, current_arch.ptrsize * 2 * 256))
                     entries = slice_unpack(idt_data, current_arch.ptrsize * 2)
                     idt0 = IdtInfoCommand.idt_unpack(entries[0])
