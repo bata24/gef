@@ -80334,6 +80334,11 @@ class Kernel:
         return KernelTimer.get_instance()
 
     @staticmethod
+    def workqueue():
+        """Return the workqueue resolver."""
+        return KernelWorkqueue.get_instance()
+
+    @staticmethod
     def slub(no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
         """Return the SLUB resolver."""
         return KernelSlub.get_instance(no_xor, byte_swap, offset_random, offset_node)
@@ -107785,91 +107790,31 @@ class KernelTimerCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
-    """Dump workqueue items and inspect embedded work_struct objects."""
-
-    _cmdline_ = "kworkqueue"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("--object", type=AddressUtil.parse_address,
-                        help="the address of the object to inspect (e.g. the head of a heap object), "
-                             "scanned for an embedded work_struct/delayed_work.")
-    parser.add_argument("--size", type=AddressUtil.parse_address, default=None,
-                        help="the size of the range scanned by --object (default: 0x1000).")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s}",
-        "{0:s} --object 0xffff888012340000",
-        "{0:s} --object 0xffff888012340000 --size 0x400",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "Simplified workqueue structures (`==>` shows where each column comes from):",
-        "",
-        "                   +-workqueue_struct-+",
-        "+-workqueues-+     | pwqs             |--+",
-        "| list       |<--->| list             |<--->...",
-        "+------------+     | name             |  |      ==> `queue`",
-        "                   | ...              |  |",
-        "                   +------------------+  |",
-        "                     ^                   |",
-        "                     |                   |",
-        "                     |                   v",
-        "                     |       +-pool_workqueue-+",
-        "                     |       | pool           |---+",
-        "                     +-------| wq             |   |",
-        "                             | inactive_works |   |  ==> state `inactive`",
-        "                             +----------------+   |",
-        "                               ^                  |",
-        "       work_struct.data -------+                  |",
-        "       & WORK_STRUCT_PWQ_MASK (pwq)               |",
-        "                    +-work_struct-+               v",
-        "                    | data        |         +-worker_pool-+",
-        "                    | entry       |-------->| worklist    |  ==> state `pending`",
-        "                    | func        |         | busy_hash   |  ==> state `running`",
-        "                    +-------------+         | cpu         |  ==> `cpu`",
-        "                      ^                     +-------------+",
-        "                      |",
-        "                    +-delayed_work-+",
-        "                    | work         |",
-        "                    | timer        |<--- per-cpu timer wheel  ==> state `delayed`",
-        "                    | wq           |",
-        "                    +--------------+",
-        "",
-        "- `running` means the work is held in `worker.current_work`.",
-        "- When `WORK_STRUCT_PWQ` is set, `queue` and `cpu` are decoded from `work_struct.data`; off-queue work uses it differently.",
-        "- For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.",
-        "- `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.",
-        "  `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.",
-        "  It does not need the workqueue list, though `queue` is then unknown.",
-        "- The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).",
-        "- `delayed` needs the `ktimer` layout; other states are listed without it.",
-        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
-    ])
+class KernelWorkqueue:
+    """Resolve the work_struct/workqueue_struct/pool_workqueue/worker_pool layout, and collect the queued,
+    running and delayed works."""
 
     BUSY_WORKER_HASH_SIZE = 64
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.incomplete = []
+        return
 
     def is_callback(self, address):
         """Return True if `address` is the entry of a function in the kernel or module text."""
         if not address or not is_valid_addr(address):
             return False
-        if self.klayout.text_base <= address < self.klayout.text_end:
+        if self.text.in_kernel_text(address):
             # a work function is a function entry, not an address in the middle of one
             return not self.kallsyms_text or address in self.kallsyms_text
         # the type of kallsyms alone is not enough (e.g., `workqueues` is `t` in some v6.14+ builds)
-        return any(start <= address < end for start, end in self.get_module_text_ranges())
-
-    def get_module_text_ranges(self):
-        if self.module_text_ranges is None:
-            self.module_text_ranges = [(start, end) for start, end, _module, _name in Kernel.modules().get_text_ranges()]
-        return self.module_text_ranges
+        return self.text.in_module_text(address)
 
     def read_work(self, work, check_function=True):
         try:
@@ -107984,11 +107929,11 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             for offset in range(0, 0x180, current_arch.ptrsize):
                 if pools and all(self.is_worklist(p + offset, p) for p in pools):
                     self.worklist_offset = offset
-                    self.meta.append((self.quiet_info, "offsetof(worker_pool, worklist): {:#x} (heuristic)".format(offset)))
+                    self.meta.append(("info", "offsetof(worker_pool, worklist): {:#x} (heuristic)".format(offset)))
                     break
             else:
                 self.worklist_offset = False
-                self.meta.append((self.quiet_warn, "offsetof(worker_pool, worklist): Not found"))
+                self.meta.append(("warn", "offsetof(worker_pool, worklist): Not found"))
         if self.worklist_offset is False:
             return None
         return pool + self.worklist_offset
@@ -108221,7 +108166,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                 continue
             # current_pwq links back to the pool (a global_cwq shares one busy_hash between its pools)
             pwq_pool = read_int_from_memory(pwq + self.offset_pwq_pool, safe=True)
-            if pwq_pool not in pools or self.kversion >= "3.9" and pwq_pool != pool:
+            if pwq_pool not in pools:
+                continue
+            if self.kversion >= "3.9" and pwq_pool != pool:
                 continue
             if offset_func is not None:
                 function = read_int_from_memory(worker + offset_func, safe=True)
@@ -108292,11 +108239,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     def collect_delayed_records(self, records):
         if not self.delayed_timer_functions:
             return
-        timer_command = __gef_command_instances__.get("ktimer")
-        if timer_command is not None:
-            classic_timers = timer_command.get_classic_timers()
-        else:
-            classic_timers = None
+        classic_timers = Kernel.timer().get_classic_timers()
         if classic_timers is None:
             self.incomplete.append("delayed works are not scanned since the timer wheel is not resolved")
             return
@@ -108314,6 +108257,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         return
 
     def scan_address_range(self, records, address, size):
+        """Add the initialized work_structs (and delayed_works) found in `[address, address+size)` to `records`."""
         end = AddressUtil.normalize_address(address + size)
         for work in range(address, end, current_arch.ptrsize):
             if work in records:
@@ -108441,6 +108385,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         return layout
 
     def initialize(self):
+        """Resolve the layout and collect the workqueues and their pool_workqueues (cpu_workqueue_structs).
+        Return None if `workqueues` is not found, else whether any workqueue is found."""
         self.meta = []
         self.incomplete = []
         self.kversion = Kernel.version()
@@ -108452,7 +108398,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.max_cpu = 0x2000
         self.pool_cpu_hints = {}
         self.worklist_offset = None
-        self.module_text_ranges = None
+        self.text = KernelText(self.klayout)
         kallsyms = Ksym.get_kallsyms()
         if kallsyms:
             self.kallsyms_text = {
@@ -108469,7 +108415,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
                     value = "{:#x}".format(value)
                 else:
                     value = "-"
-                self.meta.append((self.quiet_info, "{:s}: {:s} ({:s})".format(label, value, source)))
+                self.meta.append(("info", "{:s}: {:s} ({:s})".format(label, value, source)))
         self.delayed_timer_functions = set(Ksym.get_addrs("delayed_work_timer_fn") or [])
 
         self.workqueues_by_address = {}
@@ -108479,9 +108425,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         self.offset_wq_name = None
         self.name_is_pointer = False
         if self.workqueues is None:
-            self.meta.append((self.quiet_err, "workqueues: Not found"))
+            self.meta.append(("err", "workqueues: Not found"))
             return None
-        self.meta.append((self.quiet_info, "workqueues: {:#x}".format(self.workqueues)))
+        self.meta.append(("info", "workqueues: {:#x}".format(self.workqueues)))
 
         lh = KernelListHead(self.workqueues, self.offset_wq_list)
         workqueues = list(lh.iter_entries())
@@ -108492,9 +108438,9 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.system_wq = read_int_from_memory(system_wq_ptr, safe=True)
         self.offset_wq_name = self.find_name_offset(workqueues)
         if self.offset_wq_name is None:
-            self.meta.append((self.quiet_warn, "offsetof(workqueue_struct, name): Not found"))
+            self.meta.append(("warn", "offsetof(workqueue_struct, name): Not found"))
         else:
-            self.meta.append((self.quiet_info, "offsetof(workqueue_struct, name): {:#x}".format(
+            self.meta.append(("info", "offsetof(workqueue_struct, name): {:#x}".format(
                 self.offset_wq_name,
             )))
 
@@ -108511,10 +108457,89 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.units = self.collect_new_units(workqueues)
         self.units_by_address = {unit["address"]: unit for unit in self.units}
 
-        self.meta.append((self.quiet_info, "workqueue count: {:d}".format(len(workqueues))))
-        self.meta.append((self.quiet_info, "pool_workqueue/cpu_workqueue count: {:d}".format(len(self.units))))
-        self.meta.append((self.quiet_info, "worker_pool count: {:d}".format(len({unit["pool"] for unit in self.units}))))
+        self.meta.append(("info", "workqueue count: {:d}".format(len(workqueues))))
+        self.meta.append(("info", "pool_workqueue/cpu_workqueue count: {:d}".format(len(self.units))))
+        self.meta.append(("info", "worker_pool count: {:d}".format(len({unit["pool"] for unit in self.units}))))
         return bool(workqueues)
+
+    def collect_records(self):
+        """Return {work: record} of the pending, inactive, running and delayed works."""
+        records = {}
+        if self.units:
+            self.collect_list_records(records)
+            self.collect_running_records(records)
+        self.collect_delayed_records(records)
+        return records
+
+
+@register_command
+class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
+    """Dump workqueue items and inspect embedded work_struct objects."""
+
+    _cmdline_ = "kworkqueue"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--object", type=AddressUtil.parse_address,
+                        help="the address of the object to inspect (e.g. the head of a heap object), "
+                             "scanned for an embedded work_struct/delayed_work.")
+    parser.add_argument("--size", type=AddressUtil.parse_address, default=None,
+                        help="the size of the range scanned by --object (default: 0x1000).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --object 0xffff888012340000",
+        "{0:s} --object 0xffff888012340000 --size 0x400",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified workqueue structures (`==>` shows where each column comes from):",
+        "",
+        "                   +-workqueue_struct-+",
+        "+-workqueues-+     | pwqs             |--+",
+        "| list       |<--->| list             |<--->...",
+        "+------------+     | name             |  |      ==> `queue`",
+        "                   | ...              |  |",
+        "                   +------------------+  |",
+        "                     ^                   |",
+        "                     |                   |",
+        "                     |                   v",
+        "                     |       +-pool_workqueue-+",
+        "                     |       | pool           |---+",
+        "                     +-------| wq             |   |",
+        "                             | inactive_works |   |  ==> state `inactive`",
+        "                             +----------------+   |",
+        "                               ^                  |",
+        "       work_struct.data -------+                  |",
+        "       & WORK_STRUCT_PWQ_MASK (pwq)               |",
+        "                    +-work_struct-+               v",
+        "                    | data        |         +-worker_pool-+",
+        "                    | entry       |-------->| worklist    |  ==> state `pending`",
+        "                    | func        |         | busy_hash   |  ==> state `running`",
+        "                    +-------------+         | cpu         |  ==> `cpu`",
+        "                      ^                     +-------------+",
+        "                      |",
+        "                    +-delayed_work-+",
+        "                    | work         |",
+        "                    | timer        |<--- per-cpu timer wheel  ==> state `delayed`",
+        "                    | wq           |",
+        "                    +--------------+",
+        "",
+        "- `running` means the work is held in `worker.current_work`.",
+        "- When `WORK_STRUCT_PWQ` is set, `queue` and `cpu` are decoded from `work_struct.data`; off-queue work uses it differently.",
+        "- For `delayed` work, `cpu` is the CPU whose timer wheel holds the timer.",
+        "- `--object` scans `[object, object+size)` for initialized `work_struct`s, including unqueued `idle` work.",
+        "  `delayed_work` is recognized by its `delayed_work_timer_fn` timer when available.",
+        "  It does not need the workqueue list, though `queue` is then unknown.",
+        "- The running work is found from `worker_pool.busy_hash` (`global_cwq` before v3.6).",
+        "- `delayed` needs the `ktimer` layout; other states are listed without it.",
+        "- The member offsets come from the debug information (vmlinux or `ktypes-load`) when available.",
+    ])
 
     def print_records(self, records, object_address=None):
         width = AddressUtil.get_format_address_width()
@@ -108562,14 +108587,6 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             self.out.append(line)
         return
 
-    def collect_records(self):
-        records = {}
-        if self.units:
-            self.collect_list_records(records)
-            self.collect_running_records(records)
-        self.collect_delayed_records(records)
-        return records
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -108593,28 +108610,29 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
             return
 
         self.quiet_info("Wait for memory scan")
-        ret = self.initialize()
+        kworkqueue = Kernel.workqueue()
+        ret = kworkqueue.initialize()
         # --object inspects the given range, so the workqueue list is optional for it
         if not ret and (args.meta or args.object is None):
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, kworkqueue.meta):
                 func(line)
             return
 
         if args.object is not None:
             records = {}
             if ret:
-                records = self.collect_records()
+                records = kworkqueue.collect_records()
                 end = AddressUtil.normalize_address(args.object + args.size)
                 records = {work: record for work, record in records.items() if args.object <= work < end}
-            self.scan_address_range(records, args.object, args.size)
+            kworkqueue.scan_address_range(records, args.object, args.size)
         else:
-            records = self.collect_records()
+            records = kworkqueue.collect_records()
 
         if args.meta:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, kworkqueue.meta):
                 func(line)
             self.quiet_info("record count: {:d}".format(len(records)))
-            for reason in self.incomplete:
+            for reason in kworkqueue.incomplete:
                 self.quiet_warn("Incomplete: {:s}".format(reason))
             return
 
@@ -108622,7 +108640,7 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
         self.print_records(records, args.object)
         if not records:
             self.quiet_info_add_out("No pending or running work items found")
-        for reason in self.incomplete:
+        for reason in kworkqueue.incomplete:
             self.warn_add_out("Incomplete: {:s}".format(reason))
         self.print_output(check_terminal_size=True)
         return
