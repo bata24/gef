@@ -37686,11 +37686,12 @@ class KernelChecksecCommand(GenericCommand):
                 additional = "for more precisely, use `msr MSR_IA32_S_CET` without `-enable-kvm`"
             else:
                 additional = "MSR_IA32_S_CET: Not available"
-                try:
-                    ret = gdb.execute("msr --quiet MSR_IA32_S_CET", to_string=True)
-                    MSR_IA32_S_CET = int(ret, 16)
-                except (gdb.error, ValueError):
-                    pass
+                # rdmsr is executed only where `msr` can do it
+                if (is_qemu_system() or is_vmware()) and is_in_kernel():
+                    try:
+                        MSR_IA32_S_CET = Msr.read_msr(0x6a2)
+                    except (gdb.error, gdb.GdbError):
+                        pass
             if MSR_IA32_S_CET is None:
                 gef_print(
                     "{:<40s}: {:s} ({:s})".format("CET SHSTK (MSR_IA32_S_CET bit 0)", Color.grayify("Unknown"), additional)
@@ -193525,6 +193526,45 @@ class CpuidCommand(GenericCommand, BufferingOutput):
         return
 
 
+class Msr:
+    """Read and write a model-specific register (MSR) by executing rdmsr/wrmsr on the stopped CPU.
+    WARNING: Disable `-enable-kvm` option for qemu-system (see ExecAsm)."""
+
+    @staticmethod
+    def read_msr(const):
+        if not 0 <= const <= 0xffff_ffff:
+            return None
+        codes = [b"\x0f\x32"] # rdmsr
+        if is_x86_64():
+            regs = {"$rcx": const}
+        else:
+            regs = {"$ecx": const}
+        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
+
+        if ret is None:
+            return None
+
+        if is_x86_64():
+            edx = ret["reg"]["$rdx"] & 0xffff_ffff
+            eax = ret["reg"]["$rax"] & 0xffff_ffff
+        else:
+            edx = ret["reg"]["$edx"]
+            eax = ret["reg"]["$eax"]
+        return ((edx << 32) | eax) & 0xffff_ffff_ffff_ffff
+
+    @staticmethod
+    def write_msr(const, value):
+        if not 0 <= const <= 0xffff_ffff or not 0 <= value <= 0xffff_ffff_ffff_ffff:
+            return False
+        codes = [b"\x0f\x30"] # wrmsr
+        if is_x86_64():
+            regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffff_ffff}
+        else:
+            regs = {"$ecx": const, "$edx": value >> 32, "$eax": value & 0xffff_ffff}
+        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
+        return bool(ret)
+
+
 @register_command
 class MsrCommand(GenericCommand):
     """Read or write MSR value."""
@@ -193601,7 +193641,7 @@ class MsrCommand(GenericCommand):
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         for name, const, desc in self.msr_table:
-            value = MsrCommand.read_msr(const)
+            value = Msr.read_msr(const)
             if value is None:
                 gef_print("{:30s}  {:#010x}  {:30s}  {!s}".format(
                     name, const, desc, None,
@@ -193623,40 +193663,6 @@ class MsrCommand(GenericCommand):
         info("See more info: https://elixir.bootlin.com/linux/latest/source/arch/x86/include/asm/msr-index.h")
         return
 
-    @staticmethod
-    def read_msr(const):
-        if not 0 <= const <= 0xffff_ffff:
-            return None
-        codes = [b"\x0f\x32"] # rdmsr
-        if is_x86_64():
-            regs = {"$rcx": const}
-        else:
-            regs = {"$ecx": const}
-        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
-
-        if ret is None:
-            return None
-
-        if is_x86_64():
-            edx = ret["reg"]["$rdx"] & 0xffff_ffff
-            eax = ret["reg"]["$rax"] & 0xffff_ffff
-        else:
-            edx = ret["reg"]["$edx"]
-            eax = ret["reg"]["$eax"]
-        return ((edx << 32) | eax) & 0xffff_ffff_ffff_ffff
-
-    @staticmethod
-    def write_msr(const, value):
-        if not 0 <= const <= 0xffff_ffff or not 0 <= value <= 0xffff_ffff_ffff_ffff:
-            return False
-        codes = [b"\x0f\x30"] # wrmsr
-        if is_x86_64():
-            regs = {"$rcx": const, "$rdx": value >> 32, "$rax": value & 0xffff_ffff}
-        else:
-            regs = {"$ecx": const, "$edx": value >> 32, "$eax": value & 0xffff_ffff}
-        ret = ExecAsm(codes, regs=regs).exec_code(check_complete=True)
-        return bool(ret)
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
@@ -193677,7 +193683,7 @@ class MsrCommand(GenericCommand):
 
         if args.msr_value is None:
             # exec rdmsr
-            value = MsrCommand.read_msr(const)
+            value = Msr.read_msr(const)
             if value is None:
                 err("Failed to read")
                 return
@@ -193689,7 +193695,7 @@ class MsrCommand(GenericCommand):
 
         else:
             # exec wrmsr
-            ret = MsrCommand.write_msr(const, args.msr_value)
+            ret = Msr.write_msr(const, args.msr_value)
             if ret:
                 info("Success to write")
             else:
@@ -193796,7 +193802,7 @@ class CetCommand(GenericCommand):
 
         supported = capabilities["ss"] or capabilities["ibt"]
         if supported:
-            IA32_U_CET = MsrCommand.read_msr(0x6a0)
+            IA32_U_CET = Msr.read_msr(0x6a0)
         else:
             IA32_U_CET = None
         ud = self.decode_cet_bits(IA32_U_CET, capabilities)
@@ -193808,7 +193814,7 @@ class CetCommand(GenericCommand):
             gef_print("IA32_U_CET = N/A")
 
         if supported:
-            IA32_S_CET = MsrCommand.read_msr(0x6a2)
+            IA32_S_CET = Msr.read_msr(0x6a2)
         else:
             IA32_S_CET = None
         sd = self.decode_cet_bits(IA32_S_CET, capabilities)
@@ -193828,11 +193834,11 @@ class CetCommand(GenericCommand):
             gef_print("IA32_INTERRUPT_SSP_TABLE_ADDR = N/A (unsupported)")
             return
 
-        IA32_PL0_SSP = MsrCommand.read_msr(0x6a4)
-        IA32_PL1_SSP = MsrCommand.read_msr(0x6a5)
-        IA32_PL2_SSP = MsrCommand.read_msr(0x6a6)
-        IA32_PL3_SSP = MsrCommand.read_msr(0x6a7)
-        IA32_INT_SSP_TAB = MsrCommand.read_msr(0x6a8)
+        IA32_PL0_SSP = Msr.read_msr(0x6a4)
+        IA32_PL1_SSP = Msr.read_msr(0x6a5)
+        IA32_PL2_SSP = Msr.read_msr(0x6a6)
+        IA32_PL3_SSP = Msr.read_msr(0x6a7)
+        IA32_INT_SSP_TAB = Msr.read_msr(0x6a8)
         if capabilities["long_mode"]:
             memalign_size = 8
         else:
