@@ -21270,7 +21270,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             if not data or not any(data):
                 continue
             sqes = [data[i:i + sqe_size] for i in range(0, layout["sq_entries"] * sqe_size, sqe_size)]
-            if all(sqe[0] < len(KernelIoUringCommand.OPCODES) and sqe[1] < 0x80 for sqe in sqes): # opcode, IOSQE_*
+            if all(sqe[0] < len(KernelIoUring.OPCODES) and sqe[1] < 0x80 for sqe in sqes): # opcode, IOSQE_*
                 return addr, size
         return None, None
 
@@ -80258,6 +80258,11 @@ class Kernel:
     def pipe():
         """Return the pipe resolver."""
         return KernelPipe.get_instance()
+
+    @staticmethod
+    def io_uring():
+        """Return the io_uring resolver."""
+        return KernelIoUring.get_instance()
 
     @staticmethod
     def socket():
@@ -217491,61 +217496,99 @@ class KernelCfiHashCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelIoUringCommand(GenericCommand, BufferingOutput):
-    """Display the kernel-side io_uring object graph."""
+class KernelTaskFileScanner:
+    """The common part of the resolvers that find a kernel object (the "context") from file->private_data of the
+    open files of the tasks, e.g. io_uring and userfaultfd.
 
-    _cmdline_ = "kio-uring"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    A subclass defines:
+        TASK_OPTIONS                  # the options of KernelTask.initialize() for the fd scan
+        validate_context(ctx)         # -> the score of an aligned, valid address as the context (0 if it is not)
+        get_kpath()                   # -> the VFS resolver, or None
+        file_private_data(file)       # -> file->private_data from the debug information, or None (optional)
+        check_task_command(command)   # -> False if the task resolver lacks what the fd scan needs (optional)
+    and sets `self.meta = []` and `self.task_command = False` in initialize().
+    """
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the address of struct io_ring_ctx, io_kiocb or file.")
-    parser.add_argument("-t", "--type", choices=["auto", "ctx", "request", "file"], default="auto",
-                        help="the type of ADDRESS. (default: %(default)s)")
-    parser.add_argument("-p", "--pid", type=int, help="select rings owned by this pid.")
-    parser.add_argument("-f", "--fd", type=int, help="select this ring fd (requires --pid).")
-    parser.add_argument("--no-requests", action="store_true", help="do not walk pending request lists.")
-    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="show request flags and user_data.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
+    # the options of KernelTask.initialize() for the fd scan
+    TASK_OPTIONS = {"files": True}
 
-    _example_ = "\n".join([
-        "{0:s}",
-        "{0:s} --pid 1337 --fd 4",
-        "{0:s} --type ctx 0xffff888012340000",
-        "{0:s} --type request 0xffff888056780000 -v",
-    ]).format(_cmdline_)
+    def get_task_command(self):
+        """Return the task resolver initialized with TASK_OPTIONS, or None. It is resolved on first use,
+        so a context given by ADDRESS does not depend on the task layout."""
+        if self.task_command is False:
+            self.task_command = Kernel.task()
+            task_ready = self.task_command.initialize(**self.TASK_OPTIONS)
+            self.meta.extend(self.task_command.meta)
+            if not task_ready:
+                self.task_command = None
+            if self.task_command is not None and not self.check_task_command(self.task_command):
+                self.task_command = None
+        return self.task_command
 
-    _note_ = "\n".join([
-        "`iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.",
-        "io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.",
-        "DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.",
-        "ADDRESS with `--type ctx` or `--type request` needs neither the task list nor the VFS layout.",
-        "Live request lists are transient and may be incomplete while another CPU is running.",
-        "",
-        "Kernel object graph:",
-        "",
-        "task_struct",
-        "  +-- files -> fdtable[fd] -> file (anon_inode:[io_uring])",
-        "  |                             +-- private_data -> io_ring_ctx",
-        "  +-- io_uring -> io_uring_task",
-        "                    +-- last ---------------------> io_ring_ctx",
-        "                    +-- registered_rings[] -------> file",
-        "                    +-- io_wq --------------------> io-wq workers",
-        "",
-        "io_ring_ctx",
-        "  +-- rings ----------------------> io_rings (SQ / CQ)",
-        "  +-- file table -----------------> file / io_rsrc_node",
-        "  +-- buffer table ---------------> io_mapped_ubuf / io_rsrc_node",
-        "  +-- iopoll/timeout/defer lists -> io_kiocb",
-        "  |                                   +-- opcode / state / refs",
-        "  |                                   +-- file / buffer node",
-        "  |                                   +-- callback / linked request",
-        "  +-- submitter / sq thread ------> task_struct",
-    ])
+    def check_task_command(self, command):
+        """Return False (and record the reason in the meta) if `command` lacks what the fd scan needs."""
+        return True
+
+    def get_kpath(self):
+        """Return the VFS resolver, or None."""
+        raise NotImplementedError
+
+    def path_for_file(self, file):
+        """Return the path of `file`, or "" if it is unavailable."""
+        if not is_valid_addr(file):
+            return ""
+        kpath = self.get_kpath()
+        if kpath is None:
+            return ""
+        try:
+            return kpath.get_file_path(file)
+        except (gdb.MemoryError, OverflowError, RuntimeError):
+            return ""
+
+    def context_score(self, ctx):
+        """Return how well `ctx` is validated as the context (0 if it is not)."""
+        if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
+            return 0
+        return self.validate_context(ctx)
+
+    def validate_context(self, ctx):
+        """Return the score of `ctx`, which is an aligned and valid address, as the context (0 if it is not)."""
+        raise NotImplementedError
+
+    def file_private_data(self, file):
+        """Return file->private_data from the debug information, or None."""
+        return GefUtil.field_int(GefUtil.typed_struct(file, "struct file"), "private_data")
+
+    def context_from_file(self, file):
+        """Return (the context of `file`, how it was found), or (None, None)."""
+        ctx = self.file_private_data(file)
+        if ctx is not None and self.context_score(ctx):
+            return ctx, "debug information"
+
+        # struct file is randomized in old kernels and was reordered in v6.5/v7.0.
+        # Restrict the fallback to a known fd of the subsystem, then validate the target as its context.
+        pointers = read_memory(file, 0x200, safe=True)
+        if pointers is None:
+            return None, None
+        try:
+            pointers = slice_unpack(pointers, current_arch.ptrsize)
+        except struct.error:
+            return None, None
+        # The window can reach the next file object, so the smallest offset of the best score is file's own member
+        best = None
+        for index, pointer in enumerate(pointers):
+            score = self.context_score(pointer)
+            if score and (best is None or score > best[0]):
+                best = (score, index, pointer)
+        if best is None:
+            return None, None
+        _, index, ctx = best
+        return ctx, "validated file member +{:#x}".format(index * current_arch.ptrsize)
+
+
+class KernelIoUring(KernelTaskFileScanner):
+    """Resolve the io_uring contexts (io_ring_ctx) of the open files, and read their rings, registered resources,
+    pending requests and workers."""
 
     MAX_FDS = 0x10000
     MAX_RESOURCES = 0x10000
@@ -217563,6 +217606,26 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         "FIXED_FD_INSTALL", "FTRUNCATE", "BIND", "LISTEN", "RECV_ZC", "EPOLL_WAIT",
         "READV_FIXED", "WRITEV_FIXED", "PIPE", "NOP128", "URING_CMD128",
     ]
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        # the task list and the VFS are needed only to find the rings from the fds
+        self.task_command = False
+        self.kpath = False
+        return True
 
     def eval_value(self, type_name, address, member):
         try:
@@ -217708,9 +217771,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             "dropped": sq["extra"][0], "sq_flags": sq["extra"][1], "cq_flags": None, "overflow": cq["extra"][0],
         }
 
-    def context_score(self, ctx):
-        if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
-            return 0
+    def validate_context(self, ctx):
         rings = self.eval_unsigned("struct io_ring_ctx", ctx, "rings")
         if rings is not None and is_valid_addr(rings):
             if self.ring_stats(ctx) is not None:
@@ -217726,46 +217787,14 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return 3
         return 0
 
-    def context_from_file(self, file):
-        ctx = self.eval_unsigned("struct file", file, "private_data")
-        if ctx is not None and self.context_score(ctx):
-            return ctx, "debug information"
+    def file_private_data(self, file):
+        return self.eval_unsigned("struct file", file, "private_data")
 
-        # struct file is randomized in old kernels and was reordered in v6.5/v7.0.
-        # Restrict the fallback to a known io_uring fd, then validate the target as a ring context.
-        pointers = read_memory(file, 0x200, safe=True)
-        if pointers is None:
-            return None, None
-        try:
-            pointers = slice_unpack(pointers, current_arch.ptrsize)
-        except struct.error:
-            return None, None
-        # The window can reach the next file object, so the smallest offset of the best score is file's own member
-        best = None
-        for index, pointer in enumerate(pointers):
-            score = self.context_score(pointer)
-            if score and (best is None or score > best[0]):
-                best = (score, index, pointer)
-        if best is None:
-            return None, None
-        _, index, ctx = best
-        return ctx, "validated file member +{:#x}".format(index * current_arch.ptrsize)
-
-    def get_task_command(self):
-        """Return the task resolver initialized for the fd scan, or None. It is resolved on first use,
-        so a ctx/request given by ADDRESS does not depend on the task layout."""
-        if self.task_command is False:
-            self.task_command = Kernel.task()
-            task_ready = self.task_command.initialize(files=True)
-            self.meta.extend(Kernel.export_meta(self, self.task_command.meta))
-            if not task_ready:
-                self.task_command = None
-            if self.task_command is not None and (
-                self.task_command.offset_files is None or self.task_command.offset_fdt is None
-            ):
-                self.meta.append((self.quiet_err, "Could not find task_struct->files->fdt"))
-                self.task_command = None
-        return self.task_command
+    def check_task_command(self, command):
+        if command.offset_files is None or command.offset_fdt is None:
+            self.meta.append(("err", "Could not find task_struct->files->fdt"))
+            return False
+        return True
 
     def get_kpath(self):
         """Return the VFS resolver, or None. It is resolved on first use like get_task_command()."""
@@ -217773,7 +217802,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             self.kpath = Kernel.path()
             # The offsets of struct file are left unset when no open file of the task scan was a valid sample
             if not self.kpath.initialized or self.kpath.offset_file_dentry is None:
-                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
+                self.meta.append(("err", "Could not resolve the VFS object layout"))
                 self.kpath = None
         return self.kpath
 
@@ -217787,14 +217816,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         except (gdb.MemoryError, OverflowError):
             return None, "???"
         return pid, comm
-
-    def task_label(self, task):
-        if not is_valid_addr(task):
-            return "{:#x}".format(task or 0)
-        pid, comm = self.task_info(task)
-        if pid is None:
-            return "{:#x}".format(task)
-        return "{:#x} {:s}[{:d}]".format(task, comm, pid)
 
     def iter_task_files(self, task):
         command = self.get_task_command()
@@ -217813,7 +217834,8 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 yield fd, file
         return
 
-    def find_ring_files(self):
+    def find_ring_files(self, pid=None, fd=None):
+        """Return the io_uring files of the tasks (only `pid` and `fd` if given), or None without the fd scan."""
         command = self.get_task_command()
         kpath = self.get_kpath()
         if command is None or kpath is None:
@@ -217821,11 +217843,13 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         tasks = KernelTask.get_task_list(command.init_task, command.offset_tasks)
         rings = []
         for task in tasks:
-            pid, comm = self.task_info(task)
-            if pid is None or self.args.pid is not None and pid != self.args.pid:
+            task_pid, comm = self.task_info(task)
+            if task_pid is None:
                 continue
-            for fd, file in self.iter_task_files(task):
-                if self.args.fd is not None and fd != self.args.fd:
+            if pid is not None and task_pid != pid:
+                continue
+            for task_fd, file in self.iter_task_files(task):
+                if fd is not None and task_fd != fd:
                     continue
                 try:
                     path = kpath.get_file_path(file)
@@ -217835,18 +217859,10 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                     continue
                 ctx, source = self.context_from_file(file)
                 rings.append({
-                    "task": task, "pid": pid, "comm": comm, "fd": fd, "file": file,
+                    "task": task, "pid": task_pid, "comm": comm, "fd": task_fd, "file": file,
                     "path": path, "ctx": ctx, "ctx_source": source,
                 })
         return rings
-
-    def path_for_file(self, file):
-        if not is_valid_addr(file) or self.get_kpath() is None:
-            return ""
-        try:
-            return self.kpath.get_file_path(file)
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            return ""
 
     def ring_stats(self, ctx):
         rings = self.eval_unsigned("struct io_ring_ctx", ctx, "rings")
@@ -217891,11 +217907,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
 
         return self.find_rings_heuristic(ctx)
 
-    def format_optional(self, value):
-        if value is None:
-            return "?"
-        return "{:#x}".format(value)
-
     def resource_nodes(self, ctx, table):
         nr = self.eval_unsigned("struct io_ring_ctx", ctx, table + ".nr")
         nodes = self.eval_unsigned("struct io_ring_ctx", ctx, table + ".nodes")
@@ -217907,7 +217918,9 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             result.append(node or 0)
         return nr, nodes, result
 
-    def dump_registered_files(self, ctx):
+    def get_registered_files(self, ctx):
+        """Return (the number of the registered files, the table, [(index, file, io_rsrc_node), ...]).
+        The number is None without the layout."""
         files = []
         total = None
         source = None
@@ -217974,36 +217987,22 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                         files.append((index, (file or 0) & mask, None))
                     break
 
-        if total is None:
-            self.out.append("  registered files : unavailable (layout information is required)")
-            return
-        self.out.append("  registered files : {:d} ({:s})".format(total, source or "no table"))
-        for index, file, node in files:
-            if not file:
-                continue
-            if node:
-                suffix = " node={:#x}".format(node)
-            else:
-                suffix = ""
-            path = self.path_for_file(file)
-            self.out.append("    [{:<4d}] file={:#x}{:s} {:s}".format(index, file, suffix, path).rstrip())
-        if total > self.MAX_RESOURCES:
-            self.warn_add_out("Registered file table truncated at {:d} entries".format(self.MAX_RESOURCES))
-        return
+        return total, source, files
 
-    def buffer_description(self, buffer):
+    def get_mapped_buffer(self, buffer):
+        """Return the user address, length and nr_bvecs of io_mapped_ubuf `buffer`, or None if it is invalid."""
         if not is_valid_addr(buffer):
-            return "buffer={:#x}".format(buffer or 0)
+            return None
         ubuf = self.eval_unsigned("struct io_mapped_ubuf", buffer, "ubuf")
         length, member = self.eval_first("struct io_mapped_ubuf", buffer, ["len", "ubuf_end"])
         if member == "ubuf_end" and ubuf is not None and length is not None:
             length -= ubuf
         nr_bvecs = self.eval_unsigned("struct io_mapped_ubuf", buffer, "nr_bvecs")
-        return "buffer={:#x} addr={:s} len={:s} nr_bvecs={:s}".format(
-            buffer, self.format_optional(ubuf), self.format_optional(length), self.format_optional(nr_bvecs),
-        )
+        return {"ubuf": ubuf, "len": length, "nr_bvecs": nr_bvecs}
 
-    def dump_registered_buffers(self, ctx):
+    def get_registered_buffers(self, ctx):
+        """Return (the number of the registered buffers, the table, [(index, io_mapped_ubuf, io_rsrc_node), ...]).
+        The number is None without the layout."""
         buffers = []
         total = None
         source = None
@@ -218033,21 +218032,39 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                         buffer = 0
                     buffers.append((index, buffer or 0, None))
 
-        if total is None:
-            self.out.append("  registered bufs  : unavailable (layout information is required)")
-            return
-        self.out.append("  registered bufs  : {:d} ({:s})".format(total, source or "no table"))
-        for index, buffer, node in buffers:
-            if not buffer:
-                continue
-            if node:
-                suffix = " node={:#x}".format(node)
-            else:
-                suffix = ""
-            self.out.append("    [{:<4d}] {:s}{:s}".format(index, self.buffer_description(buffer), suffix))
-        if total > self.MAX_RESOURCES:
-            self.warn_add_out("Registered buffer table truncated at {:d} entries".format(self.MAX_RESOURCES))
-        return
+        return total, source, buffers
+
+    def get_flags(self, ctx):
+        """Return (ctx->flags, ctx->int_flags), each None if unavailable."""
+        flags = self.eval_unsigned("struct io_ring_ctx", ctx, "flags")
+        int_flags = self.eval_unsigned("struct io_ring_ctx", ctx, "int_flags")
+        return flags, int_flags
+
+    def get_workers(self, ctx):
+        """Return [(member, task_struct), ...] of the submitter and the SQ thread of `ctx`."""
+        workers = []
+        for member in ["submitter_task", "sqo_task", "sqo_thread", "sq_data.thread"]:
+            task = self.eval_unsigned("struct io_ring_ctx", ctx, member)
+            if task:
+                workers.append((member, task))
+        return workers
+
+    def get_io_wq(self, ctx):
+        return self.eval_unsigned("struct io_ring_ctx", ctx, "io_wq")
+
+    def get_task_context(self, task):
+        """Return task->io_uring (io_uring_task) as a dict, or None if it is not set."""
+        tctx = self.eval_unsigned("struct task_struct", task, "io_uring")
+        if not tctx:
+            return None
+        task_wq = self.eval_unsigned("struct io_uring_task", tctx, "io_wq")
+        last = self.eval_unsigned("struct io_uring_task", tctx, "last")
+        registered_rings = []
+        for index in range(16):
+            ring_file = self.eval_unsigned("struct io_uring_task", tctx, "registered_rings[{:d}]".format(index))
+            if ring_file:
+                registered_rings.append((index, ring_file))
+        return {"address": tctx, "io_wq": task_wq, "last": last, "registered_rings": registered_rings}
 
     def request_context(self, request):
         return self.eval_unsigned("struct io_kiocb", request, "ctx")
@@ -218107,6 +218124,10 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         except (gdb.MemoryError, OverflowError):
             pass
         return requests
+
+    def has_request_layout(self):
+        """Return True if the pending requests can be walked, which needs the debug information."""
+        return GefUtil.type_size("struct io_ring_ctx") is not None and GefUtil.type_size("struct io_kiocb") is not None
 
     def collect_requests(self, ctx):
         found = []
@@ -218177,6 +218198,122 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             "callback": callback_text, "callback_member": callback_member,
         }
 
+
+@register_command
+class KernelIoUringCommand(GenericCommand, BufferingOutput):
+    """Display the kernel-side io_uring object graph."""
+
+    _cmdline_ = "kio-uring"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the address of struct io_ring_ctx, io_kiocb or file.")
+    parser.add_argument("-t", "--type", choices=["auto", "ctx", "request", "file"], default="auto",
+                        help="the type of ADDRESS. (default: %(default)s)")
+    parser.add_argument("-p", "--pid", type=int, help="select rings owned by this pid.")
+    parser.add_argument("-f", "--fd", type=int, help="select this ring fd (requires --pid).")
+    parser.add_argument("--no-requests", action="store_true", help="do not walk pending request lists.")
+    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show request flags and user_data.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --pid 1337 --fd 4",
+        "{0:s} --type ctx 0xffff888012340000",
+        "{0:s} --type request 0xffff888056780000 -v",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "`iouring-dump` dumps userland io_uring mappings; this command follows kernel objects.",
+        "io_uring first appeared in Linux v5.1. Older kernels are detected without scanning.",
+        "DWARF is used when available. Without it, ring discovery uses open fd paths and validated ring metadata.",
+        "ADDRESS with `--type ctx` or `--type request` needs neither the task list nor the VFS layout.",
+        "Live request lists are transient and may be incomplete while another CPU is running.",
+        "",
+        "Kernel object graph:",
+        "",
+        "task_struct",
+        "  +-- files -> fdtable[fd] -> file (anon_inode:[io_uring])",
+        "  |                             +-- private_data -> io_ring_ctx",
+        "  +-- io_uring -> io_uring_task",
+        "                    +-- last ---------------------> io_ring_ctx",
+        "                    +-- registered_rings[] -------> file",
+        "                    +-- io_wq --------------------> io-wq workers",
+        "",
+        "io_ring_ctx",
+        "  +-- rings ----------------------> io_rings (SQ / CQ)",
+        "  +-- file table -----------------> file / io_rsrc_node",
+        "  +-- buffer table ---------------> io_mapped_ubuf / io_rsrc_node",
+        "  +-- iopoll/timeout/defer lists -> io_kiocb",
+        "  |                                   +-- opcode / state / refs",
+        "  |                                   +-- file / buffer node",
+        "  |                                   +-- callback / linked request",
+        "  +-- submitter / sq thread ------> task_struct",
+    ])
+
+    def format_optional(self, value):
+        if value is None:
+            return "?"
+        return "{:#x}".format(value)
+
+    def task_label(self, task):
+        if not is_valid_addr(task):
+            return "{:#x}".format(task or 0)
+        pid, comm = self.kio.task_info(task)
+        if pid is None:
+            return "{:#x}".format(task)
+        return "{:#x} {:s}[{:d}]".format(task, comm, pid)
+
+    def dump_registered_files(self, ctx):
+        total, source, files = self.kio.get_registered_files(ctx)
+        if total is None:
+            self.out.append("  registered files : unavailable (layout information is required)")
+            return
+        self.out.append("  registered files : {:d} ({:s})".format(total, source or "no table"))
+        for index, file, node in files:
+            if not file:
+                continue
+            if node:
+                suffix = " node={:#x}".format(node)
+            else:
+                suffix = ""
+            path = self.kio.path_for_file(file)
+            self.out.append("    [{:<4d}] file={:#x}{:s} {:s}".format(index, file, suffix, path).rstrip())
+        if total > self.kio.MAX_RESOURCES:
+            self.warn_add_out("Registered file table truncated at {:d} entries".format(self.kio.MAX_RESOURCES))
+        return
+
+    def buffer_description(self, buffer):
+        info = self.kio.get_mapped_buffer(buffer)
+        if info is None:
+            return "buffer={:#x}".format(buffer or 0)
+        return "buffer={:#x} addr={:s} len={:s} nr_bvecs={:s}".format(
+            buffer, self.format_optional(info["ubuf"]), self.format_optional(info["len"]),
+            self.format_optional(info["nr_bvecs"]),
+        )
+
+    def dump_registered_buffers(self, ctx):
+        total, source, buffers = self.kio.get_registered_buffers(ctx)
+        if total is None:
+            self.out.append("  registered bufs  : unavailable (layout information is required)")
+            return
+        self.out.append("  registered bufs  : {:d} ({:s})".format(total, source or "no table"))
+        for index, buffer, node in buffers:
+            if not buffer:
+                continue
+            if node:
+                suffix = " node={:#x}".format(node)
+            else:
+                suffix = ""
+            self.out.append("    [{:<4d}] {:s}{:s}".format(index, self.buffer_description(buffer), suffix))
+        if total > self.kio.MAX_RESOURCES:
+            self.warn_add_out("Registered buffer table truncated at {:d} entries".format(self.kio.MAX_RESOURCES))
+        return
+
     def dump_requests(self, requests):
         self.out.append("  requests         : {:d}".format(len(requests)))
         if not requests:
@@ -218184,9 +218321,9 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         fmt = "    {:18s} {:10s} {:20s} {:18s} {:18s} {:7s} {:s}"
         self.out.append(GefUtil.make_legend(fmt.format("io_kiocb", "state", "opcode", "file", "buffer", "refs", "callback")))
         for request, state in requests:
-            info = self.request_info(request, state)
+            info = self.kio.request_info(request, state)
             if info["opcode"] is not None:
-                opcode = "{:d}:{:s}".format(info["opcode"], self.opcode_name(info["opcode"]))
+                opcode = "{:d}:{:s}".format(info["opcode"], self.kio.opcode_name(info["opcode"]))
             else:
                 opcode = "?"
             file_text = self.format_optional(info["file"])
@@ -218200,19 +218337,15 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                 file_text, buffer_text, refs_text, info["callback"],
             ))
             if self.args.verbose:
-                path = self.path_for_file(info["file"])
+                path = self.kio.path_for_file(info["file"])
                 self.out.append("      flags={:s} user_data={:s} file_path={:s}".format(
                     self.format_optional(info["flags"]), self.format_optional(info["user_data"]), path or "?",
                 ))
         return
 
     def dump_workers(self, ctx, owners):
-        workers = []
-        for member in ["submitter_task", "sqo_task", "sqo_thread", "sq_data.thread"]:
-            task = self.eval_unsigned("struct io_ring_ctx", ctx, member)
-            if task:
-                workers.append((member, task))
-        io_wq = self.eval_unsigned("struct io_ring_ctx", ctx, "io_wq")
+        workers = self.kio.get_workers(ctx)
+        io_wq = self.kio.get_io_wq(ctx)
         if io_wq:
             self.out.append("  io_wq            : {:#x} (ctx)".format(io_wq))
 
@@ -218222,18 +218355,15 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             if not task or task in seen_tasks:
                 continue
             seen_tasks.add(task)
-            tctx = self.eval_unsigned("struct task_struct", task, "io_uring")
-            if not tctx:
+            tctx = self.kio.get_task_context(task)
+            if tctx is None:
                 continue
-            task_wq = self.eval_unsigned("struct io_uring_task", tctx, "io_wq")
-            last = self.eval_unsigned("struct io_uring_task", tctx, "last")
             self.out.append("  task io_uring    : {:#x} owner={:s} last={:s} io_wq={:s}".format(
-                tctx, self.task_label(task), self.format_optional(last), self.format_optional(task_wq),
+                tctx["address"], self.task_label(task), self.format_optional(tctx["last"]),
+                self.format_optional(tctx["io_wq"]),
             ))
-            for index in range(16):
-                ring_file = self.eval_unsigned("struct io_uring_task", tctx, "registered_rings[{:d}]".format(index))
-                if ring_file:
-                    self.out.append("    registered_rings[{:<2d}]={:#x}".format(index, ring_file))
+            for index, ring_file in tctx["registered_rings"]:
+                self.out.append("    registered_rings[{:<2d}]={:#x}".format(index, ring_file))
 
         for member, task in workers:
             self.out.append("  {:16s}: {:s}".format(member, self.task_label(task)))
@@ -218253,8 +218383,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             if owner.get("file") and owner.get("ctx_source"):
                 self.out.append("  private_data     : {:s}".format(owner["ctx_source"]))
 
-        flags = self.eval_unsigned("struct io_ring_ctx", ctx, "flags")
-        int_flags = self.eval_unsigned("struct io_ring_ctx", ctx, "int_flags")
+        flags, int_flags = self.kio.get_flags(ctx)
         flags_text = self.format_optional(flags)
         if int_flags is not None:
             int_flags_text = " int_flags={:s}".format(self.format_optional(int_flags))
@@ -218262,7 +218391,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             int_flags_text = ""
         self.out.append("  flags            : {:s}{:s}".format(flags_text, int_flags_text))
 
-        stats = self.ring_stats(ctx)
+        stats = self.kio.ring_stats(ctx)
         if stats is None:
             self.out.append("  rings            : unavailable")
         else:
@@ -218290,23 +218419,23 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         self.dump_registered_files(ctx)
         self.dump_registered_buffers(ctx)
         if not self.args.no_requests:
-            if GefUtil.type_size("struct io_ring_ctx") is None or GefUtil.type_size("struct io_kiocb") is None:
+            if not self.kio.has_request_layout():
                 self.out.append("  requests         : unavailable (layout information is required)")
             else:
-                self.dump_requests(self.collect_requests(ctx))
+                self.dump_requests(self.kio.collect_requests(ctx))
         return
 
     def detect_address_type(self, address):
-        if self.context_score(address):
+        if self.kio.context_score(address):
             return "ctx"
-        if self.request_context(address) and self.context_score(self.request_context(address)):
+        if self.kio.request_context(address) and self.kio.context_score(self.kio.request_context(address)):
             return "request"
-        if self.is_ring_path(self.path_for_file(address)):
+        if self.kio.is_ring_path(self.kio.path_for_file(address)):
             return "file"
         return None
 
     def print_meta(self):
-        self.quiet_info("kernel version: {!s}".format(self.kversion))
+        self.quiet_info("kernel version: {!s}".format(self.kio.kversion))
         for type_name in ["struct file", "struct io_ring_ctx", "struct io_kiocb", "struct io_uring_task",
                           "struct io_mapped_ubuf", "struct io_rsrc_node"]:
             size = GefUtil.type_size(type_name)
@@ -218332,17 +218461,6 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof({:s}, {:s}): {:s}".format(type_label, member, offset_text))
         return
 
-    def initialize(self):
-        self.meta = []
-        self.kversion = Kernel.version()
-        if self.kversion is None:
-            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
-            return None
-        # the task list and the VFS are needed only to find the rings from the fds
-        self.task_command = False
-        self.kpath = False
-        return True
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -218357,17 +218475,18 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             err("FD must not be negative")
             return
         self.quiet_info("Wait for memory scan")
-        if not self.initialize():
-            for func, line in self.meta:
+        self.kio = Kernel.io_uring()
+        if not self.kio.initialize():
+            for func, line in Kernel.export_meta(self, self.kio.meta):
                 func(line)
             self.quiet_err("Failed to initialize")
             return
-        if self.kversion < "5.1":
+        if self.kio.kversion < "5.1":
             self.quiet_warn("This kernel predates io_uring, which first appeared in mainline v5.1")
             return
         if args.meta:
-            fd_scan = self.get_task_command() is not None and self.get_kpath() is not None
-            for func, line in self.meta:
+            fd_scan = self.kio.get_task_command() is not None and self.kio.get_kpath() is not None
+            for func, line in Kernel.export_meta(self, self.kio.meta):
                 func(line)
             self.print_meta()
             if fd_scan:
@@ -218383,25 +218502,25 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             else:
                 address_type = self.detect_address_type(args.address)
             if address_type == "request":
-                ctx = self.request_context(args.address)
-                if not self.context_score(ctx):
+                ctx = self.kio.request_context(args.address)
+                if not self.kio.context_score(ctx):
                     self.err_add_out("Could not validate request->ctx for {:#x}".format(args.address))
                 else:
                     self.dump_context(ctx, [])
                     self.dump_requests([(args.address, "selected")])
             elif address_type == "file":
-                path = self.path_for_file(args.address)
-                ctx, source = self.context_from_file(args.address)
-                if self.kpath is None:
-                    for func, line in self.meta:
+                path = self.kio.path_for_file(args.address)
+                ctx, source = self.kio.context_from_file(args.address)
+                if self.kio.kpath is None:
+                    for func, line in Kernel.export_meta(self, self.kio.meta):
                         func(line)
                     self.err_add_out("An io_uring file cannot be verified without the VFS object layout")
-                elif not self.is_ring_path(path) or ctx is None:
+                elif not self.kio.is_ring_path(path) or ctx is None:
                     self.err_add_out("Could not interpret {:#x} as an io_uring file".format(args.address))
                 else:
                     self.dump_context(ctx, [{"file": args.address, "path": path, "ctx_source": source}])
             elif address_type == "ctx":
-                if not self.context_score(args.address):
+                if not self.kio.context_score(args.address):
                     self.err_add_out("Could not validate io_ring_ctx at {:#x}".format(args.address))
                 else:
                     self.dump_context(args.address, [])
@@ -218410,9 +218529,9 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             self.print_output(check_terminal_size=True)
             return
 
-        ring_files = self.find_ring_files()
+        ring_files = self.kio.find_ring_files(args.pid, args.fd)
         if ring_files is None:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kio.meta):
                 func(line)
             self.quiet_err("Failed to initialize the fd scan (ADDRESS with --type ctx/request does not need it)")
             return
