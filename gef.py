@@ -80320,6 +80320,11 @@ class Kernel:
         return KernelKeyring.get_instance()
 
     @staticmethod
+    def cfi():
+        """Return the kCFI type hash resolver."""
+        return KernelCfi.get_instance()
+
+    @staticmethod
     def modules():
         """Return the kernel module resolver."""
         return KernelModule.get_instance()
@@ -217278,54 +217283,15 @@ class KernelLsmCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelCfiHashCommand(GenericCommand, BufferingOutput):
-    """List the functions that share a kCFI type hash with a given call target."""
+class KernelCfi:
+    """Read the kCFI (CONFIG_CFI_CLANG) type hash placed in the `__cfi_<func>` preamble before every address-taken
+    function, in either the plain kCFI form (`movl $hash, %eax`) or the FineIBT form installed by boot-time patching
+    (`endbr64; sub $hash, reg`), and find the functions that share a hash. x86-64 only."""
 
-    _cmdline_ = "kcfi-hash"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", nargs="?",
-                        help="the call target (function pointer) address or kallsyms name.")
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-H", "--hash", type=lambda x: int(x, 16) & 0xffffffff, default=None,
-                        help="list the functions carrying this 32-bit type hash instead.")
-    parser.add_argument("-l", "--limit", type=lambda x: int(x, 0), default=0x40,
-                        help="stop after this many matching functions. 0 means unlimited. (default: %(default)s)")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s} commit_creds          # hash of commit_creds and every function sharing it",
-        "{0:s} 0xffffffff81234560    # same, by call-target address",
-        "{0:s} -H 0xe039e52a         # list every function carrying this hash",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "kCFI (CONFIG_CFI_CLANG) places a 32-bit type hash just before every address-taken function.",
-        "An indirect call verifies the target's hash against the one expected for the pointer's type, so a",
-        "function sharing that hash may be substituted for the original even while CFI is enforced. This",
-        "shows the hash of a call target and every function that carries the same one.",
-        "",
-        "The preamble is located from the `__cfi_<func>` prefix symbol and decoded by its first bytes, which",
-        "covers both the plain kCFI form and the FineIBT form installed by boot-time patching when the CPU",
-        "supports IBT:",
-        "",
-        "  kCFI                        FineIBT",
-        "  +-__cfi_func-------+        +-__cfi_func-------+",
-        "  | movl $hash, %eax |--hash  | endbr64          |",
-        "  | nop * 11         |        | sub  $hash, reg  |--hash",
-        "  +------------------+        | jne  func+N      |",
-        "  | func: ...        |        +------------------+",
-        "  +------------------+        | func: ...        |",
-        "                              +------------------+",
-        "",
-        "- FineIBT re-hashes each type with a per-boot seed; its values differ from a kCFI boot but stay",
-        "  consistent within one boot, so comparing functions is valid in either mode.",
-        "- x86-64 only. On a kernel without CONFIG_CFI_CLANG there is no hash to read.",
-    ])
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
     @staticmethod
     def decode_bytes(b):
@@ -217411,6 +217377,56 @@ class KernelCfiHashCommand(GenericCommand, BufferingOutput):
         except (ValueError, gdb.error):
             return Ksym.get_addr(text)
 
+
+@register_command
+class KernelCfiHashCommand(GenericCommand, BufferingOutput):
+    """List the functions that share a kCFI type hash with a given call target."""
+
+    _cmdline_ = "kcfi-hash"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", nargs="?",
+                        help="the call target (function pointer) address or kallsyms name.")
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-H", "--hash", type=lambda x: int(x, 16) & 0xffffffff, default=None,
+                        help="list the functions carrying this 32-bit type hash instead.")
+    parser.add_argument("-l", "--limit", type=lambda x: int(x, 0), default=0x40,
+                        help="stop after this many matching functions. 0 means unlimited. (default: %(default)s)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} commit_creds          # hash of commit_creds and every function sharing it",
+        "{0:s} 0xffffffff81234560    # same, by call-target address",
+        "{0:s} -H 0xe039e52a         # list every function carrying this hash",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "kCFI (CONFIG_CFI_CLANG) places a 32-bit type hash just before every address-taken function.",
+        "An indirect call verifies the target's hash against the one expected for the pointer's type, so a",
+        "function sharing that hash may be substituted for the original even while CFI is enforced. This",
+        "shows the hash of a call target and every function that carries the same one.",
+        "",
+        "The preamble is located from the `__cfi_<func>` prefix symbol and decoded by its first bytes, which",
+        "covers both the plain kCFI form and the FineIBT form installed by boot-time patching when the CPU",
+        "supports IBT:",
+        "",
+        "  kCFI                        FineIBT",
+        "  +-__cfi_func-------+        +-__cfi_func-------+",
+        "  | movl $hash, %eax |--hash  | endbr64          |",
+        "  | nop * 11         |        | sub  $hash, reg  |--hash",
+        "  +------------------+        | jne  func+N      |",
+        "  | func: ...        |        +------------------+",
+        "  +------------------+        | func: ...        |",
+        "                              +------------------+",
+        "",
+        "- FineIBT re-hashes each type with a per-boot seed; its values differ from a kCFI boot but stay",
+        "  consistent within one boot, so comparing functions is valid in either mode.",
+        "- x86-64 only. On a kernel without CONFIG_CFI_CLANG there is no hash to read.",
+    ])
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -217427,7 +217443,8 @@ class KernelCfiHashCommand(GenericCommand, BufferingOutput):
             err("Could not find Linux kernel")
             return
 
-        offset = self.cfi_offset()
+        self.kcfi = Kernel.cfi()
+        offset = self.kcfi.cfi_offset()
         if offset is None:
             err("No `__cfi_` symbols; the kernel lacks CONFIG_CFI_CLANG or CONFIG_KALLSYMS_ALL")
             return
@@ -217435,11 +217452,11 @@ class KernelCfiHashCommand(GenericCommand, BufferingOutput):
         if args.hash is not None:
             want = args.hash
         else:
-            func = self.resolve_location(args.location)
+            func = self.kcfi.resolve_location(args.location)
             if func is None:
                 err("Could not resolve: {:s}".format(args.location))
                 return
-            want, mode = self.hash_of_func(func, offset)
+            want, mode = self.kcfi.hash_of_func(func, offset)
             if want is None:
                 err("No kCFI preamble at {:#x} ({:s}); not an address-taken function entry?".format(func, mode))
                 return
@@ -217447,7 +217464,7 @@ class KernelCfiHashCommand(GenericCommand, BufferingOutput):
             self.quiet_info_add_out("Target: {:s}  {:#x}".format(name, func))
             self.quiet_info_add_out("Type hash: {:#010x}  (mode: {:s}, cfi_get_offset: {:d})".format(want, mode, offset))
 
-        hashes = self.collect_hashes()
+        hashes = self.kcfi.collect_hashes()
         peers = hashes.get(want, [])
         if args.hash is not None:
             self.quiet_info_add_out("Type hash: {:#010x}  (cfi_get_offset: {:d})".format(want, offset))
