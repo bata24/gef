@@ -80731,9 +80731,10 @@ class Kernel:
         if Kernel.get_slab_type() == "SLAB" and Kernel.version() < "3.13":
             return Kernel.slab().get_legacy_page_virt_pair()
         for pages in Kernel.get_kmalloc_pages():
-            for page, virt in pages:
-                if page and virt is not None:
-                    return page, virt
+            pairs = [(page, virt) for page, virt in pages if page and virt is not None]
+            if pairs:
+                # the first page of RAM (e.g., SLOB's on ARM64) has the index 0, which cannot tell sizeof(struct page)
+                return max(pairs, key=lambda pair: pair[1])
         return False
 
     @staticmethod
@@ -86509,10 +86510,13 @@ class KernelCred:
             if read_int32_from_memory(init_cred + offset_magic) == CRED_MAGIC:
                 return offset_magic + 4, sizeof_usage
 
-        # init_cred has uid = gid = ... = fsgid = 0
+        # init_cred has uid = gid = ... = fsgid = 0, securebits = 0 and cap_inheritable = 0 before cap_permitted != 0.
+        # The length of these zeros tells the size of usage; Android GKI keeps atomic_t after the stable backports.
+        # A u64 kernel_cap_t (v6.3~) may follow a padding.
         for sizeof_usage in sizes_usage:
-            uid_gid_size = 4 * 8 # uid_t:4byte. len([uid,gid,suid,sgid,euid,egid,fsuid,fsgid]) == 8
-            if read_memory(init_cred + sizeof_usage, uid_gid_size) == b"\0" * uid_gid_size:
+            data = read_memory(init_cred + sizeof_usage, 0x34)
+            zero_size = (len(data) - len(data.lstrip(b"\0"))) & ~3
+            if zero_size == 0x2c or (zero_size == 0x30 and (sizeof_usage + 0x24) % 8):
                 return sizeof_usage, sizeof_usage
         return None
 
@@ -98720,6 +98724,8 @@ class KernelTask:
         self.sa_flags_extra = LinuxSignal.KERNEL_FLAGS
         if is_arm32():
             self.sa_flags_extra += ((0x0200_0000, "SA_THIRTYTWO"),)
+        elif is_x86():
+            self.sa_flags_extra += ((0x0100_0000, "SA_X32_ABI"), (0x0200_0000, "SA_IA32_ABI"))
 
         # the libc names of the RT signals need the mapped files
         self.libc_kmm = Kernel.mm()
@@ -109260,28 +109266,35 @@ class KernelPciDevice:
             if name_ptr and read_cstring_from_memory(name_ptr, safe=True) == dev_name:
                 return type_offset, resource_layout, "DWARF"
 
+        # the name of each entry of resource[] points to the device name
+        names = set()
+        for i in range(1, 0x200):
+            name_addr = dev + self.offset_pci_dev_dev + current_arch.ptrsize * i
+            name_ptr = read_int_from_memory(name_addr, safe=True)
+            if not name_ptr or not is_valid_addr(name_ptr):
+                continue
+            if read_cstring_from_memory(name_ptr, safe=True) == dev_name:
+                names.add(name_addr)
+
         candidates = []
-        for width in dict.fromkeys((current_arch.ptrsize, 8, 4)):
-            for has_desc in (False, True):
-                layout = KernelResourceLayout.fallback_layout(width, has_desc)
-                for i in range(1, 300):
-                    name_addr = dev + self.offset_pci_dev_dev + current_arch.ptrsize * i
-                    name_ptr = read_int_from_memory(name_addr, safe=True)
-                    if not name_ptr or not is_valid_addr(name_ptr):
-                        continue
-                    if read_cstring_from_memory(name_ptr, safe=True) != dev_name:
-                        continue
-                    base = name_addr - layout["name"]
-                    if base <= dev + self.offset_pci_dev_dev or base % current_arch.ptrsize:
-                        continue
-                    matches = 0
-                    for index in range(16):
-                        entry = base + layout["size"] * index
-                        pointer = read_int_from_memory(entry + layout["name"], safe=True)
-                        if pointer and read_cstring_from_memory(pointer, safe=True) == dev_name:
-                            matches += 1
-                    if matches >= 6:
-                        candidates.append((matches, base - dev, layout))
+        # struct resource may have trailing members (e.g., android_kabi_reserved1-4 of Android GKI),
+        # so the size is searched and the fewest of them wins a tie
+        for extra in range(0, 0x40, current_arch.ptrsize):
+            # resource_size_t is phys_addr_t, which is u64 on a 64-bit kernel
+            for width in dict.fromkeys((current_arch.ptrsize, 8)):
+                for has_desc in (False, True):
+                    layout = KernelResourceLayout.fallback_layout(width, has_desc)
+                    layout["size"] += extra
+                    for name_addr in sorted(names):
+                        base = name_addr - layout["name"]
+                        if base <= dev + self.offset_pci_dev_dev or base % current_arch.ptrsize:
+                            continue
+                        matches = 0
+                        for index in range(16):
+                            if base + layout["size"] * index + layout["name"] in names:
+                                matches += 1
+                        if matches >= 6:
+                            candidates.append((matches, base - dev, layout))
         if not candidates:
             return None, None, None
         matches, offset, layout = max(candidates, key=lambda item: item[0])
@@ -164007,14 +164020,18 @@ class KobjCommand(GenericCommand):
 
         # On 32-bit the image lives inside the linear map and Kernel.layout() may miss the
         # .data/.bss range, so also derive image bounds from kallsyms when available.
-        for start_sym, end_sym, label in (
-            ("_stext", "_end", "kernel image"),
-            ("_stext", "_etext", "kernel image (.text)"),
-            ("__start_rodata", "__end_rodata", "kernel image (.rodata)"),
-            ("_sdata", "_edata", "kernel image (.data)"),
+        # The init sections are freed after boot, so they are told from the static image (e.g., RISC-V v5.4 puts them
+        # before _stext). __init_begin needs CONFIG_KALLSYMS_ALL=y on some arches, but _sinittext is always there.
+        for start_sym, end_sym, label, kind in (
+            ("_stext", "_end", "kernel image", "kernel_image"),
+            ("_stext", "_etext", "kernel image (.text)", "kernel_image"),
+            ("__start_rodata", "__end_rodata", "kernel image (.rodata)", "kernel_image"),
+            ("_sdata", "_edata", "kernel image (.data)", "kernel_image"),
+            ("__init_begin", "__init_end", "kernel image (.init)", "kernel_init"),
+            ("_sinittext", "_einittext", "kernel image (.init.text)", "kernel_init"),
         ):
             try:
-                add(Ksym.get_addr(start_sym), Ksym.get_addr(end_sym), label, "kernel_image")
+                add(Ksym.get_addr(start_sym), Ksym.get_addr(end_sym), label, kind)
             except Exception:
                 pass
 
@@ -164182,7 +164199,7 @@ class KobjCommand(GenericCommand):
         return sorted({entry["name"] for entry in matches if entry["alias"] != "-" and entry["name"] != name})
 
     def get_page_state(self, addr):
-        """Return (in_buddy_list, refcount, page_type) of the page containing addr as `pageinfo` decodes it,
+        """Return (in_buddy_list, refcount, page_type, flags) of the page containing addr as `pageinfo` decodes it,
         or None if the page metadata is unavailable. page_type is "" if the page has no type."""
         # the same conditions as `pageinfo`, which runs only in qemu-system mode and in kernel context
         if not is_qemu_system() or not is_in_kernel():
@@ -164202,7 +164219,7 @@ class KobjCommand(GenericCommand):
         except Exception:
             # like the `pageinfo` command, a failed decode means that the page metadata is unavailable
             return None
-        return page_info["in_buddy_list"], page_info["refcount"], ptype
+        return page_info["in_buddy_list"], page_info["refcount"], ptype, page_info["flags"]
 
     def get_buddy_block(self, addr):
         """Return (order, size) of the free buddy block containing addr as `buddy-contains -L` resolves it, or None."""
@@ -164232,7 +164249,7 @@ class KobjCommand(GenericCommand):
             self.emit("Confidence", "low")
             return
 
-        in_buddy, refcount, ptype = page_state
+        in_buddy, refcount, ptype, _ = page_state
 
         self.emit("Allocator", "buddy (page allocator)")
         if in_buddy:
@@ -164389,6 +164406,26 @@ class KobjCommand(GenericCommand):
         self.report_symbol(addr)
         return
 
+    def report_kernel_init(self, addr):
+        # free_initmem() clears PG_reserved of the init sections and frees them to the buddy allocator
+        page_state = self.get_page_state(addr)
+        if page_state is None:
+            self.emit("Allocator", "unknown (page metadata unavailable)")
+            self.emit("State", "unknown")
+            self.emit("Candidate", "init code/data, or a page reused after it was freed")
+            self.emit("Confidence", "low")
+        else:
+            _, _, _, flags = page_state
+            if KernelPage.has_flag(flags, "PG_reserved"):
+                self.emit("Allocator", "n/a (static kernel image)")
+                self.emit("Candidate", "init code/data (not freed yet)")
+                self.emit("Confidence", "medium")
+            else:
+                self.report_lowmem(addr)
+                self.emit("Remarks", "the init section was freed after boot")
+        self.report_symbol(addr)
+        return
+
     def report_symbol(self, addr):
         sym = Symbol.format(addr)
         if sym:
@@ -164430,6 +164467,8 @@ class KobjCommand(GenericCommand):
             self.report_module(addr)
         elif kind == "kernel_image":
             self.report_kernel_image(addr)
+        elif kind == "kernel_init":
+            self.report_kernel_init(addr)
         elif kind == "other":
             self.emit("Allocator", "n/a")
             self.emit("Candidate", "special kernel region")
@@ -218949,9 +218988,11 @@ class KernelProcfs:
         """Add the offsets of proc_iops and proc_ops to `layout`, decided by the majority of the directories."""
         # the ones of a directory hold proc_lookup and proc_readdir, and the ones of proc_root hold proc_root_lookup
         # and proc_root_readdir; a rootkit may replace some of them, so the majority decides
+        # inode_operations has lookup first, and file_operations has readdir/iterate/iterate_shared in the first 10
+        # members; reading further reaches the next table (e.g., proc_root_operations after proc_root_inode_operations)
         functions = {
-            "proc_iops": {Ksym.get_addr("proc_lookup"), Ksym.get_addr("proc_root_lookup")} - {None},
-            "proc_ops": {Ksym.get_addr("proc_readdir"), Ksym.get_addr("proc_root_readdir")} - {None},
+            "proc_iops": (slice(0, 1), {Ksym.get_addr("proc_lookup"), Ksym.get_addr("proc_root_lookup")} - {None}),
+            "proc_ops": (slice(1, 10), {Ksym.get_addr("proc_readdir"), Ksym.get_addr("proc_root_readdir")} - {None}),
         }
         children, _ = self.read_children(self.proc_root)
         directories = [self.proc_root] + [child for child in children if (self.read_mode(child) or 0) & 0o170000 == 0o040000]
@@ -218963,13 +219004,13 @@ class KernelProcfs:
                 if not ops or not KernelAddressHeuristicFinderUtil.is_kernel_space(ops):
                     continue
                 if ops not in members:
-                    data = read_memory(ops, 0x100, safe=True)
+                    data = read_memory(ops, current_arch.ptrsize * 10, safe=True)
                     if data is None:
-                        members[ops] = set()
+                        members[ops] = []
                     else:
-                        members[ops] = set(slice_unpack(data, current_arch.ptrsize))
-                for key, addresses in functions.items():
-                    if members[ops] & addresses:
+                        members[ops] = slice_unpack(data, current_arch.ptrsize)
+                for key, (window, addresses) in functions.items():
+                    if set(members[ops][window]) & addresses:
                         votes[(key, offset)] += 1
         for key in functions:
             candidates = [(count, -offset) for (name, offset), count in votes.items() if name == key]
@@ -219567,7 +219608,9 @@ class KernelCgroup(KernelLayoutReader):
             if hierarchy_id is not None:
                 candidates.append((hierarchy_id, GefUtil.offsetof(struct_name, "name")))
                 break
-        candidates += [(offset, None) for offset in range(0, ptrsize * 4, 4)]
+        # hierarchy_id follows a pointer and subsys_mask, which is unsigned long (~v3.14) or unsigned int (v3.15~).
+        # A zero subsys_mask of a single hierarchy also passes as an ID, so the larger offset is tried first.
+        candidates += [(offset, None) for offset in dict.fromkeys([ptrsize * 2, ptrsize + 4])]
         for hierarchy_id, name in candidates:
             ids = [read_int32_from_memory(base + hierarchy_id, safe=True) for base in bases]
             if len(set(ids)) != len(ids) or ids.count(0) != 1 or not all(0 <= x < 0x10000 for x in ids):
