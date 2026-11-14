@@ -38155,16 +38155,26 @@ class KernelChecksecCommand(GenericCommand):
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
             return
 
-        slab_cache_names = " ".join("kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 96, 128, 192, 256, 512])
-        slub_dump_ret = gdb.execute("slub-dump --quiet --no-pager {:s}".format(slab_cache_names), to_string=True)
-        if slub_dump_ret.count("Corrupted") >= 2: # Destruction of up to one SLUB freelist is allowed.
+        kslub = Kernel.slub()
+        kslub.warmup_page2virt()
+        offset = None
+        freelists = []
+        if kslub.initialize():
+            offset = kslub.kmem_cache_offset_random
+            # the freelists that `slub-dump` shows without options
+            names = ["kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]]
+            caches = kslub.walk_caches(names, list(range(kslub.ncpus)), partial=False, node="7.0" <= Kernel.version(),
+                                       cpu_sheaves=False)
+            for cache in caches[1:]:
+                for page, freelist_fastpath in KernelSlub.get_cache_pages(cache):
+                    freelists += [freelist_fastpath, page.get("freelist", [])]
+        # Destruction of up to one SLUB freelist is allowed.
+        if sum(any(isinstance(x, str) for x in freelist) for freelist in freelists) >= 2:
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
             return
 
-        slub_dump_ret = gdb.execute("slub-dump --meta", to_string=True)
-        r = re.search(r"offsetof\(kmem_cache, random\): (0x\S+)", slub_dump_ret)
-        if r:
-            additional = "offsetof(kmem_cache, random): {:s}".format(r.group(1))
+        if offset is not None:
+            additional = "offsetof(kmem_cache, random): {:#x}".format(offset)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         else:
             additional = "offsetof(kmem_cache, random): Not found"
