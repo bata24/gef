@@ -70729,6 +70729,10 @@ class KernelAddressHeuristicFinderUtil:
             return False
         begin = Ksym.get_addr("__init_begin")
         end = Ksym.get_addr("__init_end")
+        if begin and not end:
+            # `__init_end` is an absolute symbol out of kallsyms in old kernels. Old ARM kernels (e.g., v3.0)
+            # place .init right before `_text`, while `_text` is below `__init_begin` in the other layouts.
+            end = Ksym.get_addr("_text")
         if not begin or not end:
             return False
         return begin <= x < end
@@ -74737,11 +74741,12 @@ class KernelAddressHeuristicFinder:
         completed address above it, which is enough to tell them apart.
         CONFIG_SMP=n compiles the body away to `return false`, so nothing is found.
         `offsets` is `__per_cpu_offset[]`, which the caller already has."""
-        # the static area never fills a whole unit, and 1MB covers every kernel of the corpus
+        # the static area never fills a whole unit, which may exceed 1MB (e.g., about 2MB with CONFIG_LOCK_STAT=y),
+        # and 1MB covers every kernel of the corpus when the unit size is unknown
         limit = 0x10_0000
         if len(offsets) >= 2:
             unit_size = AddressUtil.normalize_address(offsets[1] - offsets[0])
-            if 0 < unit_size < limit:
+            if 0 < unit_size < 0x1000_0000:
                 limit = unit_size
 
         for name in ["__is_kernel_percpu_address", "is_kernel_percpu_address"]:
@@ -74778,7 +74783,9 @@ class KernelAddressHeuristicFinder:
                         if not is_x86_64():
                             continue
                     elif not KernelAddressHeuristicFinderUtil.is_in_kernel_image(start):
-                        continue
+                        # old ARM kernels (e.g., v3.0) place .init, which holds the static area, before `_text`
+                        if not KernelAddressHeuristicFinderUtil.is_in_freed_init_region(start):
+                            continue
                     end = next((x for x in consts if 0x1000 <= x - start <= limit), None)
                     if end is None:
                         continue
@@ -74792,13 +74799,15 @@ class KernelAddressHeuristicFinder:
 
     @staticmethod
     def find_per_cpu_unit_size(offsets, static_size):
-        """Recover pcpu_unit_size from pcpu_chunk_slot when the data symbol is absent."""
+        """Recover pcpu_unit_size from pcpu_chunk_slot when the data symbol is absent.
+        pcpu_chunk_slot is inlined into pcpu_chunk_relocate in newer kernels (e.g., v6.19)."""
         if not is_arm32() or not offsets:
             return None
         sorted_offsets = sorted(set(offsets))
         gaps = [b - a for a, b in zip(sorted_offsets, sorted_offsets[1:])]
         limit = min(gaps, default=0x1000_0000)
-        for anchor in Ksym.get_addrs("pcpu_chunk_slot", match="split"):
+        anchors = Ksym.get_addrs("pcpu_chunk_slot", match="split") + Ksym.get_addrs("pcpu_chunk_relocate", match="split")
+        for anchor in anchors:
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 60)
             addresses = itertools.chain(
                 KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
@@ -91596,7 +91605,14 @@ class KernelSched:
                 if want is not None and base not in want:
                     break
             else:
-                return off
+                # The upper half of a u64 timestamp in `se` (e.g., `exec_start`) also holds 1 or 2 for the RT tasks
+                # for a while after boot. It is told apart by the CPU count that follows `policy`: `nr_cpus_allowed`
+                # (`cpus_allowed` before v3.6) right after it, after a hole, or after `max_allowed_capacity` (v6.10~).
+                aligned = align_to_ptrsize(off + 4)
+                for following in (off + 4, aligned, aligned + current_arch.ptrsize):
+                    values = [read_int32_from_memory(task + following, safe=True) for task, _ in constraints]
+                    if all(v is not None and 1 <= v <= 0x2000 for v in values):
+                        return off
         return None
 
     def get_offset_on_rq(self, kversion):
