@@ -39362,19 +39362,16 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
             return
 
-        ktask_ret = gdb.execute("ktask --meta", to_string=True)
-        r = re.search(r"offsetof\(task_struct, stack_canary\): (0x\S+)", ktask_ret)
-        if r:
-            additional = "offsetof(task_struct, stack_canary): {:s}".format(r.group(1))
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
-            return
-
-        if "stack_canary" in ktask_ret:
-            additional = "offsetof(task_struct, stack_canary): Not found"
-            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
-        else:
+        ktask = Kernel.task()
+        if not ktask.initialize():
             additional = "ktask was failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+        elif ktask.offset_kcanary is not None:
+            additional = "offsetof(task_struct, stack_canary): {:#x}".format(ktask.offset_kcanary)
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
+        else:
+            additional = "offsetof(task_struct, stack_canary): Not found"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         return
 
     def check_CONFIG_SHADOW_CALL_STACK(self):
@@ -73687,14 +73684,10 @@ class KernelAddressHeuristicFinder:
             if x:
                 return x
 
-        # plan 2 (from ktask metadata)
-        res = gdb.execute("ktask --meta --no-pager", to_string=True)
-        m = re.search(r"offsetof\(task_struct, cred\): (0x\w+)", res)
-        task_match = re.search(r"init_task: (0x\w+)", res)
-        if m and task_match:
-            cred_offset = int(m.group(1), 16)
-            task = int(task_match.group(1), 16)
-            return read_int_from_memory(task + cred_offset)
+        # plan 2 (from init_task->cred)
+        ktask = Kernel.task()
+        if ktask.initialize():
+            return read_int_from_memory(ktask.init_task + ktask.offset_cred)
         return None
 
     @staticmethod
@@ -98326,57 +98319,6 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
             self.out.append("")
         return
 
-    def lwp_available(self):
-        task_command = self.task_command
-        if getattr(task_command, "offset_thread_group", None) is None:
-            return False
-        if "6.7" <= Kernel.version():
-            if getattr(task_command, "offset_signal", None) is None:
-                return False
-            if getattr(task_command, "offset_thread_head", None) is None:
-                return False
-        return True
-
-    def collect_entries(self):
-        task_command = self.task_command
-        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
-        if self.args.print_thread and self.lwp_available():
-            task_addrs = task_command.add_lwp_task(task_addrs)
-
-        entries = []
-        for task in task_addrs:
-            try:
-                pid = read_int32_from_memory(task + task_command.offset_pid)
-                comm = read_cstring_from_memory(task + task_command.offset_comm)
-                cred = read_int_from_memory(task + task_command.offset_cred)
-                real_cred = read_int_from_memory(task + task_command.offset_real_cred)
-                if self.args.user_process_only:
-                    mm = read_int_from_memory(task + task_command.offset_mm)
-                    if mm == 0 or pid == 0:
-                        continue
-            except gdb.MemoryError:
-                continue
-            if not is_valid_addr(cred):
-                continue
-            entries.append((task, pid, comm, cred, real_cred))
-        return entries
-
-    def filter_entries(self, entries):
-        args = self.args
-        filtered = []
-        for entry in entries:
-            task, pid, comm, cred, _real_cred = entry
-            if args.pid is not None and pid != args.pid:
-                continue
-            if args.task_filter and task not in args.task_filter:
-                continue
-            if args.cred_filter and cred not in args.cred_filter:
-                continue
-            if not GefUtil.matches_regex(comm, args.filter):
-                continue
-            filtered.append(entry)
-        return filtered
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -98395,12 +98337,16 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
         if args.meta:
             return
 
-        entries = self.collect_entries()
+        entries = self.task_command.get_task_entries(
+            threads=args.print_thread, user_only=args.user_process_only, cred=True,
+        )
         if not entries:
             self.quiet_info("Nothing to dump")
             return
 
-        selected = self.filter_entries(entries)
+        selected = KernelTask.filter_task_entries(
+            entries, pid=args.pid, task_filter=args.task_filter, cred_filter=args.cred_filter, comm_filter=args.filter,
+        )
         if not selected:
             err("No task matched")
             return
