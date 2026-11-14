@@ -80284,6 +80284,11 @@ class Kernel:
         return KernelVmalloc.get_instance()
 
     @staticmethod
+    def kmem_cache_alias():
+        """Return the slab cache alias resolver."""
+        return KernelKmemCacheAlias.get_instance()
+
+    @staticmethod
     def export_meta(command, meta, demote_err=False):
         """Convert the meta lines recorded by a kernel resolver into the (printer, line) pairs of `command`."""
         if demote_err:
@@ -163004,7 +163009,7 @@ class KobjCommand(GenericCommand):
     def get_merged_aliases(self, name):
         """Return the caches merged into the same physical cache as `name` (excluding itself),
         [] when verified not merged, or None when merge status could not be determined."""
-        groups = __gef_command_instances__["kmem-cache-alias"].get_alias_groups()
+        groups = Kernel.kmem_cache_alias().get_alias_groups()
         if groups is None:
             return None
         matches = [entry for entry in groups.values() if entry["slab_cache_name"] == name]
@@ -163240,27 +163245,16 @@ class KobjCommand(GenericCommand):
         return
 
 
-@register_command
-class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
-    """Resolve the slab cache (kmem_cache) alias."""
+class KernelKmemCacheAlias:
+    """Resolve the slab cache (kmem_cache) aliases from the slab sysfs directory (kernfs)."""
 
-    _cmdline_ = "kmem-cache-alias"
-    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("names", nargs="*", help="filter by specific cache name(s) (substring match).")
-    parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
-    parser.add_argument("-m", "--merged-only", action="store_true",
-                        help="show only merged caches grouped by physical cache.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _note_ = "\n".join([
-        "This command requires CONFIG_SYSFS=y.",
-        "CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.",
-    ])
+    def __init__(self):
+        self.meta = []
 
     @Cache.cache_this_session(cache_None=False)
     def initialize(self):
@@ -163268,9 +163262,9 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
         self.slab_kset = KernelAddressHeuristicFinder.get_slab_kset()
         if self.slab_kset is None:
-            self.meta.append((self.quiet_err, "Could not find slab_kset"))
+            self.meta.append(("err", "Could not find slab_kset"))
             return None
-        self.meta.append((self.quiet_info, "slab_kset: {:#x}".format(self.slab_kset)))
+        self.meta.append(("info", "slab_kset: {:#x}".format(self.slab_kset)))
 
         """
         struct kset {
@@ -163300,10 +163294,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 continue
             # found
             self.offset_kobj_sd = current_arch.ptrsize * (i + 6)
-            self.meta.append((self.quiet_info, "offsetof(kset, kobj.sd): {:#x}".format(self.offset_kobj_sd)))
+            self.meta.append(("info", "offsetof(kset, kobj.sd): {:#x}".format(self.offset_kobj_sd)))
             break
         else:
-            self.meta.append((self.quiet_err, "Could not find offsetof(kset, kobj.sd)"))
+            self.meta.append(("err", "Could not find offsetof(kset, kobj.sd)"))
             return None
 
         """
@@ -163361,30 +163355,56 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
                 self.offset_union += current_arch.ptrsize
             self.offset_dir_children = self.offset_union + current_arch.ptrsize
             self.offset_symlink_target_kn = self.offset_union
-            self.meta.append((self.quiet_info, "offsetof(kernfs_node, name): {:#x}".format(self.offset_name)))
-            self.meta.append((self.quiet_info, "offsetof(kernfs_node, rb): {:#x}".format(self.offset_rb)))
-            self.meta.append((self.quiet_info, "offsetof(kernfs_node, dir.children): {:#x}".format(self.offset_dir_children)))
+            self.meta.append(("info", "offsetof(kernfs_node, name): {:#x}".format(self.offset_name)))
+            self.meta.append(("info", "offsetof(kernfs_node, rb): {:#x}".format(self.offset_rb)))
+            self.meta.append(("info", "offsetof(kernfs_node, dir.children): {:#x}".format(self.offset_dir_children)))
             self.meta.append(
-                (self.quiet_info, "offsetof(kernfs_node, symlink.target_kn): {:#x}".format(self.offset_symlink_target_kn))
+                ("info", "offsetof(kernfs_node, symlink.target_kn): {:#x}".format(self.offset_symlink_target_kn))
             )
             break
         else:
-            self.meta.append((self.quiet_err, "Could not find offsetof(kernfs_node, name)"))
+            self.meta.append(("err", "Could not find offsetof(kernfs_node, name)"))
             return None
 
         return True
 
     def get_alias_groups(self):
-        self.args = self.parser.parse_args(["--quiet"])
+        """Return the alias groups of SLUB, or None if they are not resolved."""
         kversion = Kernel.version()
         if kversion is None or kversion < "3.14":
             return None
-        self.allocator = Kernel.get_slab_type()
-        if self.allocator != "SLUB" or not self.initialize():
+        allocator = Kernel.get_slab_type()
+        if allocator != "SLUB" or not self.initialize():
             return None
-        return self.parse_kmem_cache_alias()
+        alias_groups, _meta = self.parse_kmem_cache_alias(allocator)
+        return alias_groups
 
-    def parse_kmem_cache_alias(self):
+    @staticmethod
+    def get_used_caches(allocator):
+        """Return the kmem_caches of `allocator` ("SLUB" or "SLUB_TINY") in the order of `slub-dump --list`
+        (or `slub-tiny-dump --list`): sorted by object size, chunk size and name. A cache whose name is empty or has
+        a whitespace is skipped, as it cannot be told apart in that list."""
+        # slub-dump and slub-tiny-dump resolve page2virt first
+        KernelSlub.warmup_page2virt()
+        if allocator == "SLUB":
+            if not Kernel.version():
+                return []
+            kslub = Kernel.slub()
+            if not kslub.initialize():
+                return []
+            parsed_caches = kslub.walk_cache_list()
+        else:
+            kslub_tiny = Kernel.slub_tiny()
+            if not kslub_tiny.initialize():
+                return []
+            parsed_caches = kslub_tiny.walk_caches([], names_only=True)
+        caches = sorted(parsed_caches[1:], key=lambda x: (x["object_size"], x["size"], x["name"]))
+        return [kmem_cache for kmem_cache in caches if re.fullmatch(r"\S+", kmem_cache["name"])]
+
+    def parse_kmem_cache_alias(self, allocator):
+        """Return (alias_groups, meta). `meta` is the (level, message) list of the caches that are not found."""
+        meta = []
+
         # get children_root
         kset = read_int_from_memory(self.slab_kset)
         sd = read_int_from_memory(kset + self.offset_kobj_sd)
@@ -163428,19 +163448,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             }
             return
 
-        # parse slub-dump
-        cmd = {"SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump"}[self.allocator]
-        res = Color.remove_color(gdb.execute("{:s} --list --no-pager --quiet".format(cmd), to_string=True))
+        # the caches in use, as `slub-dump --list` (or `slub-tiny-dump --list`) lists them
         used_names = []
-        for line in res.splitlines():
-            r = re.search(r"(\d+)\s+\(0x\S+\)\s+(\d+)\s+\(0x\S+\)\s+(\S+)\s+(0x\S+)$", line)
-            if r is None:
-                continue
-            object_size = int(r.group(1))
-            chunk_size = int(r.group(2))
-            name = r.group(3)
-            kmem_cache = int(r.group(4), 16)
-            used_names.append([object_size, chunk_size, name, kmem_cache])
+        for kmem_cache in self.get_used_caches(allocator):
+            used_names.append([kmem_cache["object_size"], kmem_cache["size"], kmem_cache["name"], kmem_cache["address"]])
 
         # identify the actual slab_cache name in use
         for object_size, chunk_size, slab_cache_name, kmem_cache in used_names:
@@ -163455,7 +163466,7 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
 
             # skip if not found
             if slab_cache_name not in alias_groups:
-                self.quiet_err("Could not find key: {:s}".format(original_slab_cache_name))
+                meta.append(("err", "Could not find key: {:s}".format(original_slab_cache_name)))
                 add_unresolved_cache(original_slab_cache_name, object_size, chunk_size, kmem_cache)
                 continue
 
@@ -163514,7 +163525,30 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             if not resolved:
                 if not any(v["kmem_cache"] == kmem_cache for v in alias_groups.values()):
                     add_unresolved_cache(original_slab_cache_name, object_size, chunk_size, kmem_cache)
-        return alias_groups
+        return alias_groups, meta
+
+
+@register_command
+class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
+    """Resolve the slab cache (kmem_cache) alias."""
+
+    _cmdline_ = "kmem-cache-alias"
+    _category_ = "06-h. Qemu-system/KGDB Cooperation - Linux Allocator"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("names", nargs="*", help="filter by specific cache name(s) (substring match).")
+    parser.add_argument("-s", "--sort-by-size", action="store_true", help="sort by object size.")
+    parser.add_argument("-m", "--merged-only", action="store_true",
+                        help="show only merged caches grouped by physical cache.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_SYSFS=y.",
+        "CONFIG_SLUB_TINY=y is unsupported because slab sysfs is unavailable.",
+    ])
 
     def make_output_merged(self, alias_groups):
         chunk_label_color = Config.get("theme.heap_chunk_label")
@@ -163723,9 +163757,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             self.quiet_err("Unsupported: SLAB, SLOB, Unknown allocator")
             return
 
-        ret = self.initialize()
+        kcache_alias = Kernel.kmem_cache_alias()
+        ret = kcache_alias.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, kcache_alias.meta):
                 func(line)
         if not ret:
             self.quiet_err("Failed to initialize")
@@ -163735,7 +163770,9 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             return
 
         self.out = []
-        alias_groups = self.parse_kmem_cache_alias()
+        alias_groups, meta = kcache_alias.parse_kmem_cache_alias(self.allocator)
+        for func, line in Kernel.export_meta(self, meta):
+            func(line)
         if self.args.merged_only:
             self.make_output_merged(alias_groups)
         else:
