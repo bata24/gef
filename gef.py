@@ -691,13 +691,13 @@ class MemoryCache:
     def get_arm32_lpae_root():
         """Return the physical address of ARM32 Linux's LPAE master page table.
         QEMU's gdbstub normally translates a virtual read with the page tables of the selected CPU. On ARM32 Linux, a secondary
-        CPU can be stopped while its active table is missing kernel PMDs that are present in the master ``swapper_pg_dir``. A
-        normal GDB read then fails even though the kernel address is valid. This root lets ``read_memory`` retry through that
+        CPU can be stopped while its active table is missing kernel PMDs that are present in the master `swapper_pg_dir`. A
+        normal GDB read then fails even though the kernel address is valid. This root lets `read_memory` retry through that
         authoritative table.
         The fallback is limited to QEMU ARM32 with TTBCR.EAE set because the companion walker implements only ARM32's LPAE
         long-descriptor format. x86/x64 does not have this ARM32 table-synchronization failure and uses the active CR3 through
         the gdbstub. ARM64 keeps its kernel mappings in TTBR1_EL1, independently of the process-specific TTBR0_EL1, so it does
-        not need an equivalent ``swapper_pg_dir`` retry either.
+        not need an equivalent `swapper_pg_dir` retry either.
         """
         if not is_arm32() or not is_qemu_system():
             return None
@@ -746,7 +746,7 @@ class MemoryCache:
     @staticmethod
     def translate_arm32_lpae(vaddr, root, reader):
         """Translate one ARM32 LPAE virtual address using physical reads.
-        ``root`` is the physical ``swapper_pg_dir`` address and ``reader`` reads physical bytes. The walk handles an L1 1GB
+        `root` is the physical `swapper_pg_dir` address and `reader` reads physical bytes. The walk handles an L1 1GB
         block, an L2 2MB block, or an L3 4KB page and returns the final physical address. Invalid descriptors return None.
         This is deliberately not a general pagewalk implementation: it exists only so a failed ARM32 GDB virtual read can use
         the Linux master table. The normal x86/x64 and ARM64 reads remain handled by their gdbstubs.
@@ -774,12 +774,12 @@ class MemoryCache:
 
     @staticmethod
     def read_arm32_lpae(vaddr, length):
-        """Read ARM32 virtual memory through the LPAE ``swapper_pg_dir``.
+        """Read ARM32 virtual memory through the LPAE `swapper_pg_dir`.
         This is the cache reader used only after the ordinary virtual read has failed. It temporarily enables physical mode,
-        translates each virtual page with ``translate_arm32_lpae``, and reads the resulting physical ranges. Reads are split at
+        translates each virtual page with `translate_arm32_lpae`, and reads the resulting physical ranges. Reads are split at
         4KB boundaries because consecutive virtual pages need not be consecutive in physical memory.
         x86/x64 and ARM64 do not call this function: their normal gdbstub reads do not need the ARM32-specific master-table
-        recovery described by ``get_arm32_lpae_root``.
+        recovery described by `get_arm32_lpae_root`.
         """
         root = MemoryCache.get_arm32_lpae_root()
         if root is None:
@@ -14050,12 +14050,13 @@ class QemuMonitor:
                 QemuMonitor.get_current_mmu_mode()
         return
 
+
 class SystemManagementMemory:
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
     def get_smram_map():
-        """Return the most useful SMRAM range as ``(base, size, label)``.
+        """Return the most useful SMRAM range as `(base, size, label)`.
         QEMU names the protected range differently depending on the chipset and
         firmware (TSEG, HSEG, ABSEG, or SMRAM).  The flat memory tree is a more
         reliable source than assuming the architectural reset SMBASE.  Do not
@@ -14083,8 +14084,8 @@ class SystemManagementMemory:
     @staticmethod
     @Cache.cache_until_next(per_cpu=True)
     def get_smm_monitor_state():
-        """Return ``(state, token)`` from QEMU's current-CPU register dump.
-        ``state`` is None when this QEMU version does not expose an SMM marker.
+        """Return `(state, token)` from QEMU's current-CPU register dump.
+        `state` is None when this QEMU version does not expose an SMM marker.
         """
         if not is_qemu_system() or not is_x86():
             return None, None
@@ -14113,7 +14114,7 @@ class SystemManagementMemory:
     @Cache.cache_until_next(per_cpu=True)
     def get_smm_status():
         """Return details about the current CPU's SMM state.
-        QEMU's explicit ``SMM=`` marker is authoritative.  Older builds without
+        QEMU's explicit `SMM=` marker is authoritative.  Older builds without
         that marker fall back to checking whether the physical instruction address lies in SMRAM.
         """
         smram = SystemManagementMemory.get_smram_map()
@@ -14187,7 +14188,7 @@ class SystemManagementMemory:
 
     @staticmethod
     def read_smram_current_address_space(base, size):
-        """Return readable ``(offset, data)`` chunks from the current SMM address space."""
+        """Return readable `(offset, data)` chunks from the current SMM address space."""
         chunks = []
         with QemuMonitor.use_mmu_mode("virt") as available:
             if not available:
@@ -84674,7 +84675,7 @@ class KernelDevice:
 
 
 class KernelFiles:
-    """Resolve the layout of ``struct files_struct``."""
+    """Resolve the layout of `struct files_struct`."""
 
     # fs.nr_open is 1M by default, so a far larger `max_fds` is taken as broken
     MAX_FDS_LIMIT = 0x100_0000
@@ -84820,7 +84821,7 @@ class KernelFiles:
 
 
 class KernelSignal:
-    """Resolve the layout of ``struct signal_struct``."""
+    """Resolve the layout of `struct signal_struct`."""
 
     @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
@@ -84851,7 +84852,7 @@ class KernelSignal:
 
 
 class KernelSighand:
-    """Resolve the layout of ``struct sighand_struct`` and its action array."""
+    """Resolve the layout of `struct sighand_struct` and its action array."""
 
     SIGNAL_NAMES = LinuxSignal.KERNEL_NAMES
 
@@ -90010,7 +90011,7 @@ class KernelSeccomp:
         return True
 
     def parse_task(self, task):
-        """Read the task's top-level ``struct seccomp`` fields."""
+        """Read the task's top-level `struct seccomp` fields."""
         address = task + self.offset_seccomp
         mode = read_int32_from_memory(address)
         first_filter = read_int_from_memory(address + self.offset_filter)
@@ -90121,7 +90122,7 @@ class KernelSeccomp:
 
     @staticmethod
     def get_thread_info(task_addr, offset_stack):
-        """Return ``thread_info`` for both in-task and stack-based layouts."""
+        """Return `thread_info` for both in-task and stack-based layouts."""
         # fast path
         offset = GefUtil.offsetof("task_struct", "thread_info")
         if offset is not None:
@@ -192262,7 +192263,7 @@ class OpteeBgetDumpCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        "{0:s} 0x2a408",
+        "{0:s} -m 0x2a408",
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
@@ -195750,7 +195751,7 @@ class PageTable(BufferingOutput):
         return MemoryCache.read(paddr, size, reader=self.read_memory_uncached, namespace=namespace)
 
     def read_memory_uncached(self, paddr, size):
-        """Fetch physical bytes for ``MemoryCache.read``; callers normally use ``read_memory``."""
+        """Fetch physical bytes for `MemoryCache.read`; callers normally use `read_memory`."""
         if self.physical:
             try:
                 return MemoryCache.read_raw(paddr, size)
