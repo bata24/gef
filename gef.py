@@ -80260,6 +80260,11 @@ class Kernel:
         return KernelPipe.get_instance()
 
     @staticmethod
+    def userfaultfd():
+        """Return the userfaultfd resolver."""
+        return KernelUserfaultfd.get_instance()
+
+    @staticmethod
     def io_uring():
         """Return the io_uring resolver."""
         return KernelIoUring.get_instance()
@@ -218554,91 +218559,87 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
-    """Display the kernel-side userfaultfd object graph."""
-
-    _cmdline_ = "kuffd"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the address of struct userfaultfd_ctx or file.")
-    parser.add_argument("-t", "--type", choices=["auto", "ctx", "file"], default="auto",
-                        help="the type of ADDRESS. (default: %(default)s)")
-    parser.add_argument("-p", "--pid", type=int, help="select contexts owned by this pid.")
-    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s}",
-        "{0:s} --pid 1337",
-        "{0:s} --type ctx 0xffff888012340000",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "userfaultfd first appeared in Linux v4.3. Older kernels are detected without scanning.",
-        "DWARF is used when available. Without it, the layout is validated with the back pointers.",
-        "ADDRESS with `--type ctx` skips the fd scan.",
-        "The wait queues are transient and may be incomplete while another CPU is running.",
-        "",
-        "Simplified userfaultfd structure:",
-        "",
-        "+-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+",
-        "| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |",
-        "| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+",
-        "| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |",
-        "+-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |",
-        "                                                                                                 |",
-        "+------------------------------------------------------------------------------------------------+",
-        "|",
-        "|  +-userfaultfd_ctx------+     +->+-userfaultfd_wait_queue--+",
-        "+->| fault_pending_wqh    |     |  | msg                     |",
-        "   |   lock               |     |  |   event                 |",
-        "   |   head (unread)      |-----+  |   arg.pagefault.flags   |",
-        "   | fault_wqh            |     |  |   arg.pagefault.address |",
-        "   |   lock               |     |  | wq                      |",
-        "   |   head (read)        |-----+  |   flags                 |",
-        "   | fd_wqh               |        |   private               |--->task_struct (faulting thread)",
-        "   | event_wqh (v4.11~)   |        |   func                  |",
-        "   | refile_seq           |        |   entry                 |--->next userfaultfd_wait_queue",
-        "   | refcount             |        | ctx                     |--->userfaultfd_ctx (back pointer)",
-        "   | ...                  |        +-------------------------+",
-        "   | mm                   |--+",
-        "   +----------------------+  |",
-        "                             |",
-        "   +-------------------------+",
-        "   |",
-        "   |  +-mm_struct-------+     +->+-vm_area_struct-----+",
-        "   +->| ...             |     |  | vm_start           |",
-        "      | mmap (~v6.0)    |-----+  | vm_end             |",
-        "      | mm_mt (v6.1~)   |        | vm_flags           |",
-        "      | ...             |        | ...                |",
-        "      +-----------------+        | vm_userfaultfd_ctx |--->userfaultfd_ctx (registered range)",
-        "                                 +--------------------+",
-    ])
+class KernelUserfaultfd(KernelTaskFileScanner):
+    """Resolve the userfaultfd contexts of the open files, and read their waiters and registered ranges."""
 
     # struct uffd_msg is a fixed uapi ABI (0x20 bytes); pagefault flags/address live in its union.
     UFFD_MSG_SIZE = 0x20
-    PAGEFAULT_FLAGS = {
-        0x1: "WRITE",
-        0x2: "WP",
-        0x4: "MINOR",
-    }
-    # vm_area_struct->vm_flags bits (stable across v4.x~v6.x); MINOR varies, so it is inferred.
-    VM_UFFD_FLAGS = {
-        0x0200: "MISSING",
-        0x1000: "WP",
-    }
+    # threads wait on faults, and the registered ranges are VMAs
+    TASK_OPTIONS = {"files": True, "maps": True, "threads": True}
 
-    def task_name(self, task):
-        info = self.task_infos.get(task)
-        if info is None:
-            return "?"
-        return "{:s}[{:d}]".format(info["comm"], info["pid"])
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        self.task_command = False
+        self.task_infos = {}
+        self.mm_to_task = {}
+        self.task_mms = set()
+        # userfaultfd first appeared in v4.3, so older kernels are not scanned
+        if self.kversion >= "4.3":
+            self.build_task_tables()
+        return True
+
+    def build_task_tables(self):
+        """Resolve the tasks (with threads, which wait on faults) and the mm->task map."""
+        self.task_infos = {}
+        self.mm_to_task = {}
+        command = self.get_task_command()
+        if command is None:
+            return
+        for info in command.get_tasks(threads=command.enabled["threads"]):
+            self.task_infos[info["task"]] = info
+            if info["mm"] and not info["is_thread"]:
+                self.mm_to_task.setdefault(info["mm"], info["task"])
+        self.task_mms = set(self.mm_to_task)
+        return
+
+    def find_uffd_files(self, pid=None):
+        """Return the userfaultfd files of the user processes (only `pid` if given), or None without the VFS layout."""
+        command = self.get_task_command()
+        if self.get_kpath() is None:
+            return None
+        result = []
+        for task, info in self.task_infos.items():
+            # userfaultfd fds belong to user processes, and threads share the files of their process
+            if not info["mm"] or info["is_thread"]:
+                continue
+            if pid is not None and info["pid"] != pid:
+                continue
+            files, _ = command.get_file_details(task)
+            for entry in files:
+                if not self.is_uffd_path(entry["path"]):
+                    continue
+                ctx, source = self.context_from_file(entry["file"])
+                result.append({"task": task, "fd": entry["fd"], "file": entry["file"],
+                               "path": entry["path"], "ctx": ctx, "ctx_source": source})
+        return result
+
+    @staticmethod
+    def is_uffd_path(path):
+        return path == "anon_inode:[userfaultfd]" or path == "[userfaultfd]" or path.endswith(":[userfaultfd]")
+
+    def validate_context(self, ctx):
+        if not KernelAddressHeuristicFinderUtil.is_kernel_space(ctx):
+            return 0
+        mm = self.find_ctx_mm(ctx)
+        head = self.find_pending_head(ctx)
+        if mm is None or head is None:
+            return 0
+        if mm in self.task_mms:
+            return 10
+        return 3
 
     def find_ctx_mm(self, ctx):
         """Return ctx->mm using DWARF, or the first word that points to a known task mm."""
@@ -218677,25 +218678,6 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
             if first == ctx + offset or self.waiter_ctx(first) == ctx:
                 return offset
         return None
-
-    def waiter_ctx(self, node):
-        """Return the ctx back pointer of the userfaultfd_wait_queue that owns list node `node`."""
-        return read_int_from_memory(node + current_arch.ptrsize * 2, safe=True)
-
-    def read_waiter(self, node):
-        """Decode one userfaultfd_wait_queue from its wq.entry list node.
-
-        struct userfaultfd_wait_queue { struct uffd_msg msg; wait_queue_entry_t wq; struct userfaultfd_ctx *ctx; };
-        struct wait_queue_entry { unsigned int flags; void *private; wait_queue_func_t func; struct list_head entry; };
-
-        fault_pending_wqh and fault_wqh hold page faults only; the other events wait on event_wqh.
-        """
-        ptr = current_arch.ptrsize
-        msg = node - self.UFFD_MSG_SIZE - ptr * 3
-        address = read_int_from_memory(msg + 0x10, safe=True)
-        flags = read_int_from_memory(msg + 0x8, safe=True)
-        task = read_int_from_memory(node - ptr * 2, safe=True)
-        return {"address": address, "flags": flags, "task": task}
 
     def collect_waiters(self, ctx, offset_head):
         """Return the pending (unread) and fault (read but unresolved) waiters of `ctx`."""
@@ -218746,16 +218728,6 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
             ranges.append({"vma": vma, "start": vm_start, "end": vm_end, "flags": vm_flags})
         return ranges
 
-    def get_task_command(self):
-        """Return the task resolver with files, maps and threads, or None. It is resolved on first use."""
-        if self.task_command is False:
-            self.task_command = Kernel.task()
-            task_ready = self.task_command.initialize(files=True, maps=True, threads=True)
-            self.meta.extend(Kernel.export_meta(self, self.task_command.meta))
-            if not task_ready:
-                self.task_command = None
-        return self.task_command
-
     def get_kmm(self):
         command = self.get_task_command()
         if command is None or not command.enabled["maps"]:
@@ -218768,89 +218740,115 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
             return None
         return command.kpath
 
-    def build_task_tables(self):
-        """Resolve the tasks (with threads, which wait on faults) and the mm->task map."""
-        self.task_infos = {}
-        self.mm_to_task = {}
-        command = self.get_task_command()
-        if command is None:
-            return
-        for info in command.get_tasks(threads=command.enabled["threads"]):
-            self.task_infos[info["task"]] = info
-            if info["mm"] and not info["is_thread"]:
-                self.mm_to_task.setdefault(info["mm"], info["task"])
-        self.task_mms = set(self.mm_to_task)
-        return
+    def waiter_ctx(self, node):
+        """Return the ctx back pointer of the userfaultfd_wait_queue that owns list node `node`."""
+        return read_int_from_memory(node + current_arch.ptrsize * 2, safe=True)
 
-    def path_for_file(self, file):
-        kpath = self.get_kpath()
-        if kpath is None or not is_valid_addr(file):
-            return ""
-        try:
-            return kpath.get_file_path(file)
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            return ""
+    def read_waiter(self, node):
+        """Decode one userfaultfd_wait_queue from its wq.entry list node.
 
-    @staticmethod
-    def is_uffd_path(path):
-        return path == "anon_inode:[userfaultfd]" or path == "[userfaultfd]" or path.endswith(":[userfaultfd]")
+        struct userfaultfd_wait_queue { struct uffd_msg msg; wait_queue_entry_t wq; struct userfaultfd_ctx *ctx; };
+        struct wait_queue_entry { unsigned int flags; void *private; wait_queue_func_t func; struct list_head entry; };
 
-    def context_score(self, ctx):
-        if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
-            return 0
-        if not KernelAddressHeuristicFinderUtil.is_kernel_space(ctx):
-            return 0
-        mm = self.find_ctx_mm(ctx)
-        head = self.find_pending_head(ctx)
-        if mm is None or head is None:
-            return 0
-        if mm in self.task_mms:
-            return 10
-        return 3
+        fault_pending_wqh and fault_wqh hold page faults only; the other events wait on event_wqh.
+        """
+        ptr = current_arch.ptrsize
+        msg = node - self.UFFD_MSG_SIZE - ptr * 3
+        address = read_int_from_memory(msg + 0x10, safe=True)
+        flags = read_int_from_memory(msg + 0x8, safe=True)
+        task = read_int_from_memory(node - ptr * 2, safe=True)
+        return {"address": address, "flags": flags, "task": task}
 
-    def context_from_file(self, file):
-        ctx = GefUtil.field_int(GefUtil.typed_struct(file, "struct file"), "private_data")
-        if ctx is not None and self.context_score(ctx):
-            return ctx, "debug information"
-        pointers = read_memory(file, 0x200, safe=True)
-        if pointers is None:
-            return None, None
-        try:
-            words = slice_unpack(pointers, current_arch.ptrsize)
-        except struct.error:
-            return None, None
-        # The window can reach the next file object, so the smallest offset of the best score is file's own member
-        best = None
-        for index, pointer in enumerate(words):
-            score = self.context_score(pointer)
-            if score and (best is None or score > best[0]):
-                best = (score, index, pointer)
-        if best is None:
-            return None, None
-        _, index, ctx = best
-        return ctx, "validated file member +{:#x}".format(index * current_arch.ptrsize)
 
-    def find_uffd_files(self):
-        command = self.get_task_command()
-        if self.get_kpath() is None:
-            return None
-        result = []
-        for task, info in self.task_infos.items():
-            # userfaultfd fds belong to user processes, and threads share the files of their process
-            if not info["mm"] or info["is_thread"] or self.args.pid is not None and info["pid"] != self.args.pid:
-                continue
-            files, _ = command.get_file_details(task)
-            for entry in files:
-                if not self.is_uffd_path(entry["path"]):
-                    continue
-                ctx, source = self.context_from_file(entry["file"])
-                result.append({"task": task, "fd": entry["fd"], "file": entry["file"],
-                               "path": entry["path"], "ctx": ctx, "ctx_source": source})
-        return result
+@register_command
+class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
+    """Display the kernel-side userfaultfd object graph."""
+
+    _cmdline_ = "kuffd"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the address of struct userfaultfd_ctx or file.")
+    parser.add_argument("-t", "--type", choices=["auto", "ctx", "file"], default="auto",
+                        help="the type of ADDRESS. (default: %(default)s)")
+    parser.add_argument("-p", "--pid", type=int, help="select contexts owned by this pid.")
+    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --pid 1337",
+        "{0:s} --type ctx 0xffff888012340000",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "userfaultfd first appeared in Linux v4.3. Older kernels are detected without scanning.",
+        "DWARF is used when available. Without it, the layout is validated with the back pointers.",
+        "ADDRESS with `--type ctx` skips the fd scan.",
+        "The wait queues are transient and may be incomplete while another CPU is running.",
+        "Only page faults are listed. The waiters of the other events (fork, remap, remove, unmap) on event_wqh are not.",
+        "A registered range with neither MISSING nor WP is shown as MINOR, so MINOR combined with them is not shown.",
+        "",
+        "Simplified userfaultfd structure:",
+        "",
+        "+-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+",
+        "| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |",
+        "| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+",
+        "| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |",
+        "+-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |",
+        "                                                                                                 |",
+        "+------------------------------------------------------------------------------------------------+",
+        "|",
+        "|  +-userfaultfd_ctx------+     +->+-userfaultfd_wait_queue--+",
+        "+->| fault_pending_wqh    |     |  | msg                     |",
+        "   |   lock               |     |  |   event                 |",
+        "   |   head (unread)      |-----+  |   arg.pagefault.flags   |",
+        "   | fault_wqh            |     |  |   arg.pagefault.address |",
+        "   |   lock               |     |  | wq                      |",
+        "   |   head (read)        |-----+  |   flags                 |",
+        "   | fd_wqh               |        |   private               |--->task_struct (faulting thread)",
+        "   | event_wqh (v4.11~)   |        |   func                  |",
+        "   | refile_seq           |        |   entry                 |--->next userfaultfd_wait_queue",
+        "   | refcount             |        | ctx                     |--->userfaultfd_ctx (back pointer)",
+        "   | ...                  |        +-------------------------+",
+        "   | mm                   |--+",
+        "   +----------------------+  |",
+        "                             |",
+        "   +-------------------------+",
+        "   |",
+        "   |  +-mm_struct-------+     +->+-vm_area_struct-----+",
+        "   +->| ...             |     |  | vm_start           |",
+        "      | mmap (~v6.0)    |-----+  | vm_end             |",
+        "      | mm_mt (v6.1~)   |        | vm_flags           |",
+        "      | ...             |        | ...                |",
+        "      +-----------------+        | vm_userfaultfd_ctx |--->userfaultfd_ctx (registered range)",
+        "                                 +--------------------+",
+    ])
+
+    PAGEFAULT_FLAGS = {
+        0x1: "WRITE",
+        0x2: "WP",
+        0x4: "MINOR",
+    }
+    # vm_area_struct->vm_flags bits (stable across v4.x~v6.x); MINOR varies, so it is inferred.
+    VM_UFFD_FLAGS = {
+        0x0200: "MISSING",
+        0x1000: "WP",
+    }
+
+    def task_name(self, task):
+        info = self.kuffd.task_infos.get(task)
+        if info is None:
+            return "?"
+        return "{:s}[{:d}]".format(info["comm"], info["pid"])
 
     def task_columns(self, task):
         """Return the task, pid and task->comm cells like ktask."""
-        info = self.task_infos.get(task)
+        info = self.kuffd.task_infos.get(task)
         if info is None:
             return "{:#018x}".format(task or 0), "?", "?"
         return "{:#018x}".format(task), str(info["pid"]), info["comm"]
@@ -218859,7 +218857,7 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
         # each ctx gets a bold title like the per-task sections of ktask, and each registered range a plain one
         self.out.append(titlify("userfaultfd_ctx {:#x}".format(ctx), color="bold", msg_color="bold"))
 
-        mm = self.find_ctx_mm(ctx)
+        mm = self.kuffd.find_ctx_mm(ctx)
         if mm is None:
             mm_text = "?"
         else:
@@ -218884,18 +218882,20 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
                 row_mm_text = ""
             self.out.append(fmt.format(task_text, pid_text, comm_text, fd_text, file_text, row_mm_text).rstrip())
 
-        offset_head = self.find_pending_head(ctx)
+        offset_head = self.kuffd.find_pending_head(ctx)
         if offset_head is None:
             faults = None
         else:
-            pending, fault = self.collect_waiters(ctx, offset_head)
+            pending, fault = self.kuffd.collect_waiters(ctx, offset_head)
             for waiter in pending:
                 waiter["state"] = "unread"
             for waiter in fault:
                 waiter["state"] = "read"
             faults = pending + fault
 
-        ranges = self.registered_ranges(ctx, mm)
+        ranges = self.kuffd.registered_ranges(ctx, mm)
+        for message in Kernel.mm().pop_warnings():
+            self.quiet_warn(message)
         sections = []
         for entry in ranges or []:
             start = entry["start"] or 0
@@ -218943,14 +218943,14 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
         return
 
     def detect_address_type(self, address):
-        if self.context_score(address):
+        if self.kuffd.context_score(address):
             return "ctx"
-        if self.is_uffd_path(self.path_for_file(address)):
+        if self.kuffd.is_uffd_path(self.kuffd.path_for_file(address)):
             return "file"
         return None
 
     def print_meta(self):
-        self.quiet_info("kernel version: {!s}".format(self.kversion))
+        self.quiet_info("kernel version: {!s}".format(self.kuffd.kversion))
         for type_name in ["userfaultfd_ctx", "userfaultfd_wait_queue", "uffd_msg"]:
             size = GefUtil.type_size("struct " + type_name)
             if size is None:
@@ -218970,46 +218970,33 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
             self.quiet_info("offsetof({:s}, {:s}): {:s}".format(type_name, member, offset_text))
         return
 
-    def initialize(self):
-        self.meta = []
-        self.kversion = Kernel.version()
-        if self.kversion is None:
-            self.meta.append((self.quiet_err, "Could not find Linux kernel"))
-            return None
-        self.task_command = False
-        self.task_infos = {}
-        self.mm_to_task = {}
-        self.task_mms = set()
-        return True
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.args = args
         self.quiet_info("Wait for memory scan")
-        if not self.initialize():
-            for func, line in self.meta:
+        self.kuffd = Kernel.userfaultfd()
+        if not self.kuffd.initialize():
+            for func, line in Kernel.export_meta(self, self.kuffd.meta):
                 func(line)
             self.quiet_err("Failed to initialize")
             return
-        if self.kversion < "4.3":
+        if self.kuffd.kversion < "4.3":
             self.quiet_warn("This kernel predates userfaultfd, which first appeared in mainline v4.3")
             return
 
-        self.build_task_tables()
         if args.meta:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kuffd.meta):
                 func(line)
             self.print_meta()
-            if self.get_kpath() is None:
+            if self.kuffd.get_kpath() is None:
                 self.quiet_info("ctx discovery from fds: unavailable")
                 return
             self.quiet_info("ctx discovery from fds: available")
             # how file->private_data was resolved, shown for the first open userfaultfd file
-            for owner in self.find_uffd_files():
+            for owner in self.kuffd.find_uffd_files(args.pid):
                 if owner["ctx_source"]:
                     self.quiet_info("file->private_data: {:s} (fd {:d} of {:s})".format(
                         owner["ctx_source"], owner["fd"], self.task_name(owner["task"])))
@@ -219023,18 +219010,18 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
             else:
                 address_type = self.detect_address_type(args.address)
             if address_type == "file":
-                path = self.path_for_file(args.address)
-                ctx, _ = self.context_from_file(args.address)
-                if self.get_kpath() is None:
-                    for func, line in self.meta:
+                path = self.kuffd.path_for_file(args.address)
+                ctx, _ = self.kuffd.context_from_file(args.address)
+                if self.kuffd.get_kpath() is None:
+                    for func, line in Kernel.export_meta(self, self.kuffd.meta):
                         func(line)
                     self.err_add_out("A userfaultfd file cannot be verified without the VFS object layout")
-                elif not self.is_uffd_path(path) or ctx is None:
+                elif not self.kuffd.is_uffd_path(path) or ctx is None:
                     self.err_add_out("Could not interpret {:#x} as a userfaultfd file".format(args.address))
                 else:
                     self.dump_context(ctx, [{"file": args.address}])
             elif address_type == "ctx":
-                if not self.context_score(args.address):
+                if not self.kuffd.context_score(args.address):
                     self.err_add_out("Could not validate userfaultfd_ctx at {:#x}".format(args.address))
                 else:
                     self.dump_context(args.address, [])
@@ -219043,9 +219030,9 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
             self.print_output(check_terminal_size=True)
             return
 
-        uffd_files = self.find_uffd_files()
+        uffd_files = self.kuffd.find_uffd_files(args.pid)
         if uffd_files is None:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kuffd.meta):
                 func(line)
             self.quiet_err("Failed to initialize the fd scan (ADDRESS with --type ctx does not need it)")
             return
