@@ -81225,8 +81225,17 @@ class KernelLayout:
 
         klayout = self
         try:
-            res = gdb.execute("kdevio --quiet --no-pager", to_string=True)
-            resources = re.findall(r"\s(0x[0-9a-f]+)-(0x[0-9a-f]+)\s+Kernel (code|data|bss)\s", Color.remove_color(res))
+            root = KernelAddressHeuristicFinder.get_iomem_resource()
+            if not root:
+                return klayout
+            layout = KernelResourceLayout.get_layout(root, "PCI mem", 0x200)
+            if layout is None:
+                return klayout
+            walked, _ = KernelResourceLayout.walk(root, layout)
+            resources = []
+            for _, start, end, name, _ in sorted(walked, key=lambda x: x[1]):
+                if name in ("Kernel code", "Kernel data", "Kernel bss"):
+                    resources.append((start, end, name.split()[1]))
 
             # The page-table mapping of ARM32 (and x86_32 without NX) may start before `_text`,
             # e.g. at PAGE_OFFSET with swapper_pg_dir. "Kernel code" starts at `_text` there.
@@ -81235,7 +81244,7 @@ class KernelLayout:
             if code and (is_arm32() or is_x86()):
                 phys_text_base = AddrMap.v2p(self.text_base)
                 if phys_text_base is not None:
-                    text_base = AddressUtil.normalize_address(self.text_base + int(code[0], 16) - phys_text_base)
+                    text_base = AddressUtil.normalize_address(self.text_base + code[0] - phys_text_base)
                     if self.text_base < text_base < self.text_end:
                         klayout = klayout.replace(text_base=text_base)
 
@@ -81243,8 +81252,8 @@ class KernelLayout:
             if data is None:
                 return klayout
 
-            phys_start = int(data[0], 16)
-            phys_end = max(int(x[1], 16) for x in resources if x[2] != "code")
+            phys_start = data[0]
+            phys_end = max(x[1] for x in resources if x[2] != "code")
             phys_ro_base = AddrMap.v2p(self.ro_base)
             if phys_ro_base is None:
                 return klayout
@@ -108795,6 +108804,111 @@ class KernelResourceLayout:
             if start == 0 and end and end & (end + 1) == 0:
                 return root
         return None
+
+    @staticmethod
+    def walk(addr, layout):
+        """Return ([(resource, start, end, name, flags), ...], [reason, ...]) of the resource tree at `addr`.
+        The reasons tell why the walk is incomplete."""
+        resources = []
+        incomplete = []
+        seen = set()
+        stack = [(addr, None)]
+        root = addr
+
+        while stack:
+            addr, expected_parent = stack.pop()
+            if not addr:
+                continue
+            if not is_valid_addr(addr):
+                incomplete.append("invalid resource pointer {:#x}".format(addr))
+                continue
+            if addr in seen:
+                incomplete.append("resource cycle at {:#x}".format(addr))
+                continue
+            seen.add(addr)
+            if len(seen) > 100000:
+                incomplete.append("resource limit reached")
+                break
+
+            start = KernelResourceLayout.read_size(addr + layout["start"], layout["width"])
+            end = KernelResourceLayout.read_size(addr + layout["end"], layout["width"])
+            name_ptr = read_int_from_memory(addr + layout["name"], safe=True)
+            flags = read_int_from_memory(addr + layout["flags"], safe=True)
+            parent = read_int_from_memory(addr + layout["parent"], safe=True)
+            sibling = read_int_from_memory(addr + layout["sibling"], safe=True)
+            child = read_int_from_memory(addr + layout["child"], safe=True)
+            if None in (start, end, name_ptr, flags, parent, sibling, child):
+                incomplete.append("unreadable resource at {:#x}".format(addr))
+                if sibling and sibling != root and sibling != addr:
+                    stack.append((sibling, expected_parent))
+                if child:
+                    stack.append((child, addr))
+                continue
+            if expected_parent is not None and parent != expected_parent:
+                incomplete.append("invalid parent backlink at {:#x}".format(addr))
+                if sibling and sibling != addr:
+                    stack.append((sibling, expected_parent))
+                continue
+            if name_ptr == 0:
+                name = "<unnamed>"
+            else:
+                name = read_cstring_from_memory(name_ptr, safe=True)
+            if name is None:
+                name = "<unreadable>"
+                incomplete.append("unreadable resource name at {:#x}".format(addr))
+            if start > end:
+                incomplete.append("invalid resource range at {:#x}".format(addr))
+                if sibling and sibling != addr:
+                    stack.append((sibling, expected_parent))
+                if child:
+                    stack.append((child, addr))
+                continue
+
+            resources.append((addr, start, end, name, flags))
+            if sibling and sibling != root and sibling != addr:
+                stack.append((sibling, expected_parent))
+            if child:
+                stack.append((child, addr))
+        return resources, incomplete
+
+    @staticmethod
+    def get_flags_str(flags_value):
+        flags_dic = {
+            0x8000_0000: "IORESOURCE_BUSY",
+            0x4000_0000: "IORESOURCE_AUTO",
+            0x2000_0000: "IORESOURCE_UNSET",
+            0x1000_0000: "IORESOURCE_DISABLED",
+            0x0800_0000: "IORESOURCE_EXCLUSIVE",
+            0x0400_0000: "IORESOURCE_SYSRAM_MERGEABLE",
+            0x0200_0000: "IORESOURCE_SYSRAM_DRIVER_MANAGED",
+            0x0100_0000: "IORESOURCE_SYSRAM",
+            0x0040_0000: "IORESOURCE_MUXED",
+            0x0020_0000: "IORESOURCE_WINDOW",
+            0x0010_0000: "IORESOURCE_MEM_64",
+            0x0008_0000: "IORESOURCE_STARTALIGN",
+            0x0004_0000: "IORESOURCE_SIZEALIGN",
+            0x0002_0000: "IORESOURCE_SHADOWABLE",
+            0x0001_0000: "IORESOURCE_RANGELENGTH",
+            0x0000_8000: "IORESOURCE_CACHEABLE",
+            0x0000_4000: "IORESOURCE_READONLY",
+            0x0000_2000: "IORESOURCE_PREFETCH",
+            0x0000_1000: "IORESOURCE_BUS",
+            0x0000_0800: "IORESOURCE_DMA",
+            0x0000_0400: "IORESOURCE_IRQ",
+            0x0000_0200: "IORESOURCE_MEM",
+            0x0000_0100: "IORESOURCE_IO",
+        }
+        flags, _ = GefUtil.flags_to_names(flags_value, flags_dic)
+
+        if "IORESOURCE_IO" in flags and "IORESOURCE_MEM" in flags:
+            flags.remove("IORESOURCE_IO")
+            flags.remove("IORESOURCE_MEM")
+            flags.append("IORESOURCE_REG")
+
+        flags_str = "|".join(flags)
+        if flags_str == "":
+            flags_str = "none"
+        return flags_str.replace("IORESOURCE_", "")
 
 
 @register_command
@@ -167086,74 +167200,13 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
         "+-----------------+                 +-----------------+",
     ])
 
-    def dump_resource(self, addr, layout):
-        resources = []
-        seen = set()
-        stack = [(addr, None)]
-        root = addr
-
-        while stack:
-            addr, expected_parent = stack.pop()
-            if not addr:
-                continue
-            if not is_valid_addr(addr):
-                self.incomplete.append("invalid resource pointer {:#x}".format(addr))
-                continue
-            if addr in seen:
-                self.incomplete.append("resource cycle at {:#x}".format(addr))
-                continue
-            seen.add(addr)
-            if len(seen) > 100000:
-                self.incomplete.append("resource limit reached")
-                break
-
-            start = KernelResourceLayout.read_size(addr + layout["start"], layout["width"])
-            end = KernelResourceLayout.read_size(addr + layout["end"], layout["width"])
-            name_ptr = read_int_from_memory(addr + layout["name"], safe=True)
-            flags = read_int_from_memory(addr + layout["flags"], safe=True)
-            parent = read_int_from_memory(addr + layout["parent"], safe=True)
-            sibling = read_int_from_memory(addr + layout["sibling"], safe=True)
-            child = read_int_from_memory(addr + layout["child"], safe=True)
-            if None in (start, end, name_ptr, flags, parent, sibling, child):
-                self.incomplete.append("unreadable resource at {:#x}".format(addr))
-                if sibling and sibling != root and sibling != addr:
-                    stack.append((sibling, expected_parent))
-                if child:
-                    stack.append((child, addr))
-                continue
-            if expected_parent is not None and parent != expected_parent:
-                self.incomplete.append("invalid parent backlink at {:#x}".format(addr))
-                if sibling and sibling != addr:
-                    stack.append((sibling, expected_parent))
-                continue
-            if name_ptr == 0:
-                name = "<unnamed>"
-            else:
-                name = read_cstring_from_memory(name_ptr, safe=True)
-            if name is None:
-                name = "<unreadable>"
-                self.incomplete.append("unreadable resource name at {:#x}".format(addr))
-            if start > end:
-                self.incomplete.append("invalid resource range at {:#x}".format(addr))
-                if sibling and sibling != addr:
-                    stack.append((sibling, expected_parent))
-                if child:
-                    stack.append((child, addr))
-                continue
-
-            resources.append((addr, start, end, name, flags))
-            if sibling and sibling != root and sibling != addr:
-                stack.append((sibling, expected_parent))
-            if child:
-                stack.append((child, addr))
-        return resources
-
     def get_resources(self, addr, expected_name=None, expected_flag=None):
         self.layout = KernelResourceLayout.get_layout(addr, expected_name, expected_flag)
         self.incomplete = []
         if self.layout is None:
             return []
-        return self.dump_resource(addr, self.layout)
+        resources, self.incomplete = KernelResourceLayout.walk(addr, self.layout)
+        return resources
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -167211,7 +167264,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
             else:
                 line_fmt = "{:#018x} {:#018x}-{:#018x} {:{:d}s} {:#010x} ({:s})"
             for addr, start, end, name, flags in sorted(resources, key=lambda x: x[1]):
-                line = line_fmt.format(addr, start, end, name, name_width, flags, KernelPciDeviceCommand.get_flags_str(flags))
+                line = line_fmt.format(addr, start, end, name, name_width, flags, KernelResourceLayout.get_flags_str(flags))
                 self.out.append(line)
             self.out.extend("Incomplete: {:s}".format(reason) for reason in self.incomplete)
 
