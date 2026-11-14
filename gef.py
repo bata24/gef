@@ -80304,6 +80304,11 @@ class Kernel:
         return KernelSeccomp.get_instance()
 
     @staticmethod
+    def keyring():
+        """Return the keyring resolver."""
+        return KernelKeyring.get_instance()
+
+    @staticmethod
     def modules():
         """Return the kernel module resolver."""
         return KernelModule.get_instance()
@@ -99130,107 +99135,47 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelKeyringCommand(GenericCommand, BufferingOutput):
-    """Display the keyrings referenced by tasks, or inspect an arbitrary struct key."""
-
-    _cmdline_ = "kkeyring"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("key", metavar="KEY_ADDR", nargs="?", type=AddressUtil.parse_address,
-                        help="inspect this `struct key` directly instead of walking task credentials.")
-    parser.add_argument("-p", "--pid", type=lambda x: int(x, 0), help="filter by task pid.")
-    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
-                        help="filter by specific task_struct address.")
-    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
-    parser.add_argument("-d", "--max-depth", type=lambda x: int(x, 0), default=6,
-                        help="maximum nested keyring depth (default: 6).")
-    parser.add_argument("--max-keys", type=lambda x: int(x, 0), default=0x1000,
-                        help="maximum number of keys to walk (default: 0x1000).")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="display ownership and internal key details.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s} -p 1337",
-        "{0:s} -p 1337 -v",
-        "{0:s} -f 'bash$'",
-        "{0:s} 0xffff888012345000",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "Simplified keyring structures:",
-        "",
-        "[v3.8~]",
-        "+-task_struct-+    +-cred-------------+",
-        "| cred        |--->| session_keyring  |----+",
-        "+-------------+    | process_keyring  |----+",
-        "                   | thread_keyring   |----+--->struct key",
-        "                   | request_key_auth |----+",
-        "                   +------------------+",
-        "[~v3.7]",
-        "+-task_struct-+    +-cred-------------+",
-        "| cred        |--->| thread_keyring   |---------------------------->struct key",
-        "+-------------+    | request_key_auth |---------------------------->struct key",
-        "                   | tgcred           |--->+-thread_group_cred-+",
-        "                   +------------------+    | session_keyring   |--->struct key",
-        "                                           | process_keyring   |--->struct key",
-        "                                           +-------------------+",
-        "+-key----------------------------+",
-        "| usage                          |",
-        "| serial                         |",
-        "| uid, gid, perm                 |",
-        "| expiry                         |",
-        "| flags                          |",
-        "| state (v4.14~)                 |",
-        "| type                           |",
-        "| description                    |",
-        "| payload.subscriptions (~v3.12) |---->struct keyring_list",
-        "| payload.data[0] (auth key)     |---->struct request_key_auth",
-        "| keys.root (v3.13~)             |---->assoc_array_ptr",
-        "+--------------------------------+",
-        "",
-        "+-request_key_auth-+",
-        "| rcu (v5.3~)      |",
-        "| usage (v7.2~)    |",
-        "| target_key       |---->struct key (being constructed)",
-        "| dest_keyring     |---->struct key",
-        "| cred             |---->struct cred (requester)",
-        "| callout_info     |",
-        "| callout_len      |",
-        "| pid              |",
-        "| op[8] (v5.0~)    |",
-        "+------------------+",
-        "",
-        "[~v3.12]",
-        "+-keyring_list-+",
-        "| nkeys        |",
-        "| keys[]       |---->struct key ...",
-        "+--------------+",
-        "",
-        "[v3.13~]",
-        "keys.root ---> assoc_array_ptr (tagged)",
-        "                +-- leaf -----> struct key (bit 1 is set if it is a keyring)",
-        "                +-- node -----> +-assoc_array_node-----+",
-        "                |               | slots[16]            |---> assoc_array_ptr ...",
-        "                |               +----------------------+",
-        "                +-- shortcut -> +-assoc_array_shortcut-+",
-        "                                | next_node            |---> assoc_array_ptr",
-        "                                +----------------------+",
-        "",
-        "A keyring leaf may itself be another keyring, so the command walks child keys recursively.",
-        "The request-key authorisation key held by an upcall helper is shown as the `request` root.",
-    ])
+class KernelKeyring:
+    """Resolve the layout of `struct key` and the keyrings each task references through its credentials,
+    and walk the keys linked from a keyring (`struct keyring_list` until v3.12, an assoc_array from v3.13).
+    The layout is resolved again at each invocation, from a sample key."""
 
     KeyInfo = collections.namedtuple(
         "KeyInfo", "address usage serial type_addr type_name description expiry uid gid perm datalen state flags payload",
     )
     KeyRecord = collections.namedtuple("KeyRecord", "root depth parent address info status")
     RequestAuth = collections.namedtuple("RequestAuth", "target target_info dest dest_info cred callout callout_len pid op")
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.kversion = None
+        self.reset_walk(6, 0x1000)
+        return
+
+    def initialize(self):
+        """Resolve the kernel version. The layouts are resolved by `initialize_tasks()` and `initialize_key_layout()`."""
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        return True
+
+    def reset_walk(self, max_depth, max_keys):
+        """Start a new walk of keys that stops at `max_depth` nested keyrings and `max_keys` keys."""
+        self.max_depth = max_depth
+        self.max_keys = max_keys
+        self.collect_count = 0
+        self.key_limit_reached = False
+        self.depth_limit_reached = False
+        self.walk_errors = []
+        self.walk_error = None
+        return
 
     def type_name(self, type_addr):
         if not type_addr or not is_valid_addr(type_addr):
@@ -99345,12 +99290,12 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         self.key_type_keyring = Ksym.get_addr("key_type_keyring") # noqa: V101
         self.offset_type = self.find_type_offset(sample_key)
         if self.offset_type is None:
-            self.meta.append((self.quiet_err, "Could not find key->type"))
+            self.meta.append(("err", "Could not find key->type"))
             return None
 
         self.offset_description = self.find_description_offset(sample_key)
         if self.offset_description is None:
-            self.meta.append((self.quiet_err, "Could not find key->description"))
+            self.meta.append(("err", "Could not find key->description"))
             return None
 
         self.offset_flags = GefUtil.offsetof("key", "flags")
@@ -99415,15 +99360,15 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 self.offset_keys_root = self.offset_description + 3 * current_arch.ptrsize
 
         for name in ("type", "description", "expiry", "uid", "gid", "perm", "datalen", "flags", "payload"):
-            self.meta.append((self.quiet_info, "offsetof(key, {:s}): {:#x}".format(name, getattr(self, "offset_" + name))))
+            self.meta.append(("info", "offsetof(key, {:s}): {:#x}".format(name, getattr(self, "offset_" + name))))
         if self.offset_keys_root is not None:
-            self.meta.append((self.quiet_info, "offsetof(key, keys.root): {:#x}".format(self.offset_keys_root)))
+            self.meta.append(("info", "offsetof(key, keys.root): {:#x}".format(self.offset_keys_root)))
         return True
 
     def initialize_tasks(self):
         task_command = Kernel.task()
         task_ready = task_command.initialize(threads=True)
-        self.meta.extend(Kernel.export_meta(self, task_command.meta))
+        self.meta.extend(task_command.meta)
         if not task_ready:
             task_command = None
         if task_command is None:
@@ -99431,7 +99376,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         self.task_command = task_command
         kcred = task_command.kcred
         if kcred.offset_cap is None:
-            self.meta.append((self.quiet_err, "Could not resolve the credential keyring layout"))
+            self.meta.append(("err", "Could not resolve the credential keyring layout"))
             return None
 
         ptrsize = current_arch.ptrsize
@@ -99449,12 +99394,21 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         # state, while the layout path handles heavily stripped CTF kernels.
         has_keys = any(Ksym.get_addr(name) is not None for name in ("key_type_keyring", "key_alloc"))
         has_keys |= kcred.offset_user_ns in expected_user_ns
+        if has_keys:
+            message = ("info", "CONFIG_KEYS seems to be y")
+        else:
+            message = ("info", "CONFIG_KEYS seems to be n")
+        # KernelCred may have told it from the cred layout already (in the meta of the task resolver).
+        # It is shown once, at that place, with the conclusion that the keyrings are read with.
+        index = next((i for i, (_, line) in enumerate(self.meta) if line.startswith("CONFIG_KEYS seems to be ")), None)
+        if index is None:
+            self.meta.append(message)
+        else:
+            self.meta[index] = message
         if not has_keys:
-            self.meta.append((self.quiet_info, "CONFIG_KEYS seems to be n"))
             self.cred_key_offsets = None
             return True
 
-        self.meta.append((self.quiet_info, "CONFIG_KEYS seems to be y"))
         if self.kversion < "3.8":
             offsets = {
                 "thread": self.cred_member_offset("thread_keyring", base),
@@ -99464,14 +99418,14 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             self.cred_key_offsets = offsets
             self.tgcred_session_offset = self.tgcred_member_offset("session_keyring", align(12, ptrsize))
             self.tgcred_process_offset = self.tgcred_member_offset("process_keyring", self.tgcred_session_offset + ptrsize)
-            self.meta.append((self.quiet_info, "offsetof(cred, thread_keyring): {:#x}".format(offsets["thread"])))
-            self.meta.append((self.quiet_info, "offsetof(cred, request_key_auth): {:#x}".format(offsets["request"])))
-            self.meta.append((self.quiet_info, "offsetof(cred, tgcred): {:#x}".format(offsets["tgcred"])))
+            self.meta.append(("info", "offsetof(cred, thread_keyring): {:#x}".format(offsets["thread"])))
+            self.meta.append(("info", "offsetof(cred, request_key_auth): {:#x}".format(offsets["request"])))
+            self.meta.append(("info", "offsetof(cred, tgcred): {:#x}".format(offsets["tgcred"])))
             self.meta.append(
-                (self.quiet_info, "offsetof(thread_group_cred, session_keyring): {:#x}".format(self.tgcred_session_offset))
+                ("info", "offsetof(thread_group_cred, session_keyring): {:#x}".format(self.tgcred_session_offset))
             )
             self.meta.append(
-                (self.quiet_info, "offsetof(thread_group_cred, process_keyring): {:#x}".format(self.tgcred_process_offset))
+                ("info", "offsetof(thread_group_cred, process_keyring): {:#x}".format(self.tgcred_process_offset))
             )
         else:
             self.cred_key_offsets = {
@@ -99482,10 +99436,10 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             }
             for name in ("session", "process", "thread"):
                 self.meta.append(
-                    (self.quiet_info, "offsetof(cred, {:s}_keyring): {:#x}".format(name, self.cred_key_offsets[name]))
+                    ("info", "offsetof(cred, {:s}_keyring): {:#x}".format(name, self.cred_key_offsets[name]))
                 )
             self.meta.append(
-                (self.quiet_info, "offsetof(cred, request_key_auth): {:#x}".format(self.cred_key_offsets["request"]))
+                ("info", "offsetof(cred, request_key_auth): {:#x}".format(self.cred_key_offsets["request"]))
             )
         return True
 
@@ -99526,7 +99480,9 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return None
         return [("thread", thread), ("process", process), ("session", session), ("request", request)]
 
-    def collect_tasks(self):
+    def collect_tasks(self, pid_filter=None, task_filter=(), comm_filter=()):
+        """Return [(task, pid, comm, cred, [(root name, struct key), ...]), ...] of the tasks (with threads)
+        that match the pid, the task_struct addresses and the comm REGEXPs."""
         command = self.task_command
         task_addrs = KernelTask.get_task_list(command.init_task, command.offset_tasks)
         if getattr(command, "offset_thread_group", None) is not None:
@@ -99542,11 +99498,11 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 cred = read_int_from_memory(task + command.offset_cred)
             except (gdb.MemoryError, OverflowError):
                 continue
-            if self.args.pid is not None and pid != self.args.pid:
+            if pid_filter is not None and pid != pid_filter:
                 continue
-            if self.args.task_filter and task not in self.args.task_filter:
+            if task_filter and task not in task_filter:
                 continue
-            if not GefUtil.matches_regex(comm, self.args.filter):
+            if not GefUtil.matches_regex(comm, comm_filter):
                 continue
             roots = self.task_roots(cred)
             if roots is not None:
@@ -99648,21 +99604,6 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return self.RequestAuth(target, target_info, dest, dest_info, cred, callout, callout_len, pid, op)
         return None
 
-    @staticmethod
-    def permission_string(perm):
-        names = "vrwsla"
-        groups = []
-        for label, shift in (("pos", 24), ("usr", 16), ("grp", 8), ("oth", 0)):
-            bits = (perm >> shift) & 0x3f
-            parts = []
-            for i, name in enumerate(names):
-                if bits & (1 << i):
-                    parts.append(name)
-                else:
-                    parts.append("-")
-            groups.append("{:s}={:s}".format(label, "".join(parts)))
-        return "{:#010x} {:s}".format(perm, "/".join(groups))
-
     def walk_assoc_array(self, root):
         leaves = []
         if root and not root & 1:
@@ -99671,7 +99612,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         stack = [(root, 0)]
         seen = set()
         ptrsize = current_arch.ptrsize
-        while stack and len(leaves) < self.args.max_keys:
+        while stack and len(leaves) < self.max_keys:
             pointer, parent = stack.pop()
             if not pointer:
                 continue
@@ -99685,7 +99626,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             if base in seen:
                 self.walk_error = "assoc_array node at {:#x} is linked twice".format(base)
                 continue
-            if len(seen) >= self.args.max_keys:
+            if len(seen) >= self.max_keys:
                 self.walk_error = "too many assoc_array nodes"
                 break
             seen.add(base)
@@ -99719,9 +99660,9 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 if not keylist:
                     return []
                 nkeys = read_int16_from_memory(keylist + 2 * current_arch.ptrsize + 2)
-                if nkeys > self.args.max_keys:
+                if nkeys > self.max_keys:
                     self.walk_error = "keyring_list has implausible nkeys={:d}".format(nkeys)
-                    nkeys = self.args.max_keys
+                    nkeys = self.max_keys
                 keys_offset = align_to_ptrsize(2 * current_arch.ptrsize + 6)
                 return [read_int_from_memory(keylist + keys_offset + i * current_arch.ptrsize) for i in range(nkeys)]
             root = read_int_from_memory(info.address + self.offset_keys_root)
@@ -99731,7 +99672,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return []
 
     def collect_key(self, records, root, address, depth, parent, ancestors, seen):
-        if self.collect_count >= self.args.max_keys:
+        if self.collect_count >= self.max_keys:
             self.key_limit_reached = True
             return
         self.collect_count += 1
@@ -99750,7 +99691,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         seen.add(address)
         records.append(self.KeyRecord(root, depth, parent, address, info, None))
         children = self.keyring_children(info)
-        if depth >= self.args.max_depth:
+        if depth >= self.max_depth:
             if children:
                 self.depth_limit_reached = True
             return
@@ -99770,6 +99711,118 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             if address:
                 self.collect_key(records, name, address, 0, 0, set(), seen)
         return records
+
+
+@register_command
+class KernelKeyringCommand(GenericCommand, BufferingOutput):
+    """Display the keyrings referenced by tasks, or inspect an arbitrary struct key."""
+
+    _cmdline_ = "kkeyring"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("key", metavar="KEY_ADDR", nargs="?", type=AddressUtil.parse_address,
+                        help="inspect this `struct key` directly instead of walking task credentials.")
+    parser.add_argument("-p", "--pid", type=lambda x: int(x, 0), help="filter by task pid.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="filter by specific task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("-d", "--max-depth", type=lambda x: int(x, 0), default=6,
+                        help="maximum nested keyring depth (default: 6).")
+    parser.add_argument("--max-keys", type=lambda x: int(x, 0), default=0x1000,
+                        help="maximum number of keys to walk (default: 0x1000).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display ownership and internal key details.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -p 1337",
+        "{0:s} -p 1337 -v",
+        "{0:s} -f 'bash$'",
+        "{0:s} 0xffff888012345000",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Simplified keyring structures:",
+        "",
+        "[v3.8~]",
+        "+-task_struct-+    +-cred-------------+",
+        "| cred        |--->| session_keyring  |----+",
+        "+-------------+    | process_keyring  |----+",
+        "                   | thread_keyring   |----+--->struct key",
+        "                   | request_key_auth |----+",
+        "                   +------------------+",
+        "[~v3.7]",
+        "+-task_struct-+    +-cred-------------+",
+        "| cred        |--->| thread_keyring   |---------------------------->struct key",
+        "+-------------+    | request_key_auth |---------------------------->struct key",
+        "                   | tgcred           |--->+-thread_group_cred-+",
+        "                   +------------------+    | session_keyring   |--->struct key",
+        "                                           | process_keyring   |--->struct key",
+        "                                           +-------------------+",
+        "+-key----------------------------+",
+        "| usage                          |",
+        "| serial                         |",
+        "| uid, gid, perm                 |",
+        "| expiry                         |",
+        "| flags                          |",
+        "| state (v4.14~)                 |",
+        "| type                           |",
+        "| description                    |",
+        "| payload.subscriptions (~v3.12) |---->struct keyring_list",
+        "| payload.data[0] (auth key)     |---->struct request_key_auth",
+        "| keys.root (v3.13~)             |---->assoc_array_ptr",
+        "+--------------------------------+",
+        "",
+        "+-request_key_auth-+",
+        "| rcu (v5.3~)      |",
+        "| usage (v7.2~)    |",
+        "| target_key       |---->struct key (being constructed)",
+        "| dest_keyring     |---->struct key",
+        "| cred             |---->struct cred (requester)",
+        "| callout_info     |",
+        "| callout_len      |",
+        "| pid              |",
+        "| op[8] (v5.0~)    |",
+        "+------------------+",
+        "",
+        "[~v3.12]",
+        "+-keyring_list-+",
+        "| nkeys        |",
+        "| keys[]       |---->struct key ...",
+        "+--------------+",
+        "",
+        "[v3.13~]",
+        "keys.root ---> assoc_array_ptr (tagged)",
+        "                +-- leaf -----> struct key (bit 1 is set if it is a keyring)",
+        "                +-- node -----> +-assoc_array_node-----+",
+        "                |               | slots[16]            |---> assoc_array_ptr ...",
+        "                |               +----------------------+",
+        "                +-- shortcut -> +-assoc_array_shortcut-+",
+        "                                | next_node            |---> assoc_array_ptr",
+        "                                +----------------------+",
+        "",
+        "A keyring leaf may itself be another keyring, so the command walks child keys recursively.",
+        "The request-key authorisation key held by an upcall helper is shown as the `request` root.",
+    ])
+
+    @staticmethod
+    def permission_string(perm):
+        names = "vrwsla"
+        groups = []
+        for label, shift in (("pos", 24), ("usr", 16), ("grp", 8), ("oth", 0)):
+            bits = (perm >> shift) & 0x3f
+            parts = []
+            for i, name in enumerate(names):
+                if bits & (1 << i):
+                    parts.append(name)
+                else:
+                    parts.append("-")
+            groups.append("{:s}={:s}".format(label, "".join(parts)))
+        return "{:#010x} {:s}".format(perm, "/".join(groups))
 
     @staticmethod
     def record_description(record):
@@ -99842,7 +99895,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return
 
     def append_request_key_auth(self, info):
-        auth = self.read_request_key_auth(info)
+        auth = self.kkeyring.read_request_key_auth(info)
         if auth is None:
             self.out.append("  auth:  [could not decode struct request_key_auth]")
             return
@@ -99871,11 +99924,11 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         return
 
     def append_walk_warnings(self):
-        if self.key_limit_reached:
+        if self.kkeyring.key_limit_reached:
             self.out.append("[!] key limit reached ({:d})".format(self.args.max_keys))
-        if self.depth_limit_reached:
+        if self.kkeyring.depth_limit_reached:
             self.out.append("[!] depth limit reached ({:d})".format(self.args.max_depth))
-        self.out.extend("[!] " + message for message in self.walk_errors)
+        self.out.extend("[!] " + message for message in self.kkeyring.walk_errors)
         return
 
     @Decorator.parse_args
@@ -99890,44 +99943,40 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             return
 
         self.args = args
-        self.meta = []
-        self.kversion = Kernel.version()
-        if self.kversion is None:
-            self.quiet_err("Could not find Linux kernel")
+        self.kkeyring = kkeyring = Kernel.keyring()
+        if not kkeyring.initialize():
+            for func, line in Kernel.export_meta(self, kkeyring.meta):
+                func(line)
             return
 
         entries = []
         sample_key = args.key
         if args.key is None:
-            if not self.initialize_tasks():
-                for func, line in self.meta:
+            if not kkeyring.initialize_tasks():
+                for func, line in Kernel.export_meta(self, kkeyring.meta):
                     func(line)
                 return
-            entries = self.collect_tasks()
+            entries = kkeyring.collect_tasks(args.pid, args.task_filter, args.filter)
             sample_key = next((address for entry in entries for _name, address in entry[4] if address), None)
 
         if sample_key is not None:
-            key_layout = self.initialize_key_layout(sample_key)
+            key_layout = kkeyring.initialize_key_layout(sample_key)
         else:
             key_layout = None
         if args.meta:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, kkeyring.meta):
                 func(line)
             return
         if sample_key is not None and not key_layout:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, kkeyring.meta):
                 func(line)
             return
 
         self.out = []
-        self.collect_count = 0
-        self.key_limit_reached = False
-        self.depth_limit_reached = False
-        self.walk_errors = []
-        self.walk_error = None
+        kkeyring.reset_walk(args.max_depth, args.max_keys)
         if args.key is not None:
             records = []
-            self.collect_key(records, "direct", args.key, 0, 0, set(), set())
+            kkeyring.collect_key(records, "direct", args.key, 0, 0, set(), set())
             self.append_records(records)
         else:
             selected = [entry for entry in entries if any(address for _name, address in entry[4])]
@@ -99939,7 +99988,7 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
                 if args.verbose:
                     title += " cred={:#x}".format(cred)
                 self.out.append(titlify(title))
-                self.append_records(self.collect_roots(roots))
+                self.append_records(kkeyring.collect_roots(roots))
                 self.out.append("")
         self.append_walk_warnings()
         self.print_output(check_terminal_size=True)
