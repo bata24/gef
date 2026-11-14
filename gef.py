@@ -105173,16 +105173,6 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         "                                            +-------------+",
     ])
 
-    FILE_TYPES = {
-        0o010000: "p",
-        0o020000: "c",
-        0o040000: "d",
-        0o060000: "b",
-        0o100000: "-",
-        0o120000: "l",
-        0o140000: "s",
-    }
-
     def initialize(self):
         self.meta = []
 
@@ -105192,8 +105182,6 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
             return None
 
         self.task_command = None
-        self.kpath = Kernel.path()
-
         fd_mode = self.args.pid is not None or self.args.fd is not None
         if fd_mode:
             self.task_command = Kernel.task()
@@ -105203,218 +105191,21 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
                 self.task_command = None
             if self.task_command is None:
                 return None
-            self.kpath = Kernel.path()
 
-        kind = self.args.type
-        address = self.args.address
-        if address is not None and not fd_mode:
-            try:
-                if kind == "inode":
-                    if not self.kpath.initialize_inode_offsets(address):
-                        self.meta.append((self.quiet_err, "Could not resolve the inode layout"))
-                        return None
-                elif kind == "file":
-                    if not self.kpath.initialize(file=address):
-                        self.meta.append((self.quiet_err, "Could not resolve the file layout"))
-                        return None
-                elif kind == "dentry":
-                    if not self.kpath.initialize(dentry=address):
-                        self.meta.append((self.quiet_err, "Could not resolve the dentry layout"))
-                        return None
-            except (gdb.MemoryError, OverflowError, RuntimeError):
-                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-                return None
-
-        # KernelFileSystem adds the filesystem name and mount source. It relies on struct
-        # mount, introduced in v3.3, so older kernels use the stable super_block fields below.
-        self.kfs = None
-        if "3.3" <= kversion and kind != "inode":
-            kfs = Kernel.file_system()
-            if kfs.initialize():
-                self.kfs = kfs
-            self.meta.extend(Kernel.export_meta(self, kfs.meta, demote_err=True))
-
-        self.offset_s_dev = current_arch.ptrsize * 2
-        # loff_t uses 8-byte alignment on ARM32 and RISCV32, unlike the i386 ABI.
-        if is_64bit() or is_arm32() or is_riscv32():
-            loff_t_align = 8
-        else:
-            loff_t_align = 4
-        s_maxbytes_end = current_arch.ptrsize * 3 + 8
-        offset_s_maxbytes = align(s_maxbytes_end, loff_t_align)
-        self.offset_s_type = offset_s_maxbytes + 8
-        offset_s_dev = GefUtil.offsetof("super_block", "s_dev")
-        offset_s_type = GefUtil.offsetof("super_block", "s_type")
-        if self.kfs is not None:
-            if self.kfs.offset_s_type is not None:
-                self.offset_s_type = self.kfs.offset_s_type
-            self.offset_s_dev = self.kfs.offset_s_dev
-        if offset_s_dev is not None:
-            self.offset_s_dev = offset_s_dev
-        if offset_s_type is not None:
-            self.offset_s_type = offset_s_type
-        self.meta.append((self.quiet_info, "offsetof(super_block, s_dev): {:#x}".format(self.offset_s_dev)))
-        self.meta.append((self.quiet_info, "offsetof(super_block, s_type): {:#x}".format(self.offset_s_type)))
-
-        if address is not None and not fd_mode and kind == "auto" and not self.kpath.initialized:
-            try:
-                if not self.kpath.initialize(file=address) and not self.kpath.initialize(dentry=address):
-                    if not self.kpath.initialize_inode_offsets(address) or not self.is_inode(address):
-                        self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-                        return None
-                    kind = "inode"
-            except (gdb.MemoryError, OverflowError, RuntimeError):
-                self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-                return None
-
-        if address is not None and not fd_mode and kind != "inode" and not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-            return None
-        if fd_mode and not self.kpath.initialized:
-            self.meta.append((self.quiet_err, "Could not resolve the VFS object layout"))
-            return None
-
-        self.meta.extend(Kernel.export_meta(self, self.kpath.meta))
-        return True
-
-    def get_task_by_pid(self, pid):
-        task_command = self.task_command
-        task_addrs = KernelTask.get_task_list(task_command.init_task, task_command.offset_tasks)
-        if task_command.enabled.get("threads"):
-            task_addrs = task_command.add_lwp_task(task_addrs)
-        for task in task_addrs:
-            if read_int32_from_memory(task + task_command.offset_pid) == pid:
-                return task
-        return None
-
-    def get_file_by_fd(self, pid, fd):
-        if fd < 0:
-            self.quiet_err("FD must not be negative")
-            return None
-        if self.task_command.offset_files is None or self.task_command.offset_fdt is None:
-            self.quiet_err("Could not find task_struct->files->fdt")
-            return None
-        task = self.get_task_by_pid(pid)
-        if task is None:
-            self.quiet_err("Could not find the task of pid {:d}".format(pid))
-            return None
-        try:
-            files = read_int_from_memory(task + self.task_command.offset_files)
-            fdt = read_int_from_memory(files + self.task_command.offset_fdt)
-            max_fds = read_int32_from_memory(fdt)
-            if fd >= max_fds:
-                self.quiet_err("FD {:d} is outside the fdtable (max_fds={:d})".format(fd, max_fds))
-                return None
-            array = read_int_from_memory(fdt + current_arch.ptrsize)
-            file = read_int_from_memory(array + current_arch.ptrsize * fd)
-        except (gdb.MemoryError, OverflowError):
-            self.quiet_err("Could not read fd {:d} of pid {:d}".format(fd, pid))
-            return None
-        if not is_valid_addr(file):
-            self.quiet_err("FD {:d} of pid {:d} is not open".format(fd, pid))
-            return None
-        return file
-
-    def is_inode(self, inode):
-        if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
-            return False
-        try:
-            mode = read_int16_from_memory(inode + self.kpath.offset_i_mode)
-            super_block = read_int_from_memory(inode + self.kpath.offset_i_sb)
-            read_int_from_memory(inode + self.kpath.offset_i_ino)
-        except (gdb.MemoryError, OverflowError):
-            return False
-        if not is_valid_addr(super_block):
-            return False
-        file_type = mode & 0o170000
-        if file_type == 0:
-            return self.get_fstype_name(super_block) == "anon_inodefs"
-        return file_type in self.FILE_TYPES
-
-    def is_file(self, file):
-        kpath = self.kpath
-        try:
-            if kpath.offset_file_mnt is None and not kpath.initialize_file_offsets(file):
-                return False
-            vfsmnt = read_int_from_memory(file + kpath.offset_file_mnt)
-            dentry = read_int_from_memory(file + kpath.offset_file_dentry)
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            return False
-        return kpath.is_vfsmount(vfsmnt) and kpath.is_dentry(dentry)
-
-    def detect_type(self, address):
-        if self.kpath.initialized and self.is_file(address):
-            return "file"
-        if self.kpath.initialized and self.kpath.is_dentry(address):
-            return "dentry"
-        if self.is_inode(address):
-            return "inode"
-        return None
-
-    @staticmethod
-    def mode_string(mode):
-        chars = []
-        for shift in (6, 3, 0):
-            bits = (mode >> shift) & 7
-            for flag, label in ((4, "r"), (2, "w"), (1, "x")):
-                if bits & flag:
-                    chars.append(label)
-                else:
-                    chars.append("-")
-        if mode & 0o4000:
-            if chars[2] == "x":
-                chars[2] = "s"
-            else:
-                chars[2] = "S"
-        if mode & 0o2000:
-            if chars[5] == "x":
-                chars[5] = "s"
-            else:
-                chars[5] = "S"
-        if mode & 0o1000:
-            if chars[8] == "x":
-                chars[8] = "t"
-            else:
-                chars[8] = "T"
-        return KernelVfsCommand.FILE_TYPES.get(mode & 0o170000, "?") + "".join(chars)
-
-    def get_fstype_name(self, super_block):
-        if self.kfs is not None:
-            name = self.kfs.get_fstype_name(super_block)
-            if name:
-                return name
-        try:
-            fst = read_int_from_memory(super_block + self.offset_s_type)
-            if not is_valid_addr(fst):
-                return "???"
-            name_addr = read_int_from_memory(fst)
-            if not is_valid_addr(name_addr):
-                return "???"
-            return read_cstring_from_memory(name_addr, max_length=64, safe=True) or "???"
-        except (gdb.MemoryError, OverflowError):
-            return "???"
+        self.kpath = Kernel.path()
+        ret, meta = self.kpath.initialize_vfs(self.args.type, self.args.address, fd_mode)
+        self.meta.extend(Kernel.export_meta(self, meta))
+        return ret
 
     def dump_inode(self, inode, prefix, mount=None):
-        kpath = self.kpath
-        mode = read_int16_from_memory(inode + kpath.offset_i_mode)
-        ino = read_int_from_memory(inode + kpath.offset_i_ino)
-        super_block = read_int_from_memory(inode + kpath.offset_i_sb)
-        dev = read_int32_from_memory(super_block + self.offset_s_dev)
-        major = dev >> 20
-        minor = dev & ((1 << 20) - 1)
-        fstype = self.get_fstype_name(super_block)
-        if self.kfs is not None and mount is not None:
-            devname = self.kfs.get_dev_name(mount)
-        else:
-            devname = None
-
+        info = self.kpath.get_inode_info(inode, mount)
         self.out.append(prefix + "struct inode {:#018x}".format(inode))
-        self.out.append(prefix + "|- i_ino {:d} ({:#x})".format(ino, ino))
-        self.out.append(prefix + "|- i_mode 0{:06o} ({:s})".format(mode, self.mode_string(mode)))
-        self.out.append(prefix + "`- struct super_block {:#018x}".format(super_block))
-        self.out.append(prefix + "   |- filesystem {:s}".format(fstype))
-        self.out.append(prefix + "   |- s_dev {:d}:{:d} ({:#x})".format(major, minor, dev))
-        self.out.append(prefix + "   `- mount source {:s}".format(devname or "???"))
+        self.out.append(prefix + "|- i_ino {:d} ({:#x})".format(info.ino, info.ino))
+        self.out.append(prefix + "|- i_mode 0{:06o} ({:s})".format(info.mode, KernelPath.mode_string(info.mode)))
+        self.out.append(prefix + "`- struct super_block {:#018x}".format(info.super_block))
+        self.out.append(prefix + "   |- filesystem {:s}".format(info.fstype or "???"))
+        self.out.append(prefix + "   |- s_dev {:d}:{:d} ({:#x})".format(info.major, info.minor, info.dev))
+        self.out.append(prefix + "   `- mount source {:s}".format(info.devname or "???"))
         return
 
     def dump_dentry(self, dentry, prefix="", mount=None, path=None):
@@ -105426,7 +105217,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         self.out.append(prefix + "struct dentry {:#018x}".format(dentry))
         self.out.append(prefix + "|- d_name {!r}".format(name))
         self.out.append(prefix + "|- path {!r}".format(path))
-        if not self.is_inode(inode):
+        if not kpath.is_inode(inode):
             self.out.append(prefix + "`- d_inode {:#018x} (unreadable or negative dentry)".format(inode))
             return
         self.out.append(prefix + "`- d_inode")
@@ -105469,8 +105260,9 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
             if args.address is not None:
                 err("ADDRESS cannot be used with --pid/--fd")
                 return
-            address = self.get_file_by_fd(args.pid, args.fd)
+            address, error = self.task_command.get_file_by_fd(args.pid, args.fd)
             if address is None:
+                self.quiet_err(error)
                 return
             kind = "file"
             self.quiet_info("pid {:d}, fd {:d}: struct file {:#x}".format(args.pid, args.fd, address))
@@ -105484,7 +105276,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
                 return
             kind = args.type
             if kind == "auto":
-                kind = self.detect_type(address)
+                kind = self.kpath.detect_vfs_type(address)
                 if kind is None:
                     err("Could not tell what {:#x} points to; specify it with --type".format(address))
                     return
@@ -105492,11 +105284,11 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
 
         self.out = []
         try:
-            if kind == "file" and self.is_file(address):
+            if kind == "file" and self.kpath.is_file(address):
                 self.dump_file(address)
             elif kind == "dentry" and self.kpath.is_dentry(address):
                 self.dump_dentry(address)
-            elif kind == "inode" and self.is_inode(address):
+            elif kind == "inode" and self.kpath.is_inode(address):
                 self.dump_inode(address, "")
             else:
                 err("Could not interpret {:#x} as struct {:s}".format(address, kind))
