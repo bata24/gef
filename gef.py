@@ -89174,19 +89174,17 @@ class KernelDmabuf:
         return self.sizeof_scatterlist
 
     def get_file_buffers(self):
-        output = Color.remove_color(gdb.execute("ktask --print-fd --user-process-only --no-pager --quiet", to_string=True))
-        for line in output.splitlines():
-            if "Disabled --print-fd" in line:
-                self.meta.append(("err", line.strip()))
-                return None
+        files, error = KernelTask.get_user_files()
+        if files is None:
+            self.meta.append(("err", error))
+            return None
         buffers = []
         ptr = current_arch.ptrsize
         offset = GefUtil.offsetof("file", "private_data")
-        for line in output.splitlines():
-            match = re.match(r"^\s*\d+\s+(?:True|False)\s+(0x[0-9a-f]+)\s+.*(?:dmabuf|dma_buf)", line)
-            if not match:
+        for _, entry in files:
+            if "dmabuf" not in entry["path"] and "dma_buf" not in entry["path"]:
                 continue
-            file = int(match.group(1), 16)
+            file = entry["file"]
             if offset is not None:
                 offsets = [offset]
             else:
