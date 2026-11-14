@@ -70026,22 +70026,22 @@ class KernelAddressHeuristicFinderUtil:
         bases = {}
         for line in res.splitlines():
             if allow_cc:
-                m = re.search(r"movw(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+                m = re.search(r"movw(?:cc)?\s+(\w+),\s*#(0x[0-9a-f]+|\d+)", line)
             else:
-                m = re.search(r"movw\s+(\w+),.+[;@]\s*(0x\w+)", line)
+                m = re.search(r"movw\s+(\w+),\s*#(0x[0-9a-f]+|\d+)", line)
             if m:
                 reg = m.group(1)
-                v = int(m.group(2), 16)
+                v = int(m.group(2), 0)
                 bases[reg] = v
                 continue
             if allow_cc:
-                m = re.search(r"movt(?:cc)?\s+(\w+),.+[;@]\s*(0x\w+)", line)
+                m = re.search(r"movt(?:cc)?\s+(\w+),\s*#(0x[0-9a-f]+|\d+)", line)
             else:
-                m = re.search(r"movt\s+(\w+),.+[;@]\s*(0x\w+)", line)
+                m = re.search(r"movt\s+(\w+),\s*#(0x[0-9a-f]+|\d+)", line)
             w = None
             if m:
                 reg = m.group(1)
-                v = int(m.group(2), 16) << 16
+                v = int(m.group(2), 0) << 16
                 if reg in bases:
                     w = AddressUtil.normalize_address(bases[reg] + v)
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases)
@@ -76419,7 +76419,10 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res, "e[a-d]x")
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_reg_const(res, "r0")
                 elif is_riscv32() or is_riscv64():
@@ -78339,7 +78342,10 @@ class KernelAddressHeuristicFinder:
                 elif is_x86_32():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_cmp_const(res, read_valid=True)
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res)
+                    g = itertools.chain(
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res),
+                        KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    )
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
