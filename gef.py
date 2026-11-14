@@ -80264,6 +80264,11 @@ class Kernel:
         return KernelSkbuff.get_instance()
 
     @staticmethod
+    def netdev():
+        """Return the net_device resolver."""
+        return KernelNetDevice.get_instance()
+
+    @staticmethod
     def block_device():
         """Return the block device resolver."""
         return KernelBlockDevice.get_instance()
@@ -168145,36 +168150,17 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
-    """Dump net device information."""
+class KernelNetDevice:
+    """Resolve the net_device list of init_net and read the net_devices."""
 
-    _cmdline_ = "knetdev"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="display driver and queue details.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _note_ = "\n".join([
-        "Fields whose layout cannot be verified are shown as '-'.",
-        "Without type information, the address column may be &net_device.name rather than net_device.",
-        "Use -v to show operations and queue details.",
-        "",
-        "Simplified net_device structure:",
-        "",
-        "                     +-net_device--------+    +-net_device--------+",
-        "                     | ... (v6.8~)       |    | ... (v6.8~)       |",
-        "+-init_net------+    | name[]            |    | name[]            |",
-        "| ...           |    | ...               |    | ...               |",
-        "| dev_base_head |--->| dev_list          |--->| dev_list          |--->...",
-        "| ...           |    | ...               |    | ...               |",
-        "+---------------+    +-------------------+    +-------------------+",
-    ])
+    def __init__(self):
+        self.meta = []
+        return
 
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
@@ -168184,13 +168170,11 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         self.init_net = KernelAddressHeuristicFinder.get_init_net()
         if self.init_net is None:
             if KernelAddressHeuristicFinderUtil.has_networking_symbols() is False:
-                self.meta.append(
-                    (self.quiet_warn, "No core networking symbols found; this kernel may be built with CONFIG_NET=n")
-                )
+                self.meta.append(("warn", "No core networking symbols found; this kernel may be built with CONFIG_NET=n"))
             else:
-                self.meta.append((self.quiet_err, "Could not find init_net"))
+                self.meta.append(("err", "Could not find init_net"))
             return None
-        self.meta.append((self.quiet_info, "init_net: {:#x}".format(self.init_net)))
+        self.meta.append(("info", "init_net: {:#x}".format(self.init_net)))
 
         """
         struct net {
@@ -168267,17 +168251,63 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             if found:
                 break
         else:
-            self.meta.append((self.quiet_err, "Could not find net->dev_base_head"))
+            self.meta.append(("err", "Could not find net->dev_base_head"))
             return None
 
-        self.meta.append((self.quiet_info, "offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head)))
+        self.meta.append(("info", "offsetof(net, dev_base_head): {:#x}".format(self.offset_dev_base_head)))
         if self.offset_name is not None:
-            self.meta.append((self.quiet_info, "offsetof(net_device, name): {:#x}".format(self.offset_name)))
-            self.meta.append((self.quiet_info, "offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list)))
+            self.meta.append(("info", "offsetof(net_device, name): {:#x}".format(self.offset_name)))
+            self.meta.append(("info", "offsetof(net_device, dev_list): {:#x}".format(self.offset_dev_list)))
         else:
-            self.meta.append((self.quiet_info, "distance(dev_list, name): {:#x}".format(self.distance_dev_list_name)))
+            self.meta.append(("info", "distance(dev_list, name): {:#x}".format(self.distance_dev_list_name)))
 
         return True
+
+    def get_devices(self, napi=False):
+        """Return the net_devices of init_net as a list of dicts. A field is None if its layout is not verified.
+        "net_device" is &net_device.name if offsetof(net_device, name) is unknown. "napi" is read only if `napi`.
+        """
+        head = self.init_net + self.offset_dev_base_head
+        entries = list(KernelListHead(head, self.distance_dev_list_name).iter_entries())
+        offsets = {}
+        if self.offset_name is None:
+            offsets = self.infer_offsets(entries)
+        devices = []
+        for name_addr in entries:
+            name = read_cstring_from_memory(name_addr, 0x10, safe=True)
+            if self.offset_name is not None:
+                netdev = name_addr - self.offset_name
+                device = GefUtil.typed_struct(netdev, "struct net_device")
+            else:
+                netdev = name_addr
+                device = None
+
+            fields = {member: GefUtil.field_int(device, member) for member in (
+                "ifindex", "mtu", "flags", "operstate", "state", "type", "addr_len", "dev_addr",
+                "netdev_ops", "rx_handler", "real_num_tx_queues", "real_num_rx_queues",
+            )}
+            if device is None:
+                for member, offset in offsets.items():
+                    address = name_addr + offset
+                    if member == "type":
+                        fields[member] = read_int16_from_memory(address, safe=True)
+                    elif member in ("ifindex", "mtu", "flags"):
+                        fields[member] = read_int32_from_memory(address, safe=True)
+                    else:
+                        fields[member] = read_int_from_memory(address, safe=True)
+                if fields["type"] == 1:
+                    fields["addr_len"] = 6
+            fields["net_device"] = netdev
+            fields["name"] = name
+            addr_len = fields["addr_len"]
+            fields["hwaddr"] = None
+            if fields["dev_addr"] and addr_len and 0 < addr_len <= 32:
+                fields["hwaddr"] = read_memory(fields["dev_addr"], addr_len, safe=True)
+            if napi:
+                napi_head = name_addr + self.distance_dev_list_name + current_arch.ptrsize * 2
+                fields["napi"] = KernelListHead(napi_head).parse()
+            devices.append(fields)
+        return devices
 
     def infer_offsets(self, entries):
         """Find net_device fields from list and hash links when no type layout is loaded."""
@@ -168425,8 +168455,41 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
             offsets["dev_addr"] = max(offset for offset, head in addr_candidates)
         return offsets
 
+
+@register_command
+class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
+    """Dump net device information."""
+
+    _cmdline_ = "knetdev"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="display driver and queue details.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Fields whose layout cannot be verified are shown as '-'.",
+        "Without type information, the address column may be &net_device.name rather than net_device.",
+        "Each network namespace has its own list (net->dev_base_head). The one of init_net is shown.",
+        "Use -v to show operations and queue details.",
+        "",
+        "Simplified net_device structure:",
+        "",
+        "                     +-net_device--------+    +-net_device--------+",
+        "                     | ... (v6.8~)       |    | ... (v6.8~)       |",
+        "+-init_net------+    | name[]            |    | name[]            |",
+        "| ...           |    | ...               |    | ...               |",
+        "| dev_base_head |--->| dev_list          |--->| dev_list          |--->...",
+        "| ...           |    | ...               |    | ...               |",
+        "+---------------+    +-------------------+    +-------------------+",
+    ])
+
     def dump_net(self, verbose=False):
-        if self.offset_name is not None:
+        if self.knetdev.offset_name is not None:
             address_label = "net_device"
         else:
             address_label = "&net_device.name"
@@ -168434,41 +168497,16 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
         if verbose:
             legend.extend(("netdev_ops", "rx_handler", "txq", "rxq", "napi"))
 
-        head = self.init_net + self.offset_dev_base_head
-        entries = list(KernelListHead(head, self.distance_dev_list_name).iter_entries())
-        offsets = self.infer_offsets(entries) if self.offset_name is None else {}
         rows = []
-        for name_addr in entries:
-            name = read_cstring_from_memory(name_addr, 0x10)
-            if self.offset_name is not None:
-                netdev = name_addr - self.offset_name
-            else:
-                netdev = name_addr
-
-            device = GefUtil.typed_struct(netdev, "struct net_device") if self.offset_name is not None else None
-            fields = {member: GefUtil.field_int(device, member) for member in (
-                "ifindex", "mtu", "flags", "operstate", "state", "type", "addr_len", "dev_addr",
-                "netdev_ops", "rx_handler", "real_num_tx_queues", "real_num_rx_queues",
-            )}
-            if device is None:
-                for member, offset in offsets.items():
-                    address = name_addr + offset
-                    if member == "type":
-                        fields[member] = read_int16_from_memory(address, safe=True)
-                    elif member in ("ifindex", "mtu", "flags"):
-                        fields[member] = read_int32_from_memory(address, safe=True)
-                    else:
-                        fields[member] = read_int_from_memory(address, safe=True)
-                if fields["type"] == 1:
-                    fields["addr_len"] = 6
+        for fields in self.knetdev.get_devices(napi=verbose):
             state = fields["state"]
-            addr_len = fields["addr_len"]
             hwaddr = None
-            if fields["dev_addr"] and addr_len and 0 < addr_len <= 32:
-                data = read_memory(fields["dev_addr"], addr_len, safe=True)
-                if data is not None:
-                    hwaddr = ":".join("{:02x}".format(byte) for byte in data)
-            parts = ["{:#018x}".format(netdev), name]
+            if fields["hwaddr"] is not None:
+                hwaddr = ":".join("{:02x}".format(byte) for byte in fields["hwaddr"])
+            name = fields["name"]
+            if name is None:
+                name = "-"
+            parts = ["{:#018x}".format(fields["net_device"]), name]
             for member in ("ifindex", "mtu", "flags", "operstate"):
                 value = fields[member]
                 if value is None:
@@ -168497,8 +168535,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
                 for member in ("real_num_tx_queues", "real_num_rx_queues"):
                     value = fields[member]
                     parts.append("-" if value is None else str(value))
-                napi_head = name_addr + self.distance_dev_list_name + current_arch.ptrsize * 2
-                napi = KernelListHead(napi_head).parse()
+                napi = fields["napi"]
                 parts.append("-" if napi is None else str(len(napi)))
             rows.append(parts)
         widths = [len(label) for label in legend]
@@ -168519,9 +168556,10 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
 
-        ret = self.initialize()
+        self.knetdev = Kernel.netdev()
+        ret = self.knetdev.initialize()
         if args.meta or not ret:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.knetdev.meta):
                 func(line)
         if not ret:
             return
