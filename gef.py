@@ -69925,16 +69925,16 @@ class KernelAddressHeuristicFinderUtil:
             KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, bases, add1time)
 
     @staticmethod
-    def aarch64_adrp_add_ldr(res, skip=0, skip_msb_check=False, read_valid=False):
+    def aarch64_adrp_add_ldr(res, skip=0, skip_msb_check=False, read_valid=False, reg=r"\w+", with_pc=False):
         bases = {}
         add1time = {}
         for line in res.splitlines():
             m = re.search(r"adrp\s+(\w+),\s*(0x\w+)", line)
             if m:
-                reg = m.group(1)
+                base_reg = m.group(1)
                 v = int(m.group(2), 16)
-                bases[reg] = v
-                add1time.pop(reg, None)
+                bases[base_reg] = v
+                add1time.pop(base_reg, None)
                 continue
             m = re.search(r"add\s+(\w+),\s*(\w+),\s*#(0x\w+)", line)
             if m:
@@ -69946,7 +69946,7 @@ class KernelAddressHeuristicFinderUtil:
                     bases.pop(dstreg, None)
                     continue
             w = None
-            m = re.search(r"ldr\s+\w+,\s*\[(\w+),\s*#(\d+)\]", line)
+            m = re.search(r"ldr\s+" + reg + r",\s*\[(\w+),\s*#(\d+)\]", line)
             if m:
                 srcreg = m.group(1)
                 v = int(m.group(2), 0)
@@ -69962,7 +69962,12 @@ class KernelAddressHeuristicFinderUtil:
             if skip > 0:
                 skip -= 1
                 continue
-            yield w
+            if with_pc:
+                m = re.search(r"^\s*(?:=>\s*)?(0x[0-9a-f]+)", line)
+                if m:
+                    yield int(m.group(1), 16), w
+            else:
+                yield w
 
     @staticmethod
     def aarch64_adrp_use(res, skip=0, skip_msb_check=False, read_valid=False):
@@ -77884,7 +77889,45 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.x86_dword_ptr_ds(res)
                     g = list(g)[::-1]
                 elif is_arm64():
-                    g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res, skip=1)
+                    # Match the u32 store into next_idx, not the order of index and sequence loads.
+                    loads = dict(KernelAddressHeuristicFinderUtil.aarch64_adrp_add_ldr(res, reg=r"w\d+", with_pc=True))
+                    offset = GefUtil.member_offset("struct kmsg_dumper", "next_idx")
+                    if offset is None:
+                        offset = align(current_arch.ptrsize * 3 + 6, 4) + 4
+                    values = {}
+                    pointers = {"x0": 0}
+                    candidates = set()
+                    for line in res.splitlines():
+                        m = re.search(r"(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s+(.*)", line)
+                        if not m:
+                            continue
+                        pc, mnemonic, operands = int(m.group(1), 16), m.group(2), m.group(3)
+                        store = re.match(r"(w\d+)(?:,\s*(w\d+))?,\s*\[(x\d+)(?:,\s*#(-?\w+))?\]", operands)
+                        if mnemonic in ("str", "stp") and store and store.group(3) in pointers:
+                            target = pointers[store.group(3)] + int(store.group(4) or "0", 0)
+                            for i, reg in enumerate(store.group(1, 2)):
+                                if reg is None:
+                                    continue
+                                source = values.get("x" + reg[1:])
+                                if target + i * 4 == offset and source is not None:
+                                    candidates.add(source)
+                        pointer = None
+                        move = re.match(r"(x\d+),\s*(x\d+)(?:,\s*#(0x\w+|\d+))?", operands)
+                        if mnemonic in ("mov", "add") and move and move.group(2) in pointers:
+                            pointer = pointers[move.group(2)] + int(move.group(3) or "0", 0)
+                        KernelAddressHeuristicFinderUtil.drop_clobbered_regs(line, values, pointers)
+                        if pc in loads:
+                            reg = re.match(r"w(\d+)", operands).group(1)
+                            values["x" + reg] = loads[pc]
+                        elif mnemonic not in ("str", "stp"):
+                            dst = re.match(r"[xw](\d+)", operands)
+                            if dst:
+                                values.pop("x" + dst.group(1), None)
+                        if pointer is not None:
+                            pointers[move.group(1)] = pointer
+                    if len(candidates) == 1:
+                        return candidates.pop()
+                    return None
                 elif is_arm32():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, skip=1),
@@ -80264,6 +80307,11 @@ class Kernel:
     def syscall():
         """Return the syscall table resolver."""
         return KernelSyscall.get_instance()
+
+    @staticmethod
+    def dmesg():
+        """Return the printk ring resolver."""
+        return KernelDmesg.get_instance()
 
     @staticmethod
     def nftables():
@@ -109821,6 +109869,7 @@ class KernelDmesgRing:
 
     def __init__(self, vmcoreinfo):
         self.vmcoreinfo = vmcoreinfo
+        self.meta = []
         self.address = None
         self.out = []
         self.details = []
@@ -109869,16 +109918,16 @@ class KernelDmesgOldestRing(KernelDmesgRing):
             KernelAddressHeuristicFinder.get_printk_text_ring_symbols()
         )
         if not log_end_addr or not log_buf_len_addr:
-            err("Could not resolve the pre-3.5 printk text ring metadata")
+            self.meta.append(("err", "Could not resolve the pre-3.5 printk text ring metadata"))
             return False
         log_buf_len = read_int32_from_memory(log_buf_len_addr, safe=True)
         log_end = read_int32_from_memory(log_end_addr, safe=True)
         if not log_buf_len or log_buf_len > 1 << 30 or log_end is None:
-            err("Invalid legacy printk ring metadata")
+            self.meta.append(("err", "Invalid legacy printk ring metadata"))
             return False
         log_buf_start = KernelAddressHeuristicFinder.get_log_buffer(log_buf_len, buffer_pointer_addr)
         if not log_buf_start:
-            err("Could not find the active log_buf")
+            self.meta.append(("err", "Could not find the active log_buf"))
             return False
         self.address = log_buf_start
         self.buf_len = log_buf_len
@@ -110012,24 +110061,24 @@ class KernelDmesgLegacyRing(KernelDmesgRing):
         log_next_idx_ptr = Ksym.get_addr("log_next_idx") or KernelAddressHeuristicFinder.get_log_next_idx()
         log_buf_len_ptr = Ksym.get_addr("log_buf_len") or KernelAddressHeuristicFinder.get_log_buf_len()
         if not log_first_idx_ptr or not log_next_idx_ptr or not log_buf_len_ptr:
-            err("Could not resolve printk log indexes and size")
+            self.meta.append(("err", "Could not resolve printk log indexes and size"))
             return False
         log_first_idx = read_int32_from_memory(log_first_idx_ptr, safe=True)
         log_next_idx = read_int32_from_memory(log_next_idx_ptr, safe=True)
         log_buf_len = read_int32_from_memory(log_buf_len_ptr, safe=True)
         if log_first_idx is None or log_next_idx is None or not log_buf_len or log_buf_len > 1 << 30:
-            err("Invalid legacy printk ring metadata")
+            self.meta.append(("err", "Invalid legacy printk ring metadata"))
             return False
         if log_first_idx >= log_buf_len or log_next_idx >= log_buf_len:
-            err("Legacy printk ring indexes are outside log_buf_len")
+            self.meta.append(("err", "Legacy printk ring indexes are outside log_buf_len"))
             return False
         log_buf_start = KernelAddressHeuristicFinder.get_log_buffer(log_buf_len)
         if not log_buf_start:
-            err("Could not find the active log_buf")
+            self.meta.append(("err", "Could not find the active log_buf"))
             return False
         layout = self.get_legacy_layout(log_buf_start, log_buf_len, log_first_idx, log_next_idx)
         if layout is None:
-            err("Could not resolve a valid printk_log layout")
+            self.meta.append(("err", "Could not resolve a valid printk_log layout"))
             return False
         self.address = log_buf_start
         self.buf_len = log_buf_len
@@ -110267,7 +110316,7 @@ class KernelDmesgModernRing(KernelDmesgRing):
             if ring:
                 break
         if ring is None:
-            err("Could not resolve a valid active printk ringbuffer")
+            self.meta.append(("err", "Could not resolve a valid active printk ringbuffer"))
             return False
         self.ring = ring
         self.address = ring["address"]
@@ -110415,6 +110464,88 @@ class KernelDmesgModernRing(KernelDmesgRing):
         return partial
 
 
+class KernelDmesg:
+    """Detect the printk format of the running kernel, and resolve its active ring (KernelDmesg*Ring)."""
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    @staticmethod
+    def get_vmcoreinfo():
+        """Read size and offset metadata from the running kernel."""
+        values = {}
+        size_addr = Ksym.get_addr("vmcoreinfo_size")
+        data_addr = Ksym.get_addr("vmcoreinfo_data")
+        if not size_addr or not data_addr:
+            return values
+        size = read_int_from_memory(size_addr, safe=True)
+        if not size or size > 0x10000:
+            return values
+        try:
+            prefix = b"OSRELEASE="[:current_arch.ptrsize]
+            if read_memory(data_addr, len(prefix)) != prefix:
+                data_addr = read_int_from_memory(data_addr, safe=True)
+                if not data_addr:
+                    return values
+            text = read_memory(data_addr, size).decode("ascii", errors="ignore")
+        except gdb.error:
+            return values
+        if not text.startswith("OSRELEASE="):
+            return values
+        for line in text.splitlines():
+            match = re.match(r"(SIZE|OFFSET)\(([^)]+)\)=(\S+)", line)
+            if not match:
+                continue
+            name = match.group(2)
+            if name.startswith("struct "):
+                name = name[7:]
+            name = name.replace(",", ".").replace(" ", "")
+            try:
+                values[(match.group(1), name)] = int(match.group(3), 0)
+            except ValueError:
+                continue
+        return values
+
+    def get_ring(self):
+        """Return the resolved KernelDmesg*Ring of the printk format in use, or None (see self.meta).
+        It is detected and resolved again every time."""
+        self.meta = []
+        kversion = Kernel.version()
+        vmcoreinfo = self.get_vmcoreinfo()
+        has_ringbuffer_type = GefUtil.cached_lookup_type("struct printk_ringbuffer") is not None
+        is_modern = (
+            has_ringbuffer_type
+            or ("SIZE", "printk_ringbuffer") in vmcoreinfo
+            or (kversion is not None and kversion >= "5.10")
+        )
+        is_legacy_text = kversion is not None and kversion < "3.5"
+        if kversion is None and not is_modern:
+            log_end_addr = Ksym.get_addr("log_end")
+            log_buf_len_addr = Ksym.get_addr("log_buf_len")
+            is_legacy_text = bool((log_end_addr and log_buf_len_addr) or Ksym.get_addr("emit_log_char"))
+            has_log_type = GefUtil.cached_lookup_type("struct printk_log") is not None
+            if not has_log_type and ("SIZE", "printk_log") not in vmcoreinfo and not is_legacy_text:
+                self.meta.append(("err", "Could not determine the Linux printk layout"))
+                return None
+
+        if is_modern:
+            ring = KernelDmesgModernRing(vmcoreinfo)
+        elif is_legacy_text:
+            ring = KernelDmesgOldestRing(vmcoreinfo)
+        else:
+            ring = KernelDmesgLegacyRing(vmcoreinfo)
+        if not ring.resolve():
+            self.meta.extend(ring.meta)
+            return None
+        return ring
+
+
 @register_command
 class KernelDmesgCommand(GenericCommand, BufferingOutput):
     """Dump the ring buffer of the dmesg area."""
@@ -110525,41 +110656,6 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         "log_buf points to active storage, which may differ from the initial __log_buf.",
     ])
 
-    def get_vmcoreinfo(self):
-        """Read size and offset metadata from the running kernel."""
-        values = {}
-        size_addr = Ksym.get_addr("vmcoreinfo_size")
-        data_addr = Ksym.get_addr("vmcoreinfo_data")
-        if not size_addr or not data_addr:
-            return values
-        size = read_int_from_memory(size_addr, safe=True)
-        if not size or size > 0x10000:
-            return values
-        try:
-            prefix = b"OSRELEASE="[:current_arch.ptrsize]
-            if read_memory(data_addr, len(prefix)) != prefix:
-                data_addr = read_int_from_memory(data_addr, safe=True)
-                if not data_addr:
-                    return values
-            text = read_memory(data_addr, size).decode("ascii", errors="ignore")
-        except gdb.error:
-            return values
-        if not text.startswith("OSRELEASE="):
-            return values
-        for line in text.splitlines():
-            match = re.match(r"(SIZE|OFFSET)\(([^)]+)\)=(\S+)", line)
-            if not match:
-                continue
-            name = match.group(2)
-            if name.startswith("struct "):
-                name = name[7:]
-            name = name.replace(",", ".").replace(" ", "")
-            try:
-                values[(match.group(1), name)] = int(match.group(3), 0)
-            except ValueError:
-                continue
-        return values
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
@@ -110575,31 +110671,12 @@ class KernelDmesgCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         self.out = []
-        kversion = Kernel.version()
-        vmcoreinfo = self.get_vmcoreinfo()
-        has_ringbuffer_type = GefUtil.cached_lookup_type("struct printk_ringbuffer") is not None
-        is_modern = (
-            has_ringbuffer_type
-            or ("SIZE", "printk_ringbuffer") in vmcoreinfo
-            or (kversion is not None and kversion >= "5.10")
-        )
-        is_legacy_text = kversion is not None and kversion < "3.5"
-        if kversion is None and not is_modern:
-            log_end_addr = Ksym.get_addr("log_end")
-            log_buf_len_addr = Ksym.get_addr("log_buf_len")
-            is_legacy_text = bool((log_end_addr and log_buf_len_addr) or Ksym.get_addr("emit_log_char"))
-            has_log_type = GefUtil.cached_lookup_type("struct printk_log") is not None
-            if not has_log_type and ("SIZE", "printk_log") not in vmcoreinfo and not is_legacy_text:
-                err("Could not determine the Linux printk layout")
-                return
-
-        if is_modern:
-            ring = KernelDmesgModernRing(vmcoreinfo)
-        elif is_legacy_text:
-            ring = KernelDmesgOldestRing(vmcoreinfo)
-        else:
-            ring = KernelDmesgLegacyRing(vmcoreinfo)
-        if not ring.resolve():
+        kdmesg = Kernel.dmesg()
+        ring = kdmesg.get_ring()
+        if ring is None:
+            # the errors are shown even in quiet mode
+            for _level, line in kdmesg.meta:
+                err(line)
             return
 
         if args.meta:
