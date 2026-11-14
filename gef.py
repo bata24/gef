@@ -80344,6 +80344,11 @@ class Kernel:
         return KernelWorkqueue.get_instance()
 
     @staticmethod
+    def irq():
+        """Return the irq_desc resolver."""
+        return KernelIrq.get_instance()
+
+    @staticmethod
     def slub(no_xor=False, byte_swap=None, offset_random=None, offset_node=None):
         """Return the SLUB resolver."""
         return KernelSlub.get_instance(no_xor, byte_swap, offset_random, offset_node)
@@ -167445,60 +167450,27 @@ class KernelDmaBufCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelIrqCommand(GenericCommand, BufferingOutput):
-    """Dump IRQ (interrupt request) information."""
-
-    _cmdline_ = "kirq"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="also show unused IRQs, the count, the flow handler and the affinity.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
-    _syntax_ = parser.format_help()
-
-    _note_ = "\n".join([
-        "Each action of a shared IRQ is shown on its own line. `count` is the sum of the per-cpu counts (-v).",
-        "The affinity is shown only with the debug information (vmlinux or `ktypes-load`).",
-        "",
-        "Simplified irq structure:",
-        "",
-        "+-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc------+",
-        "| lock                |   |    | shift           |   |    | ...           |",
-        "| flags               |   |    | ...             |   |    | irq_data      |",
-        "| rnode/xa_head       |---+    | count           |   |    |   irq         |",
-        "+---------------------+        | ...             |   |    |   hwirq       |",
-        "                               | slots[0]        |---+    |   chip        |--->name",
-        "                               | slots[1]        |   ^    |   ...         |",
-        "                               | ...             |   |    | kstat_irqs    |--->per-cpu count",
-        "                               | slots[15 or 63] |   |    | handle_irq    |",
-        "                               | ...             |   |    | action        |---+",
-        "                               +-----------------+   |    | ...           |   |",
-        "                                                     |    +---------------+   |",
-        "+-sparse_irqs(6.5~)-+   +-->+-maple_node------+      |                        |",
-        "| ...               |   |   | ...             |      |    +-irqaction-+<------+",
-        "| ma_root           |---+   | mr64|ma64|alloc |      |    | handler   |",
-        "| ...               |       |   ...           |      |    | ...       |",
-        "+-------------------+       |   slot[]        |------+    | next      |--->irqaction (shared IRQ)",
-        "                            +-----------------+      |    | ...       |",
-        "                                                     |    | name      |",
-        "+-irq_desc[NR_IRQS] (CONFIG_SPARSE_IRQ=n)-+          |    +-----------+",
-        "| irq_desc[0], irq_desc[1], ...           |----------+",
-        "+-----------------------------------------+",
-    ])
+class KernelIrq:
+    """Resolve the container of irq_desc (array, radix tree, xarray or maple tree) and the layout of irq_desc,
+    irqaction and irq_chip, and read the descriptors."""
 
     MAX_ACTIONS = 64
     MAX_NR_IRQS = 0x10000
 
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
     def add_offset_meta(self, name, offset, source):
         if offset is None:
-            self.meta.append((self.quiet_warn, "{:s}: Not found".format(name)))
+            self.meta.append(("warn", "{:s}: Not found".format(name)))
         else:
-            self.meta.append((self.quiet_info, "{:s}: {:#x} ({:s})".format(name, offset, source)))
+            self.meta.append(("info", "{:s}: {:#x} ({:s})".format(name, offset, source)))
         return
 
     def find_desc_array_layout(self, base):
@@ -167550,38 +167522,38 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if array is None:
             return None
         offset_irq, stride, count = array
-        self.meta.append((self.quiet_info, "irq_desc[]: {:#x} (CONFIG_SPARSE_IRQ=n)".format(base)))
-        self.meta.append((self.quiet_info, "sizeof(irq_desc): {:#x}".format(stride)))
-        self.meta.append((self.quiet_info, "NR_IRQS: {:d}".format(count)))
+        self.meta.append(("info", "irq_desc[]: {:#x} (CONFIG_SPARSE_IRQ=n)".format(base)))
+        self.meta.append(("info", "sizeof(irq_desc): {:#x}".format(stride)))
+        self.meta.append(("info", "NR_IRQS: {:d}".format(count)))
         return {"kind": "array", "root": base, "stride": stride, "count": count, "offset_irq": offset_irq}
 
     def resolve_tree(self, root, root_name):
         """Return the layout of the tree at `root` (CONFIG_SPARSE_IRQ=y), or None."""
         kversion = Kernel.version()
         ptrsize = current_arch.ptrsize
-        self.meta.append((self.quiet_info, "{:s}: {:#x}".format(root_name, root)))
+        self.meta.append(("info", "{:s}: {:#x}".format(root_name, root)))
 
         if kversion < "4.20":
             tree = KernelRadixTree(root, GefUtil.offsetof("radix_tree_root", "rnode"))
             if tree.find_rnode_offset(ptrsize * 0x20) is None:
-                self.meta.append((self.quiet_err, "Could not find radix_tree_root->rnode. (maybe uninitialized?)"))
+                self.meta.append(("err", "Could not find radix_tree_root->rnode. (maybe uninitialized?)"))
                 return None
-            self.meta.append((self.quiet_info, "offsetof(radix_tree_root, rnode): {:#x}".format(tree.rnode_offset)))
+            self.meta.append(("info", "offsetof(radix_tree_root, rnode): {:#x}".format(tree.rnode_offset)))
             return {"kind": "radix", "root": root, "head_offset": tree.rnode_offset}
 
         if kversion < "6.5":
             tree = KernelXArray(root, GefUtil.offsetof("xarray", "xa_head"))
             if tree.find_head_offset(ptrsize * 0x20) is None:
-                self.meta.append((self.quiet_err, "Could not find xa_head. (maybe uninitialized?)"))
+                self.meta.append(("err", "Could not find xa_head. (maybe uninitialized?)"))
                 return None
-            self.meta.append((self.quiet_info, "offsetof(xarray, xa_head): {:#x}".format(tree.head_offset)))
+            self.meta.append(("info", "offsetof(xarray, xa_head): {:#x}".format(tree.head_offset)))
             return {"kind": "xarray", "root": root, "head_offset": tree.head_offset}
 
         tree = KernelMapleTree(root, GefUtil.offsetof("maple_tree", "ma_root"))
         if tree.find_root_offset(ptrsize * 0x20) is None:
-            self.meta.append((self.quiet_err, "Could not find offsetof(maple_tree, ma_root)"))
+            self.meta.append(("err", "Could not find offsetof(maple_tree, ma_root)"))
             return None
-        self.meta.append((self.quiet_info, "offsetof(maple_tree, ma_root): {:#x}".format(tree.root_offset)))
+        self.meta.append(("info", "offsetof(maple_tree, ma_root): {:#x}".format(tree.root_offset)))
         return {"kind": "maple", "root": root, "head_offset": tree.root_offset}
 
     def resolve_container(self):
@@ -167602,7 +167574,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if layout:
             return layout
         if not root:
-            self.meta.append((self.quiet_err, "Could not find {:s} or irq_desc[]".format(root_name)))
+            self.meta.append(("err", "Could not find {:s} or irq_desc[]".format(root_name)))
         return None
 
     def iter_descs(self, layout):
@@ -167656,7 +167628,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         else:
             # ARM may have invalid descs[irq=0]
             desc = descs[-1]
-        self.meta.append((self.quiet_info, "desc: {:#x}".format(desc)))
+        self.meta.append(("info", "desc: {:#x}".format(desc)))
         for i in range(100):
             x = read_int_from_memory(desc + ptrsize * i)
             if x == desc:
@@ -167785,8 +167757,18 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
             return offset, value_type.code == gdb.TYPE_CODE_PTR
         return None, None
 
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def initialize(self):
+        """Return the layout of irq_desc and irqaction (see `resolve_layout()`), or None.
+        `meta` tells how the layout has been resolved, or why it has failed."""
+        layout = self.resolve_layout()
+        if layout:
+            self.meta = layout["meta"]
+        return layout
+
+    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
+    def resolve_layout(self):
+        """Return the layout of the container and the offsets of irq_desc, irqaction and irq_chip with their "meta",
+        or None. A failure is resolved again at the next call."""
         self.meta = []
 
         layout = self.resolve_container()
@@ -167796,7 +167778,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         indexed_descs, _complete = self.iter_descs(layout)
         indexed_descs = [(i, d) for i, d in indexed_descs if is_valid_addr(d)]
         if not indexed_descs:
-            self.meta.append((self.quiet_err, "Could not find any valid irq_desc"))
+            self.meta.append(("err", "Could not find any valid irq_desc"))
             return None
         descs = [d for _, d in indexed_descs]
         # a long static array is sampled to keep the scan short
@@ -167911,7 +167893,7 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         actions = [read_int_from_memory(d + layout["offset_action"], safe=True) for d in samples]
         actions = [x for x in actions if x and is_valid_addr(x)]
         if not actions:
-            self.meta.append((self.quiet_err, "Could not find any irqaction"))
+            self.meta.append(("err", "Could not find any irqaction"))
             return None
         layout["offset_name"], source = self.resolve_offset_name(actions)
         self.add_offset_meta("offsetof(irqaction, name)", layout["offset_name"], source)
@@ -167974,21 +167956,24 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         return total
 
     def read_affinity(self, layout, desc):
+        """Return the set of the cpus in the affinity of `desc`, or None if it is unknown."""
         if layout["offset_affinity"] is None:
             return None
         address = desc + layout["offset_affinity"]
         if layout["affinity_is_pointer"]:
             address = read_int_from_memory(address, safe=True)
-        cpus = Kernel.per_cpu().read_cpu_mask(address)
-        if cpus is None:
+        return Kernel.per_cpu().read_cpu_mask(address)
+
+    def read_flow(self, layout, desc):
+        """Return the flow handler (`handle_irq`) of `desc`, or None if it is unknown."""
+        if layout["offset_flow"] is None:
             return None
-        return KernelPerCpuCommand.format_cpus(cpus)
+        return read_int_from_memory(desc + layout["offset_flow"], safe=True)
 
-    def dump_irq(self, layout):
+    def read_entries(self, layout):
+        """Return ({irq: {"desc", "actions", "hwirq", "chip"}}, whether the walk of the container was complete).
+        The descriptors that are unreadable or whose index does not match their irq are skipped."""
         indexed_descs, complete = self.iter_descs(layout)
-        if not complete:
-            self.warn_add_out("The walk of the irq_desc container stopped at an unreadable node")
-
         entries = {}
         for index, desc in indexed_descs:
             irq = read_int32_from_memory(desc + layout["offset_irq"], safe=True)
@@ -168008,6 +167993,59 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 "hwirq": hwirq,
                 "chip": self.read_chip_name(layout, desc),
             }
+        return entries, complete
+
+
+@register_command
+class KernelIrqCommand(GenericCommand, BufferingOutput):
+    """Dump IRQ (interrupt request) information."""
+
+    _cmdline_ = "kirq"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="also show unused IRQs, the count, the flow handler and the affinity.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Each action of a shared IRQ is shown on its own line. `count` is the sum of the per-cpu counts (-v).",
+        "The affinity is shown only with the debug information (vmlinux or `ktypes-load`).",
+        "",
+        "Simplified irq structure:",
+        "",
+        "+-irq_desc_tree(~6.5)-+   +--->+-radix/xa node---+   +--->+-irq_desc------+",
+        "| lock                |   |    | shift           |   |    | ...           |",
+        "| flags               |   |    | ...             |   |    | irq_data      |",
+        "| rnode/xa_head       |---+    | count           |   |    |   irq         |",
+        "+---------------------+        | ...             |   |    |   hwirq       |",
+        "                               | slots[0]        |---+    |   chip        |--->name",
+        "                               | slots[1]        |   ^    |   ...         |",
+        "                               | ...             |   |    | kstat_irqs    |--->per-cpu count",
+        "                               | slots[15 or 63] |   |    | handle_irq    |",
+        "                               | ...             |   |    | action        |---+",
+        "                               +-----------------+   |    | ...           |   |",
+        "                                                     |    +---------------+   |",
+        "+-sparse_irqs(6.5~)-+   +-->+-maple_node------+      |                        |",
+        "| ...               |   |   | ...             |      |    +-irqaction-+<------+",
+        "| ma_root           |---+   | mr64|ma64|alloc |      |    | handler   |",
+        "| ...               |       |   ...           |      |    | ...       |",
+        "+-------------------+       |   slot[]        |------+    | next      |--->irqaction (shared IRQ)",
+        "                            +-----------------+      |    | ...       |",
+        "                                                     |    | name      |",
+        "+-irq_desc[NR_IRQS] (CONFIG_SPARSE_IRQ=n)-+          |    +-----------+",
+        "| irq_desc[0], irq_desc[1], ...           |----------+",
+        "+-----------------------------------------+",
+    ])
+
+    def dump_irq(self, layout):
+        entries, complete = self.kirq.read_entries(layout)
+        if not complete:
+            self.warn_add_out("The walk of the irq_desc container stopped at an unreadable node")
 
         if not entries:
             self.err_add_out("Could not read any irq_desc")
@@ -168043,16 +168081,15 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
                 hwirq = "{:#x}".format(entry["hwirq"])
             extras = []
             if self.args.verbose:
-                count = self.read_count(layout, desc)
+                count = self.kirq.read_count(layout, desc)
                 if count is not None:
                     extras.append("count={:d}".format(count))
-                if layout["offset_flow"] is not None:
-                    flow = read_int_from_memory(desc + layout["offset_flow"], safe=True)
-                    if flow is not None:
-                        extras.append("flow=" + Symbol.format(flow, missing="NO_SYMBOL", show_address=True, nocolor=True))
-                affinity = self.read_affinity(layout, desc)
+                flow = self.kirq.read_flow(layout, desc)
+                if flow is not None:
+                    extras.append("flow=" + Symbol.format(flow, missing="NO_SYMBOL", show_address=True, nocolor=True))
+                affinity = self.kirq.read_affinity(layout, desc)
                 if affinity is not None:
-                    extras.append("affinity={:s}".format(affinity))
+                    extras.append("affinity={:s}".format(KernelPerCpu.format_cpus(affinity)))
             if extras:
                 extras = "  [" + ", ".join(extras) + "]"
             else:
@@ -168091,11 +168128,10 @@ class KernelIrqCommand(GenericCommand, BufferingOutput):
         if kversion is None:
             err("Could not find Linux kernel")
             return
-        layout = self.initialize()
-        if layout:
-            self.meta = layout["meta"]
+        self.kirq = Kernel.irq()
+        layout = self.kirq.initialize()
         if args.meta or not layout:
-            for func, line in self.meta:
+            for func, line in Kernel.export_meta(self, self.kirq.meta):
                 func(line)
         if not layout:
             return
@@ -214501,25 +214537,6 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
         "estimated from `__per_cpu_offset[]` if both are unknown. Each cpu is tagged with the masks,",
         "which are recovered from `init_cpu_*()`/`set_cpu_online()` without the symbols.",
     ])
-
-    @staticmethod
-    def format_cpus(cpus):
-        """Return a cpu set as a cpulist string, e.g. {0, 1, 2, 5} -> "0-2,5"."""
-        if not cpus:
-            return "none"
-        ranges = []
-        for cpu in sorted(cpus):
-            if ranges and ranges[-1][1] == cpu - 1:
-                ranges[-1][1] = cpu
-            else:
-                ranges.append([cpu, cpu])
-        parts = []
-        for start, end in ranges:
-            if start == end:
-                parts.append(str(start))
-            else:
-                parts.append("{:d}-{:d}".format(start, end))
-        return ",".join(parts)
 
     def dump_meta(self, pc):
         if pc.per_cpu_offset is not None:
