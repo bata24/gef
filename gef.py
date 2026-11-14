@@ -70386,7 +70386,8 @@ class KernelAddressHeuristicFinderUtil:
 
     @staticmethod
     def riscv_auipc_gen(res, use_addi, use_mem, skip, skip_msb_check, read_valid,
-                        word_only=False, follow_addi=False, load_mnemonic=None, with_pc=False, include_lui=False):
+                        word_only=False, follow_addi=False, load_mnemonic=None, with_pc=False, include_lui=False,
+                        follow_index=False):
         """Yield the addresses built from `auipc rd, hi20` and the following `lo12(rd)`.
         `use_addi` takes `addi rX, rd, lo12` (the address itself), and `use_mem` takes the
         displacement of a load/store such as `ld rX, lo12(rd)` or `sd rX, lo12(rd)`.
@@ -70394,6 +70395,7 @@ class KernelAddressHeuristicFinderUtil:
         `follow_addi` keeps the result of `addi` as a base, for a member accessed at an offset
         from the address of the whole object (e.g. `addi s4, s4, lo12` then `ld s2, 176(s4)`).
         `load_mnemonic` selects a load width and also includes gp-relative loads.
+        `follow_index` ignores a variable array index added to a known base.
         `include_lui` also accepts absolute addresses constructed with `lui`."""
         bases = {}
         for line in res.splitlines():
@@ -70402,7 +70404,7 @@ class KernelAddressHeuristicFinderUtil:
                 continue
             pc, mnemonic = int(m.group(1), 16), m.group(2)
             ops = [x.strip() for x in m.group(3).split("#", 1)[0].split(",")]
-            if (mnemonic == "auipc" or include_lui and mnemonic == "lui") and len(ops) == 2:
+            if (mnemonic == "auipc" or (include_lui and mnemonic == "lui")) and len(ops) == 2:
                 try:
                     hi20 = int(ops[1], 0) & 0xfffff
                 except ValueError:
@@ -70416,6 +70418,9 @@ class KernelAddressHeuristicFinderUtil:
                     bases[ops[0]] = hi20 << 12
                 continue
             w = None
+            if follow_index and mnemonic == "add" and len(ops) == 3 and ops[1] in bases and ops[2] not in bases:
+                bases[ops[0]] = bases[ops[1]]
+                continue
             if mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
                 try:
                     offset = int(ops[2], 0)
@@ -70473,9 +70478,10 @@ class KernelAddressHeuristicFinderUtil:
         )
 
     @staticmethod
-    def riscv_load(res, mnemonic="lw", skip=0, include_lui=False):
+    def riscv_load(res, mnemonic="lw", skip=0, include_lui=False, follow_index=False):
         return KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
             res, False, True, skip, False, False, follow_addi=True, load_mnemonic=mnemonic, include_lui=include_lui,
+            follow_index=follow_index,
         )
 
     @staticmethod
@@ -74006,9 +74012,15 @@ class KernelAddressHeuristicFinder:
                     (x + 8 for x in KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)),
                 )
             elif is_riscv64() or is_riscv32():
+                mnemonic = "lw"
+                if is_riscv64():
+                    mnemonic = "ld"
                 return itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                    KernelAddressHeuristicFinderUtil.riscv_load(
+                        res, mnemonic=mnemonic, include_lui=is_riscv32(), follow_index=True,
+                    ),
                 )
             return []
 
@@ -80212,6 +80224,11 @@ class Kernel:
     def block_device():
         """Return the block device resolver."""
         return KernelBlockDevice.get_instance()
+
+    @staticmethod
+    def char_device():
+        """Return the character device resolver."""
+        return KernelCharDevice.get_instance()
 
     @staticmethod
     def ipcs():
@@ -101709,58 +101726,26 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
         return
 
 
-@register_command
-class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
-    """Display character device list."""
+class KernelCharDevice:
+    """Resolve the character devices registered in chrdevs[] and cdev_map, and the cdev serving each device node."""
 
-    _cmdline_ = "kcdev"
-    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
 
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
-    parser.add_argument("-N", "--nodes", action="store_true",
-                        help="list the device nodes (struct device with devt) instead of the registered ranges.")
-    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
-    _syntax_ = parser.format_help()
+    def __init__(self):
+        self.meta = []
+        return
 
-    _example_ = "\n".join([
-        "{0:s} -n",
-        "{0:s} -n -v",
-        "{0:s} -n --nodes",
-    ]).format(_cmdline_)
+    def initialize(self):
+        self.meta = []
+        return True
 
-    _note_ = "\n".join([
-        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
-        "",
-        "Simplified cdev structure:",
-        "",
-        "+-chrdevs[255]-+    +-char_device_struct-+",
-        "| [0]          |--->| next               |--->...",
-        "| ...          |    | major              |",
-        "| [254]        |    | baseminor          |           +--->+-cdev--+  +-->+-kobject-+",
-        "+--------------+    | minorct            |           |    | kobj  |--+   | name    |",
-        "                    | name[64]           |           |    | ...   |      | ...     |",
-        "                    | cdev               |-----------+    | ops   |      | parent  |",
-        "                    +--------------------+           |    | ...   |      | ...     |",
-        "                                                     |    | dev   |      +---------+",
-        "+----------+    +-kobj_map----+    +-probe-+         |    | ...   |",
-        "| cdev_map |--->| probes[0]   |--->| next  |--->...  |    +-------+",
-        "+----------+    | ...         |    | dev   |         |",
-        "                | probes[254] |    | ...   |         |",
-        "                | lock        |    | data  |---------+",
-        "                +-------------+    +-------+",
-        "",
-        "The character devices are managed at chrdevs[] and cdev_map.",
-        "This command use each of them for getting structure information.",
-        "",
-        "Each line is a registered range of minors, not a device node.",
-        "`name (guessed)` is guessed from the static major/minor table only when the range has a single minor.",
-        "`-v` also shows the cdevs registered in the middle of a range (e.g., each tty port).",
-        "`--nodes` lists the device nodes from devices_kset with their sysfs names and the cdev that serves each.",
-        "Block devices are excluded from them.",
-    ])
+    def pop_meta(self):
+        """Return the meta lines recorded since the last call and forget them, so that each step shows its own."""
+        meta, self.meta = self.meta, []
+        return meta
 
     @staticmethod
     def guess_cdev_path(major, minor):
@@ -102640,29 +102625,29 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         """
         chrdevs = KernelAddressHeuristicFinder.get_chrdevs()
         if chrdevs is None:
-            self.quiet_err("Could not find chrdevs")
+            self.meta.append(("err", "Could not find chrdevs"))
             return None
-        self.quiet_info("chrdevs: {:#x}".format(chrdevs))
+        self.meta.append(("info", "chrdevs: {:#x}".format(chrdevs)))
 
         chrdev_addrs = []
         chrdev_seen = set()
         for i in range(255):
             chrdevs_i = chrdevs + i * current_arch.ptrsize
             if not is_valid_addr(chrdevs_i):
-                self.quiet_err("Memory read error")
+                self.meta.append(("err", "Memory read error"))
                 return None
             addr = read_int_from_memory(chrdevs_i)
             while addr:
                 if addr in chrdev_seen:
-                    self.quiet_warn("Incomplete chrdevs: cycle or duplicate at {:#x}".format(addr))
+                    self.meta.append(("warn", "Incomplete chrdevs: cycle or duplicate at {:#x}".format(addr)))
                     break
                 if len(chrdev_seen) >= 0x10000:
-                    self.quiet_warn("Incomplete chrdevs: traversal limit reached at {:#x}".format(addr))
+                    self.meta.append(("warn", "Incomplete chrdevs: traversal limit reached at {:#x}".format(addr)))
                     return chrdev_addrs
                 chrdev_addrs.append(addr)
                 chrdev_seen.add(addr)
                 if not is_valid_addr(addr):
-                    self.quiet_err("Memory read error")
+                    self.meta.append(("err", "Memory read error"))
                     return None
                 addr = read_int_from_memory(addr)
         return chrdev_addrs
@@ -102712,184 +102697,55 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         """
         cdev_map = KernelAddressHeuristicFinder.get_cdev_map()
         if cdev_map is None:
-            self.quiet_err("Could not find cdev_map")
+            self.meta.append(("err", "Could not find cdev_map"))
             return None
-        self.quiet_info("cdev_map: {:#x}".format(cdev_map))
+        self.meta.append(("info", "cdev_map: {:#x}".format(cdev_map)))
 
         try:
             cdev_map_ = read_int_from_memory(cdev_map)
-            self.quiet_info("*cdev_map: {:#x}".format(cdev_map_))
+            self.meta.append(("info", "*cdev_map: {:#x}".format(cdev_map_)))
         except Exception:
-            self.quiet_err("cdev_map is not initialized")
+            self.meta.append(("err", "cdev_map is not initialized"))
             return None
 
         cdev_addrs = []
         seen = set()
         for i in range(255):
-            addr = read_int_from_memory(cdev_map_ + i * current_arch.ptrsize)
+            bucket = cdev_map_ + i * current_arch.ptrsize
+            addr = read_int_from_memory(bucket, safe=True)
+            if addr is None:
+                self.meta.append(("err", "cdev_map->probes[{:d}] ({:#x}) is unreadable".format(i, bucket)))
+                return None
             probe_seen = set()
             while addr:
                 if addr in probe_seen:
-                    self.quiet_warn("Incomplete cdev_map: probe cycle at {:#x} (bucket {:d})".format(addr, i))
+                    msg = "Incomplete cdev_map: probe cycle at {:#x} (bucket {:d})".format(addr, i)
+                    self.meta.append(("warn", msg))
                     break
                 if len(probe_seen) >= 0x10000:
-                    self.quiet_warn("Incomplete cdev_map: probe traversal limit at {:#x} (bucket {:d})".format(addr, i))
+                    msg = "Incomplete cdev_map: probe traversal limit at {:#x} (bucket {:d})".format(addr, i)
+                    self.meta.append(("warn", msg))
                     break
                 probe_seen.add(addr)
-                cdev = read_int_from_memory(addr + 6 * current_arch.ptrsize)
-                dev = read_int32_from_memory(addr + current_arch.ptrsize)
-                range_ = read_int_from_memory(addr + 2 * current_arch.ptrsize)
-                major = dev >> 20
-                minor = dev & ((1 << 20) - 1)
+                cdev = read_int_from_memory(addr + 6 * current_arch.ptrsize, safe=True)
+                dev = read_int32_from_memory(addr + current_arch.ptrsize, safe=True)
+                range_ = read_int_from_memory(addr + 2 * current_arch.ptrsize, safe=True)
+                next_probe = read_int_from_memory(addr, safe=True)
+                if None in (cdev, dev, range_, next_probe):
+                    msg = "Incomplete cdev_map: unreadable probe at {:#x} (bucket {:d})".format(addr, i)
+                    self.meta.append(("warn", msg))
+                    break
+                major, minor = KernelDevice.split_devt(dev)
                 if cdev and cdev not in seen:
                     cdev_addrs.append([cdev, major, minor, range_])
                     seen.add(cdev)
-                addr = read_int_from_memory(addr)
+                addr = next_probe
         return cdev_addrs
 
-    def is_file_operations(self, ops):
-        """Check the owner and the function pointers of `ops`. Return None if it cannot be decided,
-        because a kernel address is unreadable (e.g., the module region of ARM32 LPAE).
-        The second member is `fop_flags` since v6.10, so a small value is also accepted there.
-        All members but the owner may be NULL (e.g., portdev_fops of virtio_console)."""
-        if not ops:
-            return False
-        if not is_valid_addr(ops):
-            if KernelAddressHeuristicFinderUtil.is_kernel_space(ops):
-                return None
-            return False
-        try:
-            members = [read_int_from_memory(ops + current_arch.ptrsize * i) for i in range(20)]
-        except gdb.MemoryError:
-            return None
-        if members[1] < 0x10000:
-            members[1] = 0
-        unknown = False
-        for x in members:
-            if not x or is_valid_addr(x):
-                continue
-            if not KernelAddressHeuristicFinderUtil.is_kernel_space(x):
-                return False
-            unknown = True
-        if unknown:
-            return None
-        return True
-
-    def get_offset_ops(self, cdevs):
-        offset_ops = GefUtil.offsetof("cdev", "ops")
-        if offset_ops is not None:
-            self.quiet_info("offsetof(cdev, ops): {:#x}".format(offset_ops))
-            return offset_ops
-
-        # cdev->list follows cdev->ops, but its position depends on struct kobject
-        # (e.g., CONFIG_DEBUG_KOBJECT_RELEASE adds a delayed_work), so it is searched widely.
-        # Lists in kobject such as the release work entry are rejected by checking cdev->ops.
-        for i in range(3, 0x100):
-            offset_list = i * current_arch.ptrsize
-            valid = True
-            for cdev in cdevs:
-                pos_next = cdev + offset_list
-                pos_prev = cdev + offset_list + current_arch.ptrsize
-                list_entry_next = [pos_next]
-                list_entry_prev = [pos_prev]
-                while valid:
-                    # read check
-                    try:
-                        pos_next = read_int_from_memory(pos_next)
-                        pos_prev = read_int_from_memory(pos_prev) + current_arch.ptrsize
-                    except gdb.MemoryError: # memory read error
-                        valid = False
-                        break
-                    # list validate
-                    if pos_next in list_entry_next[1:]: # incomplete infinity loop detected
-                        valid = False
-                        break
-                    if pos_prev in list_entry_prev[1:]: # incomplete infinity loop detected
-                        valid = False
-                        break
-                    if pos_next == list_entry_next[0] and pos_prev == list_entry_prev[0]:
-                        break
-                    list_entry_next.append(pos_next)
-                    list_entry_prev.append(pos_prev)
-                if not valid:
-                    break
-            else:
-                # for loop is finished until last element
-                offset_ops = offset_list - current_arch.ptrsize
-                checked = [self.is_file_operations(read_int_from_memory(cdev + offset_ops)) for cdev in cdevs]
-                if False not in checked and True in checked:
-                    self.quiet_info("offsetof(cdev, ops): {:#x}".format(offset_ops))
-                    return offset_ops
-
-        self.quiet_err("Could not find offsetof(cdev, ops)")
-        return None
-
-    def print_nodes(self, regions, cdev_addrs, off_ops):
-        kdev = KernelDevice()
-        ret = kdev.initialize()
-        for func, line in Kernel.export_meta(self, kdev.meta):
-            func(line)
-        if not ret:
-            return
-
-        def find_region(major, minor):
-            devt = major << 20 | minor
-            for m in regions:
-                start = m["major"] << 20 | m["minor"]
-                if start <= devt < start + m["count"]:
-                    return m["name"]
-            return None
-
-        def find_cdev(major, minor):
-            # kobj_lookup() takes the narrowest range
-            devt = major << 20 | minor
-            found = [(range_, cdev) for cdev, ma, mi, range_ in cdev_addrs
-                     if (ma << 20 | mi) <= devt < (ma << 20 | mi) + range_]
-            if found:
-                return min(found, key=lambda entry: entry[0])[1]
-            return 0
-
-        self.out = []
-        if not self.args.quiet:
-            fmt = "{:<18s} {:<20s} {:<12s} {:<6s} {:<6s} {:<18s} {:<18s} {:<s}"
-            legend = ["device", "name (sysfs)", "class", "major", "minor", "chrdev name", "cdev", "cdev->ops"]
-            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        for device, name, devt, class_name in sorted(kdev.devices, key=lambda x: (x[2], x[0])):
-            major, minor = devt >> 20, devt & ((1 << 20) - 1)
-            region_name = find_region(major, minor)
-            cdev = find_cdev(major, minor)
-            if class_name == "block":
-                continue
-            if class_name == "???" and region_name is None and cdev == 0:
-                # the class is unknown, and the block devices are not in the registries of the character devices
-                continue
-            if cdev:
-                ops = read_int_from_memory(cdev + off_ops)
-            else:
-                ops = 0
-            self.out.append("{:#018x} {:<20s} {:<12s} {:<6d} {:<6d} {:<18s} {:#018x} {:s}".format(
-                device, name, class_name, major, minor, region_name or "-", cdev,
-                Symbol.format(ops, show_address=True, nocolor=True),
-            ))
-        self.print_output(check_terminal_size=True)
-        return
-
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @Decorator.only_if_in_kernel_or_kpti_disabled
-    def do_invoke(self, args):
-        self.quiet_info("Wait for memory scan")
-
-        chrdev_addrs = self.get_chrdev_list()
-        if chrdev_addrs is None:
-            return
-        cdev_addrs = self.get_cdev_list()
-        if cdev_addrs is None:
-            return
-
+    def merge_devices(self, chrdev_addrs, cdev_addrs):
+        """Merge the ranges of chrdevs[] and the cdevs of cdev_map by (major, minor).
+        Return ({(major, minor): {"chrdev", "name", "cdev", "count"}, ...}, [{"major", "minor", "count", "name"}, ...]).
+        """
         # merge chrdev (from chrdevs)
         merged = {}
         regions = []
@@ -102929,14 +102785,90 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                     if covered > last:
                         break
             if covered <= last:
-                self.quiet_warn("cdev {:#x} ({:d}:{:d}-{:d}:{:d}) is not in any range of chrdevs".format(
-                    cdev, major, minor, last >> 20, last & ((1 << 20) - 1)))
+                last_major, last_minor = KernelDevice.split_devt(last)
+                self.meta.append(("warn", "cdev {:#x} ({:d}:{:d}-{:d}:{:d}) is not in any range of chrdevs".format(
+                    cdev, major, minor, last_major, last_minor)))
+        return merged, regions
 
-        # add ops info
-        off_ops = self.get_offset_ops([v["cdev"] for k, v in merged.items() if v["cdev"]])
-        if off_ops is None:
-            return
+    def is_file_operations(self, ops):
+        """Check the owner and the function pointers of `ops`. Return None if it cannot be decided,
+        because a kernel address is unreadable (e.g., the module region of ARM32 LPAE).
+        The second member is `fop_flags` since v6.10, so a small value is also accepted there.
+        All members but the owner may be NULL (e.g., portdev_fops of virtio_console)."""
+        if not ops:
+            return False
+        if not is_valid_addr(ops):
+            if KernelAddressHeuristicFinderUtil.is_kernel_space(ops):
+                return None
+            return False
+        try:
+            members = [read_int_from_memory(ops + current_arch.ptrsize * i) for i in range(20)]
+        except gdb.MemoryError:
+            return None
+        if members[1] < 0x10000:
+            members[1] = 0
+        unknown = False
+        for x in members:
+            if not x or is_valid_addr(x):
+                continue
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(x):
+                return False
+            unknown = True
+        if unknown:
+            return None
+        return True
 
+    def get_offset_ops(self, cdevs):
+        offset_ops = GefUtil.offsetof("cdev", "ops")
+        if offset_ops is not None:
+            self.meta.append(("info", "offsetof(cdev, ops): {:#x}".format(offset_ops)))
+            return offset_ops
+
+        # cdev->list follows cdev->ops, but its position depends on struct kobject
+        # (e.g., CONFIG_DEBUG_KOBJECT_RELEASE adds a delayed_work), so it is searched widely.
+        # Lists in kobject such as the release work entry are rejected by checking cdev->ops.
+        for i in range(3, 0x100):
+            offset_list = i * current_arch.ptrsize
+            valid = True
+            for cdev in cdevs:
+                pos_next = cdev + offset_list
+                pos_prev = cdev + offset_list + current_arch.ptrsize
+                list_entry_next = [pos_next]
+                list_entry_prev = [pos_prev]
+                while valid:
+                    # read check
+                    try:
+                        pos_next = read_int_from_memory(pos_next)
+                        pos_prev = read_int_from_memory(pos_prev) + current_arch.ptrsize
+                    except gdb.MemoryError: # memory read error
+                        valid = False
+                        break
+                    # list validate
+                    if pos_next in list_entry_next[1:]: # incomplete infinity loop detected
+                        valid = False
+                        break
+                    if pos_prev in list_entry_prev[1:]: # incomplete infinity loop detected
+                        valid = False
+                        break
+                    if pos_next == list_entry_next[0] and pos_prev == list_entry_prev[0]:
+                        break
+                    list_entry_next.append(pos_next)
+                    list_entry_prev.append(pos_prev)
+                if not valid:
+                    break
+            else:
+                # for loop is finished until last element
+                offset_ops = offset_list - current_arch.ptrsize
+                checked = [self.is_file_operations(read_int_from_memory(cdev + offset_ops)) for cdev in cdevs]
+                if False not in checked and True in checked:
+                    self.meta.append(("info", "offsetof(cdev, ops): {:#x}".format(offset_ops)))
+                    return offset_ops
+
+        self.meta.append(("err", "Could not find offsetof(cdev, ops)"))
+        return None
+
+    def verify_cdevs(self, cdev_addrs, off_ops):
+        """Warn about the cdevs whose dev and count differ from cdev_map."""
         # cdev->dev and cdev->count are what cdev_add() registered to cdev_map
         offsetof = GefUtil.offsetof
         off_dev = offsetof("cdev", "dev")
@@ -102949,14 +102881,13 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             dev = read_int32_from_memory(cdev + off_dev)
             count = read_int32_from_memory(cdev + off_count)
             if (dev, count) != (major << 20 | minor, range_):
-                self.quiet_warn("cdev {:#x} ({:d}:{:d}, count {:d}) differs from cdev_map ({:d}:{:d}, range {:d})".format(
-                    cdev, dev >> 20, dev & ((1 << 20) - 1), count, major, minor, range_,
-                ))
+                dev_major, dev_minor = KernelDevice.split_devt(dev)
+                fmt = "cdev {:#x} ({:d}:{:d}, count {:d}) differs from cdev_map ({:d}:{:d}, range {:d})"
+                self.meta.append(("warn", fmt.format(cdev, dev_major, dev_minor, count, major, minor, range_)))
+        return
 
-        if args.nodes:
-            self.print_nodes(regions, cdev_addrs, off_ops)
-            return
-
+    def resolve_ops_and_parents(self, merged, off_ops):
+        """Add "ops", "parent" and "parent_name" of the cdev to each entry of `merged`."""
         for k in merged.keys():
             if merged[k]["cdev"]:
                 merged[k]["ops"] = read_int_from_memory(merged[k]["cdev"] + off_ops)
@@ -102964,7 +102895,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
                 merged[k]["ops"] = 0x0
 
         # add parent info
-        off_parent = offsetof("cdev", "kobj.parent")
+        off_parent = GefUtil.offsetof("cdev", "kobj.parent")
         if off_parent is None:
             off_parent = current_arch.ptrsize * 3
         for k in merged.keys():
@@ -102985,6 +102916,167 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             else:
                 merged[k]["parent"] = 0x0
                 merged[k]["parent_name"] = "<None>"
+        return
+
+    def get_device_nodes(self, regions, cdev_addrs, off_ops):
+        """Return [(device, name, class_name, major, minor, region_name, cdev, ops), ...] of the device nodes
+        (struct device with devt) except for the block devices, or None if devices_kset is unavailable."""
+        kdev = KernelDevice()
+        ret = kdev.initialize()
+        self.meta.extend(kdev.meta)
+        if not ret:
+            return None
+
+        def find_region(major, minor):
+            devt = major << 20 | minor
+            for m in regions:
+                start = m["major"] << 20 | m["minor"]
+                if start <= devt < start + m["count"]:
+                    return m["name"]
+            return None
+
+        def find_cdev(major, minor):
+            # kobj_lookup() takes the narrowest range
+            devt = major << 20 | minor
+            found = [(range_, cdev) for cdev, ma, mi, range_ in cdev_addrs
+                     if (ma << 20 | mi) <= devt < (ma << 20 | mi) + range_]
+            if found:
+                return min(found, key=lambda entry: entry[0])[1]
+            return 0
+
+        nodes = []
+        for device, name, devt, class_name in sorted(kdev.devices, key=lambda x: (x[2], x[0])):
+            major, minor = KernelDevice.split_devt(devt)
+            region_name = find_region(major, minor)
+            cdev = find_cdev(major, minor)
+            if class_name == "block":
+                continue
+            if class_name == "???" and region_name is None and cdev == 0:
+                # the class is unknown, and the block devices are not in the registries of the character devices
+                continue
+            if cdev:
+                ops = read_int_from_memory(cdev + off_ops)
+            else:
+                ops = 0
+            nodes.append((device, name, class_name, major, minor, region_name, cdev, ops))
+        return nodes
+
+
+@register_command
+class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
+    """Display character device list."""
+
+    _cmdline_ = "kcdev"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-N", "--nodes", action="store_true",
+                        help="list the device nodes (struct device with devt) instead of the registered ranges.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -n",
+        "{0:s} -n -v",
+        "{0:s} -n --nodes",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "Simplified cdev structure:",
+        "",
+        "+-chrdevs[255]-+    +-char_device_struct-+",
+        "| [0]          |--->| next               |--->...",
+        "| ...          |    | major              |",
+        "| [254]        |    | baseminor          |           +--->+-cdev--+  +-->+-kobject-+",
+        "+--------------+    | minorct            |           |    | kobj  |--+   | name    |",
+        "                    | name[64]           |           |    | ...   |      | ...     |",
+        "                    | cdev               |-----------+    | ops   |      | parent  |",
+        "                    +--------------------+           |    | ...   |      | ...     |",
+        "                                                     |    | dev   |      +---------+",
+        "+----------+    +-kobj_map----+    +-probe-+         |    | ...   |",
+        "| cdev_map |--->| probes[0]   |--->| next  |--->...  |    +-------+",
+        "+----------+    | ...         |    | dev   |         |",
+        "                | probes[254] |    | ...   |         |",
+        "                | lock        |    | data  |---------+",
+        "                +-------------+    +-------+",
+        "",
+        "The character devices are managed at chrdevs[] and cdev_map.",
+        "This command use each of them for getting structure information.",
+        "",
+        "Each line is a registered range of minors, not a device node.",
+        "`name (guessed)` is guessed from the static major/minor table only when the range has a single minor.",
+        "`-v` also shows the cdevs registered in the middle of a range (e.g., each tty port).",
+        "`--nodes` lists the device nodes from devices_kset with their sysfs names and the cdev that serves each.",
+        "Block devices are excluded from them.",
+    ])
+
+    def print_meta(self):
+        """Print the meta lines that the resolver recorded in the last step."""
+        for func, line in Kernel.export_meta(self, self.kcdev.pop_meta()):
+            func(line)
+        return
+
+    def print_nodes(self, nodes):
+        self.out = []
+        if not self.args.quiet:
+            fmt = "{:<18s} {:<20s} {:<12s} {:<6s} {:<6s} {:<18s} {:<18s} {:<s}"
+            legend = ["device", "name (sysfs)", "class", "major", "minor", "chrdev name", "cdev", "cdev->ops"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
+        for device, name, class_name, major, minor, region_name, cdev, ops in nodes:
+            self.out.append("{:#018x} {:<20s} {:<12s} {:<6d} {:<6d} {:<18s} {:#018x} {:s}".format(
+                device, name, class_name, major, minor, region_name or "-", cdev,
+                Symbol.format(ops, show_address=True, nocolor=True),
+            ))
+        self.print_output(check_terminal_size=True)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+
+        self.kcdev = Kernel.char_device()
+        self.kcdev.initialize()
+
+        chrdev_addrs = self.kcdev.get_chrdev_list()
+        self.print_meta()
+        if chrdev_addrs is None:
+            return
+        cdev_addrs = self.kcdev.get_cdev_list()
+        self.print_meta()
+        if cdev_addrs is None:
+            return
+
+        merged, regions = self.kcdev.merge_devices(chrdev_addrs, cdev_addrs)
+        self.print_meta()
+
+        # add ops info
+        off_ops = self.kcdev.get_offset_ops([v["cdev"] for k, v in merged.items() if v["cdev"]])
+        self.print_meta()
+        if off_ops is None:
+            return
+
+        self.kcdev.verify_cdevs(cdev_addrs, off_ops)
+        self.print_meta()
+
+        if args.nodes:
+            nodes = self.kcdev.get_device_nodes(regions, cdev_addrs, off_ops)
+            self.print_meta()
+            if nodes is None:
+                return
+            self.print_nodes(nodes)
+            return
+
+        self.kcdev.resolve_ops_and_parents(merged, off_ops)
 
         # print
         self.out = []
@@ -103003,13 +103095,14 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
             count = m["count"]
             if count == 1:
                 minors = "{:d}".format(minor)
-                guessed_name = KernelCharacterDevicesCommand.guess_cdev_path(major, minor)
+                guessed_name = KernelCharDevice.guess_cdev_path(major, minor)
             else:
                 last = (major << 20 | minor) + count - 1
-                if last >> 20 == major:
-                    minors = "{:d}-{:d}".format(minor, last & ((1 << 20) - 1))
+                last_major, last_minor = KernelDevice.split_devt(last)
+                if last_major == major:
+                    minors = "{:d}-{:d}".format(minor, last_minor)
                 else:
-                    minors = "{:d}-{:d}:{:d}".format(minor, last >> 20, last & ((1 << 20) - 1))
+                    minors = "{:d}-{:d}:{:d}".format(minor, last_major, last_minor)
                 guessed_name = "-"
             self.out.append("{:#018x} {:<18s} {:<24s} {:<6d} {:<15s} {:<7d} {:#018x} {:#018x} {:<18s} {:s}".format(
                 m["chrdev"], m["name"], guessed_name, major, minors, count,
