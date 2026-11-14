@@ -87283,47 +87283,19 @@ class KernelSocket:
         return {"address": head, "qlen": queue_len, "skbs": skbs, "truncated": truncated}
 
     def collect_socket_files(self):
-        """Parse `ktask --print-fd` and return the socket file descriptors with their owning task."""
-        ret = gdb.execute("ktask --no-pager --user-process-only --print-fd --quiet", to_string=True)
-        ret = Color.remove_color(ret)
+        """Return the socket file descriptors of the user processes with their owning task."""
+        files, error = KernelTask.get_user_files()
+        if files is None:
+            self.meta.append(("err", error))
+            return None
         socks = []
-        pid, comm, task = None, None, None
-        task_re = re.compile(r"^(0x\w+)\s+\S+\s+[UK]T?\s+(\d+)\s+(.+?)\s+0x\w+ \[")
-        fd_re = re.compile(r"^(\d+)\s+\S+\s+(0x\w+)\s+(0x\w+)\s+(0x\w+)\s+socket:\[(\d+)\]")
-        title_re = re.compile(r"file descriptors of `(.+)`")
-        any_fd_re = re.compile(r"^\d+\s+(True|False)\s+0x")
-        any_task = any_fd = False
-        for line in ret.splitlines():
-            line = line.strip()
-            m = task_re.match(line)
-            if m:
-                task = int(m.group(1), 16)
-                pid = int(m.group(2))
-                comm = m.group(3).strip()
-                any_task = True
-                continue
-            if any_fd_re.match(line):
-                any_fd = True
-            m = title_re.search(line)
-            if m:
-                comm = m.group(1)
-                continue
-            m = fd_re.match(line)
+        for info, file in files:
+            m = re.fullmatch(r"socket:\[(\d+)\]", file["path"])
             if m:
                 socks.append({
-                    "pid": pid, "comm": comm, "task": task,
-                    "fd": int(m.group(1)), "file": int(m.group(2), 16),
-                    "dentry": int(m.group(3), 16), "inode": int(m.group(4), 16),
-                    "ino": int(m.group(5)),
+                    "pid": info["pid"], "comm": info["comm"], "task": info["task"], "fd": file["fd"],
+                    "file": file["file"], "dentry": file["dentry"], "inode": file["inode"], "ino": int(m.group(1)),
                 })
-        for line in ret.splitlines():
-            if line.startswith("[!]"):
-                self.meta.append(("err", line[3:].lstrip()))
-                return None
-        # `ktask` disables --print-fd silently if the file layout is not resolved
-        if not socks and any_task and not any_fd:
-            self.meta.append(("err", "Could not list the file descriptors (see `ktask --print-fd --meta`)"))
-            return None
         return socks
 
     def add_meta(self, name, value, source):
