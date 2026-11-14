@@ -109887,12 +109887,10 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
     def take_snapshot(self, commands):
         Cache.reset_gef_caches()
 
-        # ksyscalls keeps parsed entries beyond a stop event; force a fresh memory read.
-        syscall_command = __gef_command_instances__.get("ksyscalls")
-        if syscall_command is not None:
-            Cache.clear_cache_for(syscall_command.parse_syscall_table)
-            Cache.clear_cache_for(syscall_command.analyze_syscall_function)
-            Cache.clear_cache_for(syscall_command.scan_syscall_function_addrs)
+        # KernelSyscall keeps parsed entries beyond a stop event; force a fresh memory read.
+        Cache.clear_cache_for(KernelSyscall.parse_syscall_table)
+        Cache.clear_cache_for(KernelSyscall.analyze_syscall_function)
+        Cache.clear_cache_for(KernelSyscall.scan_syscall_function_addrs)
 
         snapshot = {}
         original_terminal_size = GefUtil.__dict__["get_terminal_size"]
