@@ -206335,586 +206335,6 @@ class PageInfoCommand(GenericCommand):
     group.add_argument("virt", metavar="VIRT", nargs="?", type=AddressUtil.parse_address, help="virtual address to dump.")
     _syntax_ = parser.format_help()
 
-    """
-    struct page { // v4.18~
-        memdesc_flags_t flags;
-        union { ... }; // 5 words (8-byte aligned on v5.1~v5.12 with 64-bit dma_addr_t except x86_32)
-        union {
-            unsigned int page_type;
-            atomic_t _mapcount;
-            unsigned int active; // SLAB (~v6.7)
-            int units; // SLOB (~v6.3)
-        };
-        atomic_t _refcount;
-        ...
-    };
-
-    struct page { // v3.1~v4.17
-        unsigned long flags;
-        union { struct address_space *mapping; atomic_t compound_mapcount; ... };
-        union { pgoff_t index; void *freelist; };
-        union { // 8 bytes
-            unsigned counters; // SLUB
-            unsigned int active; // SLAB
-            struct {
-                union { atomic_t _mapcount; int units; ... }; // SLOB uses units
-                atomic_t _refcount; // _count before v4.6
-            };
-        };
-        union { struct list_head lru; struct { unsigned long compound_head; unsigned char compound_dtor; ... }; ... };
-        union { unsigned long private; struct page *first_page; ... }; // first_page is ~v4.3
-        ...
-    };
-
-    struct page { // ~v3.0
-        unsigned long flags;
-        atomic_t _count;
-        union { atomic_t _mapcount; ... };
-        union { struct { unsigned long private; struct address_space *mapping; }; struct page *first_page; ... };
-        ...
-    };
-    """
-
-    @staticmethod
-    def get_flags_dic():
-        kversion = Kernel.version()
-
-        # PG_uncached, PG_hwpoison, PG_young, PG_idle, PG_arch_2, PG_arch3:
-        # Because it varies depending on the environment, GEF does not support it
-        if kversion < "4.4":
-            # CONFIG_PAGEFLAGS_EXTENDED is y if 64BIT || SPARSEMEM_VMEMMAP || !SPARSEMEM
-            consts = KernelAddressHeuristicFinder.consts()
-            if is_64bit() or consts is None or not consts.CONFIG_SPARSEMEM:
-                flags_dic = {
-                    0x0000_0000_0000_0001: "PG_locked",
-                    0x0000_0000_0000_0002: "PG_error",
-                    0x0000_0000_0000_0004: "PG_referenced",
-                    0x0000_0000_0000_0008: "PG_uptodate",
-                    0x0000_0000_0000_0010: "PG_dirty",
-                    0x0000_0000_0000_0020: "PG_lru",
-                    0x0000_0000_0000_0040: "PG_active",
-                    0x0000_0000_0000_0080: "PG_slab",
-                    0x0000_0000_0000_0100: "PG_owner_priv_1",
-                    0x0000_0000_0000_0200: "PG_arch_1",
-                    0x0000_0000_0000_0400: "PG_reserved",
-                    0x0000_0000_0000_0800: "PG_private",
-                    0x0000_0000_0000_1000: "PG_private_2",
-                    0x0000_0000_0000_2000: "PG_writeback",
-                    0x0000_0000_0000_4000: "PG_head",
-                    0x0000_0000_0000_8000: "PG_tail",
-                    0x0000_0000_0001_0000: "PG_swapcache",
-                    0x0000_0000_0002_0000: "PG_mappedtodisk",
-                    0x0000_0000_0004_0000: "PG_reclaim",
-                    0x0000_0000_0008_0000: "PG_swapbacked",
-                    0x0000_0000_0010_0000: "PG_unevictable",
-                    0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
-                }
-            else:
-                flags_dic = {
-                    0x0000_0000_0000_0001: "PG_locked",
-                    0x0000_0000_0000_0002: "PG_error",
-                    0x0000_0000_0000_0004: "PG_referenced",
-                    0x0000_0000_0000_0008: "PG_uptodate",
-                    0x0000_0000_0000_0010: "PG_dirty",
-                    0x0000_0000_0000_0020: "PG_lru",
-                    0x0000_0000_0000_0040: "PG_active",
-                    0x0000_0000_0000_0080: "PG_slab",
-                    0x0000_0000_0000_0100: "PG_owner_priv_1",
-                    0x0000_0000_0000_0200: "PG_arch_1",
-                    0x0000_0000_0000_0400: "PG_reserved",
-                    0x0000_0000_0000_0800: "PG_private",
-                    0x0000_0000_0000_1000: "PG_private_2",
-                    0x0000_0000_0000_2000: "PG_writeback",
-                    0x0000_0000_0000_4000: "PG_compound",
-                    0x0000_0000_0000_8000: "PG_swapcache",
-                    0x0000_0000_0001_0000: "PG_mappedtodisk",
-                    0x0000_0000_0002_0000: "PG_reclaim",
-                    0x0000_0000_0004_0000: "PG_swapbacked",
-                    0x0000_0000_0008_0000: "PG_unevictable",
-                    0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
-                }
-        elif "4.4" <= kversion < "4.10":
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_error",
-                0x0000_0000_0000_0004: "PG_referenced",
-                0x0000_0000_0000_0008: "PG_uptodate",
-                0x0000_0000_0000_0010: "PG_dirty",
-                0x0000_0000_0000_0020: "PG_lru",
-                0x0000_0000_0000_0040: "PG_active",
-                0x0000_0000_0000_0080: "PG_slab",
-                0x0000_0000_0000_0100: "PG_owner_priv_1",
-                0x0000_0000_0000_0200: "PG_arch_1",
-                0x0000_0000_0000_0400: "PG_reserved",
-                0x0000_0000_0000_0800: "PG_private",
-                0x0000_0000_0000_1000: "PG_private_2",
-                0x0000_0000_0000_2000: "PG_writeback",
-                0x0000_0000_0000_4000: "PG_head",
-                0x0000_0000_0000_8000: "PG_swapcache",
-                0x0000_0000_0001_0000: "PG_mappedtodisk",
-                0x0000_0000_0002_0000: "PG_reclaim",
-                0x0000_0000_0004_0000: "PG_swapbacked",
-                0x0000_0000_0008_0000: "PG_unevictable",
-                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        elif "4.10" <= kversion < "4.20":
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_error",
-                0x0000_0000_0000_0004: "PG_referenced",
-                0x0000_0000_0000_0008: "PG_uptodate",
-                0x0000_0000_0000_0010: "PG_dirty",
-                0x0000_0000_0000_0020: "PG_lru",
-                0x0000_0000_0000_0040: "PG_active",
-                0x0000_0000_0000_0080: "PG_waiters",
-                0x0000_0000_0000_0100: "PG_slab",
-                0x0000_0000_0000_0200: "PG_owner_priv_1",
-                0x0000_0000_0000_0400: "PG_arch_1",
-                0x0000_0000_0000_0800: "PG_reserved",
-                0x0000_0000_0000_1000: "PG_private",
-                0x0000_0000_0000_2000: "PG_private_2",
-                0x0000_0000_0000_4000: "PG_writeback",
-                0x0000_0000_0000_8000: "PG_head",
-                0x0000_0000_0001_0000: "PG_mappedtodisk",
-                0x0000_0000_0002_0000: "PG_reclaim",
-                0x0000_0000_0004_0000: "PG_swapbacked",
-                0x0000_0000_0008_0000: "PG_unevictable",
-                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        elif "4.20" <= kversion < "6.6":
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_referenced",
-                0x0000_0000_0000_0004: "PG_uptodate",
-                0x0000_0000_0000_0008: "PG_dirty",
-                0x0000_0000_0000_0010: "PG_lru",
-                0x0000_0000_0000_0020: "PG_active",
-                0x0000_0000_0000_0040: "PG_workingset",
-                0x0000_0000_0000_0080: "PG_waiters",
-                0x0000_0000_0000_0100: "PG_error",
-                0x0000_0000_0000_0200: "PG_slab",
-                0x0000_0000_0000_0400: "PG_owner_priv_1",
-                0x0000_0000_0000_0800: "PG_arch_1",
-                0x0000_0000_0000_1000: "PG_reserved",
-                0x0000_0000_0000_2000: "PG_private",
-                0x0000_0000_0000_4000: "PG_private_2",
-                0x0000_0000_0000_8000: "PG_writeback",
-                0x0000_0000_0001_0000: "PG_head",
-                0x0000_0000_0002_0000: "PG_mappedtodisk",
-                0x0000_0000_0004_0000: "PG_reclaim",
-                0x0000_0000_0008_0000: "PG_swapbacked",
-                0x0000_0000_0010_0000: "PG_unevictable",
-                0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        elif "6.6" <= kversion < "6.10":
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_writeback",
-                0x0000_0000_0000_0004: "PG_referenced",
-                0x0000_0000_0000_0008: "PG_uptodate",
-                0x0000_0000_0000_0010: "PG_dirty",
-                0x0000_0000_0000_0020: "PG_lru",
-                0x0000_0000_0000_0040: "PG_head",
-                0x0000_0000_0000_0080: "PG_waiters",
-                0x0000_0000_0000_0100: "PG_active",
-                0x0000_0000_0000_0200: "PG_workingset",
-                0x0000_0000_0000_0400: "PG_error",
-                0x0000_0000_0000_0800: "PG_slab",
-                0x0000_0000_0000_1000: "PG_owner_priv_1",
-                0x0000_0000_0000_2000: "PG_arch_1",
-                0x0000_0000_0000_4000: "PG_reserved",
-                0x0000_0000_0000_8000: "PG_private",
-                0x0000_0000_0001_0000: "PG_private_2",
-                0x0000_0000_0002_0000: "PG_mappedtodisk",
-                0x0000_0000_0004_0000: "PG_reclaim",
-                0x0000_0000_0008_0000: "PG_swapbacked",
-                0x0000_0000_0010_0000: "PG_unevictable",
-                0x0000_0000_0020_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        elif "6.10" <= kversion < "6.12":
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_writeback",
-                0x0000_0000_0000_0004: "PG_referenced",
-                0x0000_0000_0000_0008: "PG_uptodate",
-                0x0000_0000_0000_0010: "PG_dirty",
-                0x0000_0000_0000_0020: "PG_lru",
-                0x0000_0000_0000_0040: "PG_head",
-                0x0000_0000_0000_0080: "PG_waiters",
-                0x0000_0000_0000_0100: "PG_active",
-                0x0000_0000_0000_0200: "PG_workingset",
-                0x0000_0000_0000_0400: "PG_error",
-                0x0000_0000_0000_0800: "PG_owner_priv_1",
-                0x0000_0000_0000_1000: "PG_arch_1",
-                0x0000_0000_0000_2000: "PG_reserved",
-                0x0000_0000_0000_4000: "PG_private",
-                0x0000_0000_0000_8000: "PG_private_2",
-                0x0000_0000_0001_0000: "PG_mappedtodisk",
-                0x0000_0000_0002_0000: "PG_reclaim",
-                0x0000_0000_0004_0000: "PG_swapbacked",
-                0x0000_0000_0008_0000: "PG_unevictable",
-                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        elif "6.12" <= kversion < "6.14":
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_writeback",
-                0x0000_0000_0000_0004: "PG_referenced",
-                0x0000_0000_0000_0008: "PG_uptodate",
-                0x0000_0000_0000_0010: "PG_dirty",
-                0x0000_0000_0000_0020: "PG_lru",
-                0x0000_0000_0000_0040: "PG_head",
-                0x0000_0000_0000_0080: "PG_waiters",
-                0x0000_0000_0000_0100: "PG_active",
-                0x0000_0000_0000_0200: "PG_workingset",
-                0x0000_0000_0000_0400: "PG_owner_priv_1",
-                0x0000_0000_0000_0800: "PG_owner_2",
-                0x0000_0000_0000_1000: "PG_arch_1",
-                0x0000_0000_0000_2000: "PG_reserved",
-                0x0000_0000_0000_4000: "PG_private",
-                0x0000_0000_0000_8000: "PG_private_2",
-                0x0000_0000_0001_0000: "PG_reclaim",
-                0x0000_0000_0002_0000: "PG_swapbacked",
-                0x0000_0000_0004_0000: "PG_unevictable",
-                0x0000_0000_0008_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        elif "6.14" <= kversion:
-            flags_dic = {
-                0x0000_0000_0000_0001: "PG_locked",
-                0x0000_0000_0000_0002: "PG_writeback",
-                0x0000_0000_0000_0004: "PG_referenced",
-                0x0000_0000_0000_0008: "PG_uptodate",
-                0x0000_0000_0000_0010: "PG_dirty",
-                0x0000_0000_0000_0020: "PG_lru",
-                0x0000_0000_0000_0040: "PG_head",
-                0x0000_0000_0000_0080: "PG_waiters",
-                0x0000_0000_0000_0100: "PG_active",
-                0x0000_0000_0000_0200: "PG_workingset",
-                0x0000_0000_0000_0400: "PG_owner_priv_1",
-                0x0000_0000_0000_0800: "PG_owner_2",
-                0x0000_0000_0000_1000: "PG_arch_1",
-                0x0000_0000_0000_2000: "PG_reserved",
-                0x0000_0000_0000_4000: "PG_private",
-                0x0000_0000_0000_8000: "PG_private_2",
-                0x0000_0000_0001_0000: "PG_reclaim",
-                0x0000_0000_0002_0000: "PG_swapbacked",
-                0x0000_0000_0004_0000: "PG_unevictable",
-                0x0000_0000_0008_0000: "PG_dropbehind",
-                0x0000_0000_0010_0000: "PG_mlocked", # CONFIG_MMU is always defined
-            }
-        return flags_dic
-
-    @staticmethod
-    def has_flag(flags_value, name):
-        return any(flags_value & k for k, v in PageInfoCommand.get_flags_dic().items() if v == name)
-
-    @staticmethod
-    def get_flags_str(flags_value):
-        flags, _ = GefUtil.flags_to_names(flags_value, PageInfoCommand.get_flags_dic())
-
-        flags_str = "|".join(flags)
-        if flags_str == "":
-            flags_str = "none"
-        return flags_str
-
-    @staticmethod
-    def get_pagetype_str(flags_value):
-        kversion = Kernel.version()
-        if kversion < "4.18":
-            # _mapcount itself is PAGE_*_MAPCOUNT_VALUE
-            flags_dic = {
-                -128: "PG_buddy",
-                -256: "PG_balloon", # 3.18~
-                -512: "PG_kmemcg", # 4.8~
-            }
-            return flags_dic.get(u2i(flags_value, 32), "none")
-        elif "4.18" <= kversion < "5.1":
-            flags_dic = {
-                0x0000_0080: "PG_buddy",
-                0x0000_0100: "PG_balloon",
-                0x0000_0200: "PG_kmemcg",
-                0x0000_0400: "PG_table",
-            }
-        elif "5.1" <= kversion < "5.3":
-            flags_dic = {
-                0x0000_0080: "PG_buddy",
-                0x0000_0100: "PG_offline",
-                0x0000_0200: "PG_kmemcg",
-                0x0000_0400: "PG_table",
-            }
-        elif "5.3" <= kversion < "5.11":
-            flags_dic = {
-                0x0000_0080: "PG_buddy",
-                0x0000_0100: "PG_offline",
-                0x0000_0200: "PG_kmemcg",
-                0x0000_0400: "PG_table",
-                0x0000_0800: "PG_guard",
-            }
-        elif "5.11" <= kversion < "6.9":
-            flags_dic = {
-                0x0000_0080: "PG_buddy",
-                0x0000_0100: "PG_offline",
-                0x0000_0200: "PG_table",
-                0x0000_0400: "PG_guard",
-            }
-        elif "6.9" <= kversion < "6.10":
-            flags_dic = {
-                0x0000_0080: "PG_buddy",
-                0x0000_0100: "PG_offline",
-                0x0000_0200: "PG_table",
-                0x0000_0400: "PG_guard",
-                0x0000_0800: "PG_hugetlb",
-            }
-        elif "6.10" <= kversion < "6.11":
-            flags_dic = {
-                0x0000_0080: "PG_buddy",
-                0x0000_0100: "PG_offline",
-                0x0000_0200: "PG_table",
-                0x0000_0400: "PG_guard",
-                0x0000_0800: "PG_hugetlb",
-                0x0000_1000: "PG_slab",
-            }
-        elif "6.11" <= kversion < "6.12":
-            flags_dic = {
-                0x4000_0000: "PG_buddy",
-                0x2000_0000: "PG_offline",
-                0x1000_0000: "PG_table",
-                0x0800_0000: "PG_guard",
-                0x0400_0000: "PG_hugetlb",
-                0x0200_0000: "PG_slab",
-                0x0100_0000: "PG_zsmalloc",
-            }
-        elif "6.12" <= kversion:
-            flags_dic = {
-                0xf0: "PGTY_buddy",
-                0xf1: "PGTY_offline",
-                0xf2: "PGTY_table",
-                0xf3: "PGTY_guard",
-                0xf4: "PGTY_hugetlb",
-                0xf5: "PGTY_slab",
-                0xf6: "PGTY_zsmalloc",
-                0xf7: "PGTY_unaccepted",
-                0xf8: "PGTY_large_kmalloc", # 6.15~
-            }
-
-        if kversion < "6.12":
-            flags, _ = GefUtil.flags_to_names(~flags_value, flags_dic)
-            flags_str = "|".join(flags)
-            if flags_str == "":
-                flags_str = "none"
-        else:
-            type_value = (flags_value >> 24) & 0xff
-            flags_str = flags_dic.get(type_value, "none")
-        return flags_str
-
-    @staticmethod
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    def get_sizeof_struct_page():
-        size = GefUtil.sizeof("page")
-        if size is None:
-            consts = KernelAddressHeuristicFinder.consts()
-            if consts is not None:
-                size = consts.sizeof_struct_page
-        return size
-
-    @staticmethod
-    def get_union_offset():
-        for member in ("compound_head", "compound_info"):
-            offset = GefUtil.offsetof("page", member)
-            if offset:
-                return offset
-
-        # A 64-bit dma_addr_t (e.g., ARM LPAE) aligns the first union to 8 on v5.1~v5.12, except x86_32.
-        # Since stable kernels backported its replacement with unsigned long[2], the data decides it, not the version.
-        ptrsize = current_arch.ptrsize
-        if ptrsize == 8 or is_x86_32():
-            return ptrsize
-        ret = Kernel.get_page_virt_pair()
-        sizeof_struct_page = PageInfoCommand.get_sizeof_struct_page()
-        if not ret or not sizeof_struct_page:
-            return ptrsize
-        # The padding before the union is never written, but the first word of the union usually is.
-        written = set()
-        for i in range(-16, 17):
-            for offset in (4, 8):
-                if read_int32_from_memory(ret[0] + sizeof_struct_page * i + offset, safe=True):
-                    written.add(offset)
-        if written == {8}:
-            return 8
-        return ptrsize
-
-    @staticmethod
-    @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
-    def get_page_layout():
-        kversion = Kernel.version()
-        if kversion is None:
-            return None
-
-        ptrsize = current_arch.ptrsize
-        layout = {}
-        if kversion < "3.1":
-            layout.update(refcount=ptrsize, mapcount=ptrsize + 4, private=ptrsize + 8, mapping=ptrsize * 2 + 8)
-            layout.update(first_page=ptrsize + 8, lru=ptrsize * 4 + 8)
-        elif kversion < "4.18":
-            layout.update(mapping=ptrsize, mapcount=ptrsize * 3, refcount=ptrsize * 3 + 4, private=ptrsize * 5 + 8)
-            layout["lru"] = ptrsize * 3 + 8
-            if kversion < "4.4":
-                layout["first_page"] = ptrsize * 5 + 8
-            else:
-                layout.update(compound_head=ptrsize * 3 + 8, compound_dtor=ptrsize * 4 + 8)
-            if kversion >= "4.5":
-                layout["entire_mapcount"] = (1, ptrsize) # page[1].compound_mapcount
-        else:
-            union = PageInfoCommand.get_union_offset()
-            mapcount = union + align(ptrsize * 5, union)
-            layout.update(lru=union, compound_head=union, mapping=union + ptrsize * 2, private=union + ptrsize * 4)
-            layout.update(mapcount=mapcount, refcount=mapcount + 4)
-            # (index of struct page, offset) of compound_mapcount (~v6.2) or folio->_entire_mapcount (v6.3~)
-            if kversion < "6.6":
-                layout["compound_dtor"] = union + ptrsize
-                layout["entire_mapcount"] = (1, union + ptrsize + 4)
-            elif kversion < "6.10":
-                layout["entire_mapcount"] = (1, ptrsize * 3)
-            elif kversion < "6.15":
-                layout["entire_mapcount"] = (1, ptrsize * 2 + 4)
-            elif ptrsize == 8:
-                layout["entire_mapcount"] = (1, ptrsize * 2 + 8)
-            else:
-                layout["entire_mapcount"] = (2, ptrsize * 4)
-        return layout
-
-    @staticmethod
-    def decode_compound_info(page_addr, compound_info):
-        # Old encoding: compound_info == head_page | 1
-        head_page = AddressUtil.normalize_address(compound_info - 1)
-        if head_page < page_addr and is_valid_addr(head_page):
-            return head_page
-
-        # New encoding: compound_info == mask | 1
-        head_page = page_addr & compound_info
-        if head_page != page_addr and is_valid_addr(head_page):
-            return head_page
-        return None
-
-    @staticmethod
-    def get_head_page(page_addr):
-        layout = PageInfoCommand.get_page_layout()
-        flags = read_int_from_memory(page_addr)
-
-        # ~v4.3: PG_tail (or PG_compound with PG_reclaim) and page->first_page
-        if "first_page" in layout:
-            is_tail = PageInfoCommand.has_flag(flags, "PG_tail")
-            if PageInfoCommand.has_flag(flags, "PG_compound"):
-                is_tail = PageInfoCommand.has_flag(flags, "PG_reclaim")
-            if not is_tail:
-                return page_addr
-            head_page = read_int_from_memory(page_addr + layout["first_page"])
-            if head_page < page_addr and is_valid_addr(head_page):
-                return head_page
-            return None
-
-        compound_info = read_int_from_memory(page_addr + layout["compound_head"])
-        if compound_info & 1:
-            return PageInfoCommand.decode_compound_info(page_addr, compound_info)
-
-        # HugeTLB vmemmap optimization (v5.18~v7.0) maps the struct pages of tail pages to those of the head page,
-        # so a tail page may look like a head page. The next struct page has the true link (page_fixed_fake_head).
-        if PageInfoCommand.has_flag(flags, "PG_head") and PageInfoCommand.get_sizeof_struct_page():
-            next_page = page_addr + PageInfoCommand.get_sizeof_struct_page()
-            next_info = read_int_from_memory(next_page + layout["compound_head"], safe=True)
-            if next_info and next_info & 1:
-                head_page = PageInfoCommand.decode_compound_info(next_page, next_info)
-                if head_page is not None and head_page < page_addr:
-                    return head_page
-        return page_addr
-
-    @staticmethod
-    def get_slot6_kind(slot6_raw):
-        slot6_s32 = u2i(slot6_raw, 32)
-        kversion = Kernel.version()
-
-        if kversion >= "6.12":
-            pgty_mapcount_underflow_shifted = u2i(0xff << 24, 32)
-            has_type = slot6_s32 < pgty_mapcount_underflow_shifted
-        elif  kversion >= "6.11":
-            page_mapcount_reserve = u2i(0xffff0000, 32)
-            has_type = slot6_s32 < page_mapcount_reserve
-        elif kversion >= "4.18":
-            page_mapcount_reserve = -128
-            has_type = slot6_s32 < page_mapcount_reserve
-        else:
-            # PAGE_BUDDY_MAPCOUNT_VALUE, PAGE_BALLOON_MAPCOUNT_VALUE, PAGE_KMEMCG_MAPCOUNT_VALUE
-            has_type = slot6_s32 in (-128, -256, -512)
-
-        if has_type:
-            return "type"
-        return "mapcount"
-
-    @staticmethod
-    def get_userspace_mapcount_info(page_addr, head_page, slot6_raw, slot6_kind):
-        # the same as page_mapcount() (~v6.10) or folio_precise_page_mapcount() (v6.11~)
-        layout = PageInfoCommand.get_page_layout()
-        kversion = Kernel.version()
-
-        head_flags = read_int_from_memory(head_page)
-        is_compound = head_page != page_addr
-        is_compound |= PageInfoCommand.has_flag(head_flags, "PG_head") or PageInfoCommand.has_flag(head_flags, "PG_compound")
-        if slot6_kind == "slab":
-            return None, None, None
-        if slot6_kind == "type" and (not is_compound or "slab" in PageInfoCommand.get_pagetype_str(slot6_raw)):
-            return None, None, None
-
-        mapcount_raw = read_int32_from_memory(page_addr + layout["mapcount"])
-        if slot6_kind == "type" and head_page == page_addr:
-            mapcount = 0 # page_type of a large folio (e.g., hugetlb)
-        else:
-            # Defensive clamp. In normal cases, _mapcount raw starts at -1,
-            # so decoded mapcount should never be negative.
-            mapcount = max(u2i(mapcount_raw, 32) + 1, 0)
-
-        sizeof_struct_page = PageInfoCommand.get_sizeof_struct_page()
-        if not is_compound or "entire_mapcount" not in layout or not sizeof_struct_page:
-            return mapcount_raw, None, mapcount
-
-        second_page = head_page + sizeof_struct_page
-        if "4.8" <= kversion < "6.2":
-            # file THP counts its PMD mappings in page->_mapcount; PageAnon(), PageHuge() (HUGETLB_PAGE_DTOR)
-            is_anon = read_int_from_memory(head_page + layout["mapping"]) & 1
-            is_hugetlb = read_int32_from_memory(second_page + layout["compound_dtor"]) & 0xff == 2
-            if not is_anon and not (is_hugetlb and Ksym.get_addr("hugetlb_fault")):
-                return mapcount_raw, None, mapcount
-
-        index, offset = layout["entire_mapcount"]
-        if index == 2 and read_int_from_memory(second_page) & 0xff == 1:
-            entire_mapcount = 0 # an order-1 folio has no page[2] on 32-bit (v6.15~)
-        else:
-            entire_mapcount = u2i(read_int32_from_memory(head_page + sizeof_struct_page * index + offset), 32) + 1
-        mapcount += entire_mapcount
-        if "4.5" <= kversion < "6.2":
-            # PageDoubleMap() adds one to each _mapcount of the PMD-mapped THP that is also mapped by PTEs
-            if kversion < "5.10":
-                pg_double_map = "PG_private_2"
-            else:
-                pg_double_map = "PG_workingset"
-            if PageInfoCommand.has_flag(read_int_from_memory(second_page), pg_double_map):
-                mapcount -= 1
-        return mapcount_raw, entire_mapcount, max(mapcount, 0)
-
-    @staticmethod
-    def is_buddy_free(slot6_raw, slot6_kind):
-        if slot6_kind != "type":
-            return False
-        kversion = Kernel.version()
-        if kversion < "4.18":
-            return u2i(slot6_raw, 32) == -128
-        if "4.18" <= kversion < "6.11":
-            return bool((~slot6_raw) & 0x0000_0080)
-        if "6.11" <= kversion < "6.12":
-            return bool((~slot6_raw) & 0x4000_0000)
-        if "6.12" <= kversion:
-            return ((slot6_raw >> 24) & 0xff) == 0xf0
-        return False
-
     def dump_page_info(self, page_addr, virt_addr, user_virt_addr):
         page_info = KernelPage.get_page_info(page_addr)
         if page_info is None:
@@ -213002,26 +212422,23 @@ class KernelWatchRetBreakpoint(gdb.Breakpoint):
         return
 
 
-class KpageWatchAllocBreakpoint(gdb.Breakpoint):
+class KpageWatchAllocBreakpoint(KernelWatchBreakpoint):
     """Create a breakpoint at the page allocator entry for kpage-watch."""
 
     def __init__(self, loc, sym, index_of_order_arg, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
-        self.sym = sym
+        super().__init__(loc, sym, watcher)
         self.index_of_order_arg = index_of_order_arg
-        self.watcher = watcher
-        self.enabled = False
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         # the bulk allocator falls back to this one; its return records the page instead
         names = ["KpageWatchAllocRetBreakpoint", "KpageWatchAllocBulkRetBreakpoint"]
         if GefUtil.is_nested_call(self.watcher, names, task_addr):
             return False
-        order = KmallocTracerCommand.get_ith_parameter(self.index_of_order_arg)
-        caller_pc = KmallocTracerCommand.get_return_address()
+        order = Kernel.get_ith_parameter(self.index_of_order_arg)[1]
+        caller_pc = Kernel.get_return_address()
         if is_riscv32() or is_riscv64():
             # A non-local exit can leave a return breakpoint at this reused stack slot.
             call_context = Kernel.get_call_context(task_addr)
@@ -213033,24 +212450,17 @@ class KpageWatchAllocBreakpoint(gdb.Breakpoint):
         return False
 
 
-class KpageWatchAllocRetBreakpoint(gdb.Breakpoint):
+class KpageWatchAllocRetBreakpoint(KernelWatchRetBreakpoint):
     """Create a breakpoint at the page allocator return for kpage-watch."""
 
     def __init__(self, loc, sym, order, caller_pc, task_addr, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
-        self.sym = sym
+        super().__init__(loc, sym, caller_pc, task_addr, watcher)
         self.order = order
-        self.caller_pc = caller_pc
-        self.task_addr = task_addr
-        self.watcher = watcher
-        self.call_context = Kernel.get_call_context(task_addr)
-        self.interrupt_context = Kernel.get_interrupt_context()
-        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
@@ -213058,58 +212468,48 @@ class KpageWatchAllocRetBreakpoint(gdb.Breakpoint):
         return self.watcher.record("alloc", self.sym, page, order=self.order, caller_pc=self.caller_pc)
 
 
-class KpageWatchAllocBulkBreakpoint(gdb.Breakpoint):
+class KpageWatchAllocBulkBreakpoint(KernelWatchBreakpoint):
     """Create a breakpoint at the bulk page allocator entry for kpage-watch."""
 
     def __init__(self, loc, sym, has_page_list, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
-        self.sym = sym
+        super().__init__(loc, sym, watcher)
         self.has_page_list = has_page_list
-        self.watcher = watcher
-        self.enabled = False
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         # (gfp, preferred_nid, nodemask, int nr_pages, struct list_head *page_list (~v6.13), struct page **page_array)
-        nr_pages = u2i(KmallocTracerCommand.get_ith_parameter(3), 32)
+        nr_pages = u2i(Kernel.get_ith_parameter(3)[1], 32)
         if self.has_page_list:
-            page_list = KmallocTracerCommand.get_ith_parameter(4)
+            page_list = Kernel.get_ith_parameter(4)[1]
         else:
             page_list = 0
         if self.has_page_list:
-            page_array = KmallocTracerCommand.get_ith_parameter(5)
+            page_array = Kernel.get_ith_parameter(5)[1]
         else:
-            page_array = KmallocTracerCommand.get_ith_parameter(4)
+            page_array = Kernel.get_ith_parameter(4)[1]
         pages_at_entry = self.watcher.watched_pages_in_bulk(page_list, page_array, nr_pages)
-        caller_pc = KmallocTracerCommand.get_return_address()
+        caller_pc = Kernel.get_return_address()
         KpageWatchAllocBulkRetBreakpoint(caller_pc, self.sym, page_list, page_array, nr_pages, pages_at_entry, caller_pc,
                                          task_addr, self.watcher)
         return False
 
 
-class KpageWatchAllocBulkRetBreakpoint(gdb.Breakpoint):
+class KpageWatchAllocBulkRetBreakpoint(KernelWatchRetBreakpoint):
     """Create a breakpoint at the bulk page allocator return for kpage-watch."""
 
     def __init__(self, loc, sym, page_list, page_array, nr_pages, pages_at_entry, caller_pc, task_addr, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
-        self.sym = sym
+        super().__init__(loc, sym, caller_pc, task_addr, watcher)
         self.page_list = page_list
         self.page_array = page_array
         self.nr_pages = nr_pages
         self.pages_at_entry = pages_at_entry
-        self.caller_pc = caller_pc
-        self.task_addr = task_addr
-        self.watcher = watcher
-        self.call_context = Kernel.get_call_context(task_addr)
-        self.interrupt_context = Kernel.get_interrupt_context()
-        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchAllocBulkRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
@@ -213121,46 +212521,40 @@ class KpageWatchAllocBulkRetBreakpoint(gdb.Breakpoint):
         return stop
 
 
-class KpageWatchFreeBreakpoint(gdb.Breakpoint):
+class KpageWatchFreeBreakpoint(KernelWatchBreakpoint):
     """Create a breakpoint at the buddy free entry for kpage-watch."""
 
     def __init__(self, loc, sym, index_of_page_arg, index_of_order_arg, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
-        self.sym = sym
+        super().__init__(loc, sym, watcher)
         self.index_of_page_arg = index_of_page_arg
         self.index_of_order_arg = index_of_order_arg
-        self.watcher = watcher
-        self.enabled = False
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        page = KmallocTracerCommand.get_ith_parameter(self.index_of_page_arg)
+        page = Kernel.get_ith_parameter(self.index_of_page_arg)[1]
         if self.index_of_order_arg is not None:
-            order = KmallocTracerCommand.get_ith_parameter(self.index_of_order_arg)
+            order = Kernel.get_ith_parameter(self.index_of_order_arg)[1]
         else:
             order = 0
-        caller_pc = KmallocTracerCommand.get_return_address()
+        caller_pc = Kernel.get_return_address()
         return self.watcher.record("free", self.sym, page, order=order, caller_pc=caller_pc)
 
 
-class KpageWatchBatchFreeBreakpoint(gdb.Breakpoint):
+class KpageWatchBatchFreeBreakpoint(KernelWatchBreakpoint):
     """Create a breakpoint at the batched free path (folio_batch or page list) for kpage-watch.
     These paths return order-0 pages straight to the pcp lists without going through
     free_frozen_pages/__free_pages, so a page freed here would otherwise be missed."""
 
     def __init__(self, loc, sym, mode, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
-        self.sym = sym
+        super().__init__(loc, sym, watcher)
         self.mode = mode
-        self.watcher = watcher
-        self.enabled = False
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        arg0 = KmallocTracerCommand.get_ith_parameter(0)
-        caller_pc = KmallocTracerCommand.get_return_address()
+        arg0 = Kernel.get_ith_parameter(0)[1]
+        caller_pc = Kernel.get_return_address()
         stop = False
         try:
             if self.mode == "folio_batch":
@@ -213169,7 +212563,7 @@ class KpageWatchBatchFreeBreakpoint(gdb.Breakpoint):
                 for i in range(min(nr, 31)):
                     folio = read_int_from_memory(arg0 + current_arch.ptrsize + current_arch.ptrsize * i)
                     # a large folio (e.g. THP) is freed here as well
-                    order = self.watcher.folio_order(folio)
+                    order = KernelPage.get_folio_order(folio, self.watcher.sizeof_struct_page)
                     stop |= self.watcher.record("free", self.sym, folio, order=order, caller_pc=caller_pc)
             else:
                 # a list_head of pages linked by page->lru; a watched page matches when a node
@@ -213181,70 +212575,57 @@ class KpageWatchBatchFreeBreakpoint(gdb.Breakpoint):
         return stop
 
 
-class KpageWatchSlabBreakpoint(gdb.Breakpoint):
+class KpageWatchSlabBreakpoint(KernelWatchBreakpoint):
     """Create a breakpoint at allocate_slab entry for kpage-watch."""
 
     def __init__(self, loc, sym, page_kind, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
-        self.sym = sym
+        super().__init__(loc, sym, watcher)
         self.page_kind = page_kind
-        self.watcher = watcher
-        self.enabled = False
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         if GefUtil.is_nested_call(self.watcher, ["KpageWatchSlabRetBreakpoint"], task_addr):
             return False
-        kmem_cache = KmallocTracerCommand.get_ith_parameter(0)
-        caller_pc = KmallocTracerCommand.get_return_address()
+        kmem_cache = Kernel.get_ith_parameter(0)[1]
+        caller_pc = Kernel.get_return_address()
         KpageWatchSlabRetBreakpoint(caller_pc, self.sym, self.page_kind, kmem_cache, caller_pc, task_addr, self.watcher)
         return False
 
 
-class KpageWatchSlabRetBreakpoint(gdb.Breakpoint):
+class KpageWatchSlabRetBreakpoint(KernelWatchRetBreakpoint):
     """Create a breakpoint at allocate_slab return for kpage-watch."""
 
     def __init__(self, loc, sym, page_kind, kmem_cache, caller_pc, task_addr, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=True)
-        self.sym = sym
+        super().__init__(loc, sym, caller_pc, task_addr, watcher)
         self.page_kind = page_kind
         self.kmem_cache = kmem_cache
-        self.caller_pc = caller_pc
-        self.task_addr = task_addr
-        self.watcher = watcher
-        self.call_context = Kernel.get_call_context(task_addr)
-        self.interrupt_context = Kernel.get_interrupt_context()
-        KmallocTracerCommand.clear_disabled_breakpoints("KpageWatchSlabRetBreakpoint", owner=self.watcher)
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        task_addr, task_name = KmallocTracerCommand.get_task()
+        task_addr, task_name = KernelAllocTracer.get_task()
         if self.call_context != Kernel.get_call_context(task_addr, at_return=True):
             return False
         self.enabled = False
-        page = self.watcher.slab_page(AddressUtil.parse_address(current_arch.return_register), self.page_kind)
+        page = KernelAllocTracer.get_slab_hook_page(AddressUtil.parse_address(current_arch.return_register), self.page_kind)
         return self.watcher.record("slab_assign", self.sym, page, caller_pc=self.caller_pc, kmem_cache=self.kmem_cache)
 
 
-class KpageWatchSlabFreeBreakpoint(gdb.Breakpoint):
+class KpageWatchSlabFreeBreakpoint(KernelWatchBreakpoint):
     """Create a breakpoint at __free_slab entry for kpage-watch."""
 
     def __init__(self, loc, sym, page_kind, watcher):
-        super().__init__("*{:#x}".format(loc), gdb.BP_BREAKPOINT, internal=False)
-        self.sym = sym
+        super().__init__(loc, sym, watcher)
         self.page_kind = page_kind
-        self.watcher = watcher
-        self.enabled = False
         return
 
     def stop(self):
         Cache.reset_gef_caches()
-        kmem_cache = KmallocTracerCommand.get_ith_parameter(0)
-        page = self.watcher.slab_page(KmallocTracerCommand.get_ith_parameter(1), self.page_kind)
-        caller_pc = KmallocTracerCommand.get_return_address()
+        kmem_cache = Kernel.get_ith_parameter(0)[1]
+        page = KernelAllocTracer.get_slab_hook_page(Kernel.get_ith_parameter(1)[1], self.page_kind)
+        caller_pc = Kernel.get_return_address()
         return self.watcher.record("slab_free", self.sym, page, caller_pc=caller_pc, kmem_cache=kmem_cache)
 
 
@@ -213285,72 +212666,24 @@ class KpageWatchCommand(GenericCommand):
         "This command requires CONFIG_RANDSTRUCT=n.",
     ])
 
-    def resolve_offsets(self):
-        self.name_offset = None
-        allocator = Kernel.get_slab_type()
-        command = {"SLUB": "slub-dump", "SLUB_TINY": "slub-tiny-dump", "SLAB": "slab-dump"}.get(allocator)
-        if command is None:
-            return
-        ret = Color.remove_color(gdb.execute("{:s} --meta --no-pager".format(command), to_string=True))
-        r = re.search(r"offsetof\(kmem_cache, name\): (0x\S+)", ret)
-        if r:
-            self.name_offset = int(r.group(1), 16)
-        return
-
-    def get_task_info(self):
-        thread = gdb.selected_thread()
-        cpu = KernelPerCpu.get_cpu_index(thread)
-        task_addr, comm = KmallocTracerCommand.get_task()
-        return task_addr, comm, cpu
-
-    def pfn_of(self, page):
-        if not is_valid_addr(page):
-            return None
-        phys = Kernel.page2phys(page)
-        if phys is None:
-            return None
-        return phys >> self.page_shift
-
-    def cache_name(self, kmem_cache):
-        if self.name_offset is None or not kmem_cache:
-            return None
-        try:
-            name_ptr = read_int_from_memory(kmem_cache + self.name_offset)
-            return read_cstring_from_memory(name_ptr)
-        except gdb.error:
-            return None
-
-    def slab_page(self, value, page_kind):
-        # SLAB before v3.13 passes page_address(page), and its slab_destroy() takes the slab descriptor
-        if page_kind == "virt":
-            if value:
-                return Kernel.virt2page(value)
-            return None
-        if page_kind == "slab_desc":
-            # struct slab { struct list_head list; unsigned long colouroff; void *s_mem; ... }
-            colouroff = read_int_from_memory(value + current_arch.ptrsize * 2)
-            s_mem = read_int_from_memory(value + current_arch.ptrsize * 3)
-            return Kernel.virt2page(s_mem - colouroff)
-        return value
-
     def slab_matched_pfns(self, page):
-        base_pfn = self.pfn_of(page)
+        base_pfn = KernelPage.get_pfn(page, self.page_shift)
         if base_pfn is None:
             return []
         # a slab may be a compound page: compare the head PFN of both sides.
-        head = PageInfoCommand.get_head_page(page)
+        head = KernelPage.get_head_page(page)
         if head is None:
             head_pfn = base_pfn
         else:
-            head_pfn = self.pfn_of(head)
+            head_pfn = KernelPage.get_pfn(head, self.page_shift)
         matched = []
         for pfn, (target_page, _virt) in self.watched.items():
             # a multi-page slab of SLAB before v3.13 is not compound: use the block seen when it was allocated
             if pfn == base_pfn or self.blocks.get(pfn) == page:
                 matched.append(pfn)
                 continue
-            target_head = PageInfoCommand.get_head_page(target_page)
-            if target_head is not None and self.pfn_of(target_head) == head_pfn:
+            target_head = KernelPage.get_head_page(target_page)
+            if target_head is not None and KernelPage.get_pfn(target_head, self.page_shift) == head_pfn:
                 matched.append(pfn)
         return matched
 
@@ -213384,40 +212717,8 @@ class KpageWatchCommand(GenericCommand):
             pages.extend(page for page in slice_unpack(data, current_arch.ptrsize) if page in targets)
         return pages
 
-    def folio_order(self, folio):
-        # folio_order(): a large folio keeps its order in the low byte of _flags_1 (the flags of page[1])
-        if not PageInfoCommand.has_flag(read_int_from_memory(folio), "PG_head"):
-            return 0
-        return read_int_from_memory(folio + self.sizeof_struct_page) & 0xff
-
-    def direct_map_virt(self, page, phys):
-        # the same resolution as buddy-dump: physmap + phys, or page2virt when it falls outside the direct map
-        if is_riscv32() or is_riscv64():
-            return Kernel.page2virt(page)
-        consts = KernelAddressHeuristicFinder.consts()
-        page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
-        if is_arm64():
-            physmap = consts.physmap_base
-        elif is_arm32():
-            phys_offset = consts.PHYS_OFFSET
-            if page_offset is None or phys_offset is None:
-                physmap = None
-            else:
-                physmap = page_offset - phys_offset
-        else:
-            physmap = page_offset
-        if physmap is not None:
-            # check the range before normalizing, or a 32-bit PA of 4 GiB or more wraps into the direct map
-            virt = physmap + phys
-            page_offset_end = KernelAddressHeuristicFinder.get_PAGE_OFFSET_END()
-            if page_offset is None or page_offset_end is None:
-                return AddressUtil.normalize_address(virt)
-            if page_offset <= virt < page_offset_end:
-                return virt
-        return Kernel.page2virt(page)
-
     def emit_event(self, tag, pfn, api, page, order, cache, caller_pc):
-        task_addr, comm, cpu = self.get_task_info()
+        _task_addr, comm, _pid, cpu = KernelAllocTracer.get_task_info()
         if caller_pc is None:
             caller = Symbol.format(caller_pc, bracket="", missing="?")
         else:
@@ -213447,12 +212748,12 @@ class KpageWatchCommand(GenericCommand):
             cpu_s = "?"
         gef_print("         via {:s}  caller={:s}  comm={:s} cpu={:s}".format(api, caller, comm, cpu_s))
         if self.backtrace:
-            KmallocTracerCommand.print_backtrace(True)
+            KernelAllocTracerOutput.print_backtrace(True)
         return
 
     def record(self, kind, api, page, order=None, caller_pc=None, kmem_cache=None):
         if kind in ("alloc", "free"):
-            base_pfn = self.pfn_of(page)
+            base_pfn = KernelPage.get_pfn(page, self.page_shift)
             if base_pfn is None:
                 return False
             # order comes from a register; ignore an out-of-range read so span stays sane.
@@ -213468,7 +212769,7 @@ class KpageWatchCommand(GenericCommand):
         if not matched:
             return False
 
-        cache = self.cache_name(kmem_cache)
+        cache = KernelAllocTracer.get_kmem_cache_name(kmem_cache, self.name_offset)
         tag = {"alloc": "ALLOC", "free": "FREE", "slab_assign": "SLAB", "slab_free": "UNSLAB"}[kind]
         reuse = False
         for pfn in matched:
@@ -213484,86 +212785,6 @@ class KpageWatchCommand(GenericCommand):
             elif kind == "free":
                 self.blocks.pop(pfn, None)
         return self.stop_on_reuse and reuse
-
-    def build_alloc_syms(self, kversion):
-        if kversion < "5.13":
-            return [["__alloc_pages_nodemask", 1]]
-        elif kversion < "6.10":
-            return [["__alloc_pages", 1]]
-        elif kversion < "6.14":
-            return [["__alloc_pages_noprof", 1]]
-        else:
-            # v6.15+: the nolock allocator (e.g. for BPF) takes pages from the freelists by itself.
-            # alloc_pages_nolock_noprof() of v6.18+ calls alloc_frozen_pages_nolock_noprof().
-            syms = [["__alloc_frozen_pages_noprof", 1]]
-            sym, func_addr = self.first_resolvable(["alloc_frozen_pages_nolock_noprof", "alloc_pages_nolock_noprof",
-                                                    "try_alloc_pages_noprof"])
-            if sym:
-                # (gfp_flags, nid, order) or (nid, order)
-                if sym == "alloc_frozen_pages_nolock_noprof":
-                    syms.append([sym, 2])
-                else:
-                    syms.append([sym, 1])
-            return syms
-
-    def build_bulk_alloc_syms(self, kversion):
-        # order-0 pages allocated in bulk (e.g. vmalloc, page_pool) are taken from the pcp lists by itself.
-        # [sym, whether page_list comes before page_array]
-        if kversion >= "6.14":
-            return ["alloc_pages_bulk_noprof", False]
-        elif kversion >= "6.10":
-            return ["alloc_pages_bulk_noprof", True]
-        elif kversion >= "5.13":
-            return ["__alloc_pages_bulk", True]
-        else:
-            return [None, None]
-
-    def build_free_syms(self, kversion):
-        # Hook the functions reached only after the refcount dropped to zero (not __free_pages,
-        # which also runs for a put that does not free). [sym, index of page, index of order or None]
-        if kversion >= "6.14":
-            # v6.15+: __free_pages -> ___free_pages -> __free_frozen_pages, skipping free_frozen_pages.
-            sym, func_addr = self.first_resolvable(["__free_frozen_pages", "free_frozen_pages"])
-            if sym:
-                return [[sym, 0, 1]]
-            return []
-        elif kversion >= "6.10":
-            return [["free_unref_page", 0, 1]]
-        elif kversion >= "5.14":
-            return [["free_unref_page", 0, 1], ["__free_pages_ok", 0, 1]]
-        elif kversion >= "4.15":
-            return [["free_unref_page", 0, None], ["__free_pages_ok", 0, 1]]
-        else:
-            return [["free_hot_cold_page", 0, None], ["__free_pages_ok", 0, 1]]
-
-    def build_batch_free_syms(self, kversion):
-        # order-0 pages freed in bulk skip the functions above and go straight to the pcp lists.
-        # Before v4.15 free_hot_cold_page_list calls free_hot_cold_page per page, so it needs no hook.
-        if kversion >= "6.9":
-            return ["free_unref_folios", "folio_batch"]
-        elif kversion >= "4.15":
-            return ["free_unref_page_list", "list"]
-        else:
-            return [None, None]
-
-    def build_slab_syms(self, allocator, kversion):
-        # The function that hands a fresh page to a cache, and the one that gives it back,
-        # as ordered candidates (the caller hooks the first that resolves). SLAB uses different
-        # symbols than SLUB, and its inner helpers are often inlined, so an outer one is tried too.
-        # {sym: how the page is passed (see slab_page)}
-        if allocator == "SLAB":
-            if kversion < "3.13":
-                return {"kmem_getpages": "virt"}, {"kmem_freepages": "virt", "slab_destroy": "slab_desc"}
-            return {"kmem_getpages": "page", "cache_grow_begin": "page"}, {"kmem_freepages": "page", "slab_destroy": "page"}
-        return {"allocate_slab": "page"}, {"__free_slab": "page"}
-
-    @staticmethod
-    def first_resolvable(syms):
-        for sym in syms:
-            func_addr = Ksym.get_addr(sym)
-            if func_addr:
-                return sym, func_addr
-        return None, None
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -213624,7 +212845,7 @@ class KpageWatchCommand(GenericCommand):
             if target_page is None:
                 err("Could not resolve the struct page of pfn {:#x}".format(pfn))
                 continue
-            virt = self.direct_map_virt(target_page, pfn << self.page_shift)
+            virt = KernelPage.get_direct_map_virt(target_page, pfn << self.page_shift)
             self.watched[pfn] = (target_page, virt)
             if virt is None:
                 gef_print("[WATCH ] pfn={:#x} page={:#x} virt={:s} phys={:#x}".format(
@@ -213644,7 +212865,7 @@ class KpageWatchCommand(GenericCommand):
             err("No page to watch")
             return
 
-        self.resolve_offsets()
+        self.name_offset = KernelAllocTracer.get_kmem_cache_name_offset(allocator)
         self.sizeof_struct_page = consts.sizeof_struct_page or (current_arch.ptrsize * 8)
         self.stop_on_reuse = args.stop_on_reuse
         self.backtrace = args.backtrace
@@ -213657,12 +212878,12 @@ class KpageWatchCommand(GenericCommand):
         # set breakpoints
         breakpoints = []
         try:
-            for sym, index_of_order_arg in self.build_alloc_syms(kversion):
+            for sym, index_of_order_arg in KernelAllocTracer.get_page_alloc_syms(kversion):
                 func_addr = Ksym.get_addr(sym)
                 if func_addr:
                     gef_print(sym + ": ", end="")
                     breakpoints.append(KpageWatchAllocBreakpoint(func_addr, sym, index_of_order_arg, self))
-            bulk_sym, has_page_list = self.build_bulk_alloc_syms(kversion)
+            bulk_sym, has_page_list = KernelAllocTracer.get_page_bulk_alloc_syms(kversion)
             if bulk_sym:
                 func_addr = Ksym.get_addr(bulk_sym)
             else:
@@ -213670,21 +212891,21 @@ class KpageWatchCommand(GenericCommand):
             if func_addr:
                 gef_print(bulk_sym + ": ", end="")
                 breakpoints.append(KpageWatchAllocBulkBreakpoint(func_addr, bulk_sym, has_page_list, self))
-            for sym, index_of_page_arg, index_of_order_arg in self.build_free_syms(kversion):
+            for sym, index_of_page_arg, index_of_order_arg in KernelAllocTracer.get_page_free_syms(kversion):
                 func_addr = Ksym.get_addr(sym)
                 if func_addr:
                     gef_print(sym + ": ", end="")
                     breakpoints.append(KpageWatchFreeBreakpoint(func_addr, sym, index_of_page_arg, index_of_order_arg, self))
-            slab_assign_syms, slab_free_syms = self.build_slab_syms(allocator, kversion)
-            sym, func_addr = self.first_resolvable(slab_assign_syms)
+            slab_assign_syms, slab_free_syms = KernelAllocTracer.get_slab_page_syms(allocator, kversion)
+            sym, func_addr = KernelAllocTracer.first_resolvable(slab_assign_syms)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 breakpoints.append(KpageWatchSlabBreakpoint(func_addr, sym, slab_assign_syms[sym], self))
-            sym, func_addr = self.first_resolvable(slab_free_syms)
+            sym, func_addr = KernelAllocTracer.first_resolvable(slab_free_syms)
             if func_addr:
                 gef_print(sym + ": ", end="")
                 breakpoints.append(KpageWatchSlabFreeBreakpoint(func_addr, sym, slab_free_syms[sym], self))
-            batch_sym, batch_mode = self.build_batch_free_syms(kversion)
+            batch_sym, batch_mode = KernelAllocTracer.get_page_batch_free_syms(kversion)
             if batch_sym:
                 func_addr = Ksym.get_addr(batch_sym)
             else:
