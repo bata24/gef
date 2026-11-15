@@ -12432,7 +12432,7 @@ Simplified page cache structure:
 | ...       |  +->| host                   |--->inode
 | i_mapping |--+  | i_pages (v4.20~)       |
 | i_size    |     |   xa_head              |--+
-| ...       |     | page_tree / i_pages     |  |
+| ...       |     | page_tree / i_pages    |  |
 +-----------+     |   rnode                |--+
                   | ...                    |  |
                   +------------------------+  |
@@ -12799,15 +12799,15 @@ Simplified sk_buff structure:
 | ...        |
 +------------+
 
-head        data          tail          head+end
-|           |             |             |
-v           v             v             v
-+-----------+-------------+-------------+------------------+
-|  headroom | packet data |  tailroom   | skb_shared_info  |
-+-----------+-------------+-------------+------------------+
-|<-- data ->|             |             |
-|<-------- tail --------->|             |
-|<---------------- end ---------------->|
+head       data          tail       head+end
+|          |             |          |
+v          v             v          v
++----------+-------------+----------+-----------------+
+| headroom | packet data | tailroom | skb_shared_info |
++----------+-------------+----------+-----------------+
+|<- data ->|             |          |
+|<------- tail --------->|          |
+|<--------------- end ------------->|
 
 skb_shared_info (at head + end) holds nr_frags, frag_list, frags[] ...
 On 64-bit, tail/end are u32 offsets from head; on 32-bit they are absolute pointers.
