@@ -12380,6 +12380,74 @@ Supported structure:
   ucsi_operations, vm_operations_struct,
 ```
 
+## `kpagecache`
+
+Dump the cached contents of a file from its inode.
+
+
+### Syntax
+
+```text
+usage: kpagecache [-h] [-hh] [-o FILE] [-d | -t] [-s SIZE] [--head-offset HEAD_OFFSET] [--meta] [-n] [-q] INODE
+
+positional arguments:
+  INODE                 the address of struct inode.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -o, --output FILE     save cached bytes to this file on the GDB host.
+  -d, --dump            also show the cached bytes as an xxd dump.
+  -t, --text            show the cached bytes as UTF-8 text.
+  -s, --size SIZE       override inode->i_size.
+  --head-offset HEAD_OFFSET
+                        offsetof(address_space, i_pages.xa_head, i_pages.rnode or page_tree.rnode).
+  --meta                display offset information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kpagecache 0xffff888003b0a000
+kpagecache 0xffff888003b0a000 -d
+kpagecache 0xffff888003b0a000 -t
+kpagecache 0xffff888003b0a000 -o /tmp/cached-file.bin
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+Without debug information, automatic i_size resolution requires v3.10 or later; otherwise pass --size.
+Only resident, uptodate pages are read. Shadow, swap and DAX entries are skipped.
+Uncached or unreadable ranges are reported and left as holes (read as zero) in the output file.
+A hole in the output does not prove that the original file contains zeros there.
+The output keeps file offsets and is truncated to i_size. No guest code or disk reads are performed.
+
+Simplified page cache structure:
+
++-inode-----+     +-address_space----------+
+| ...       |  +->| host                   |--->inode
+| i_mapping |--+  | i_pages (v4.20~)       |
+| i_size    |     |   xa_head              |--+
+| ...       |     | page_tree / i_pages     |  |
++-----------+     |   rnode                |--+
+                  | ...                    |  |
+                  +------------------------+  |
+                                              v
+                         xarray / radix_tree entries
+                                              |
+                                              v
+                                       +-page / folio-+
+                                       | flags        |
+                                       | mapping      |--->address_space
+                                       | index        |--->file offset / PAGE_SIZE
+                                       | ...          |
+                                       +--------------+
+```
+
 ## `kpath`
 
 Reconstruct the pathname of a dentry, path, file or mount.

@@ -71464,6 +71464,17 @@ class KernelConstsX64(KernelConstsBase):
         if hasattr(self, "cached_sizeof_struct_page"):
             return self.cached_sizeof_struct_page
 
+        size = GefUtil.sizeof("page")
+        if size:
+            self.cached_sizeof_struct_page = size
+            return size
+        # Slab-virtual metadata is outside vmemmap, so a kmalloc pair cannot measure struct page.
+        if Ksym.get_addr("slab_virt_to_phys"):
+            slab_virtual = Kernel.slab_virtual()
+            if slab_virtual.initialize():
+                self.cached_sizeof_struct_page = slab_virtual.sizeof_struct_page
+                return self.cached_sizeof_struct_page
+
         ret = Kernel.get_page_virt_pair()
         if not ret:
             return None
@@ -166925,6 +166936,390 @@ class KernelPipeCommand(GenericCommand, BufferingOutput):
         # dump
         self.out = []
         self.dump_pipe(pipe_files)
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class KernelPageCacheCommand(GenericCommand, BufferingOutput):
+    """Dump the cached contents of a file from its inode."""
+
+    _cmdline_ = "kpagecache"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("inode", metavar="INODE", type=AddressUtil.parse_address, help="the address of struct inode.")
+    parser.add_argument("-o", "--output", metavar="FILE", help="save cached bytes to this file on the GDB host.")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("-d", "--dump", action="store_true", help="also show the cached bytes as an xxd dump.")
+    group.add_argument("-t", "--text", action="store_true", help="show the cached bytes as UTF-8 text.")
+    parser.add_argument("-s", "--size", type=AddressUtil.parse_address, help="override inode->i_size.")
+    parser.add_argument("--head-offset", type=AddressUtil.parse_address,
+                        help="offsetof(address_space, i_pages.xa_head, i_pages.rnode or page_tree.rnode).")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} 0xffff888003b0a000",
+        "{0:s} 0xffff888003b0a000 -d",
+        "{0:s} 0xffff888003b0a000 -t",
+        "{0:s} 0xffff888003b0a000 -o /tmp/cached-file.bin",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "Without debug information, automatic i_size resolution requires v3.10 or later; otherwise pass --size.",
+        "Only resident, uptodate pages are read. Shadow, swap and DAX entries are skipped.",
+        "Uncached or unreadable ranges are reported and left as holes (read as zero) in the output file.",
+        "A hole in the output does not prove that the original file contains zeros there.",
+        "The output keeps file offsets and is truncated to i_size. No guest code or disk reads are performed.",
+        "",
+        "Simplified page cache structure:",
+        "",
+        "+-inode-----+     +-address_space----------+",
+        "| ...       |  +->| host                   |--->inode",
+        "| i_mapping |--+  | i_pages (v4.20~)       |",
+        "| i_size    |     |   xa_head              |--+",
+        "| ...       |     | page_tree / i_pages     |  |",
+        "+-----------+     |   rnode                |--+",
+        "                  | ...                    |  |",
+        "                  +------------------------+  |",
+        "                                              v",
+        "                         xarray / radix_tree entries",
+        "                                              |",
+        "                                              v",
+        "                                       +-page / folio-+",
+        "                                       | flags        |",
+        "                                       | mapping      |--->address_space",
+        "                                       | index        |--->file offset / PAGE_SIZE",
+        "                                       | ...          |",
+        "                                       +--------------+",
+    ])
+
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append((err, "Could not find Linux kernel"))
+            return
+        if self.kversion < "3.0":
+            self.meta.append((err, "Unsupported before v3.0"))
+            return
+
+        inode = self.args.inode
+        ptrsize = current_arch.ptrsize
+        if not is_valid_addr(inode) or inode & (ptrsize - 1):
+            self.meta.append((err, "Invalid inode address"))
+            return
+        kpath = Kernel.path()
+        mode = read_int16_from_memory(inode + kpath.get_offset_i_mode())
+        if mode & 0o170000 != 0o100000:
+            self.meta.append((err, "The inode is not a regular file"))
+            return
+
+        offset_mapping = GefUtil.offsetof("inode", "i_mapping")
+        if offset_mapping is None:
+            if self.kversion >= "3.1":
+                offset_sb = kpath.get_offset_i_sb(inode)
+                if offset_sb is not None:
+                    offset_mapping = offset_sb + ptrsize
+            else:
+                # Old inodes keep i_mapping near i_data, whose host points back to this inode.
+                for offset in range(0, 0x800, ptrsize):
+                    mapping = read_int_from_memory(inode + offset, safe=True)
+                    if mapping is None:
+                        break
+                    if inode + offset < mapping <= inode + 0x1000:
+                        if read_int_from_memory(mapping, safe=True) == inode:
+                            offset_mapping = offset
+                            break
+        if offset_mapping is None:
+            self.meta.append((err, "Could not find inode->i_mapping"))
+            return
+        mapping = read_int_from_memory(inode + offset_mapping)
+        if not is_valid_addr(mapping):
+            self.meta.append((err, "Invalid inode->i_mapping"))
+            return
+
+        offset_size = GefUtil.offsetof("inode", "i_size")
+        if offset_size is None and self.kversion >= "3.10":
+            offset_ino = kpath.get_offset_i_ino(inode)
+            if offset_ino is not None:
+                size_ino = GefUtil.member_type_size("inode", "i_ino")
+                if size_ino is None:
+                    size_ino = ptrsize
+                    if self.kversion >= "7.1":
+                        size_ino = 8
+                align_u64 = 8
+                if is_x86_32():
+                    align_u64 = 4
+                # i_ino is followed by i_nlink (u32), i_rdev (u32), then i_size (loff_t).
+                offset_size = align(offset_ino + size_ino + 8, align_u64)
+        size = self.args.size
+        if size is None and offset_size is not None:
+            size = read_int64_from_memory(inode + offset_size, safe=True)
+        if size is None:
+            self.meta.append((err, "Could not find inode->i_size; pass --size"))
+            return
+        if not 0 <= size < 1 << 63:
+            self.meta.append((err, "Invalid file size"))
+            return
+
+        if self.kversion >= "4.20":
+            member = "i_pages"
+            head_member = "i_pages.xa_head"
+        else:
+            member = "page_tree"
+            if self.kversion >= "4.17":
+                member = "i_pages"
+            head_member = member + ".rnode"
+        offset_tree = GefUtil.offsetof("address_space", member)
+        if offset_tree is None:
+            offset_tree = ptrsize # host, then the page tree
+        offset_head = self.args.head_offset
+        if offset_head is None:
+            offset_head = GefUtil.offsetof("address_space", head_member)
+        if offset_head is not None and (offset_head < offset_tree or offset_head % ptrsize):
+            self.meta.append((err, "Invalid head offset"))
+            return
+
+        layout = KernelPage.get_page_layout()
+        offset_page_mapping = GefUtil.offsetof("page", "mapping")
+        if offset_page_mapping is None:
+            offset_page_mapping = layout["mapping"]
+        offset_page_index = GefUtil.offsetof("page", "index")
+        if offset_page_index is None:
+            offset_page_index = offset_page_mapping + ptrsize
+
+        if self.kversion >= "4.20":
+            tree = KernelXArray(mapping + offset_tree)
+            if offset_head is None:
+                head = tree.find_head_offset(ptrsize * 32)
+                if head is not None:
+                    offset_head = offset_tree + head
+            if offset_head is None:
+                # Empty/single-entry arrays have no xa_node backlink. Locate the mapping's xa_flags instead.
+                # The low byte is LOCK_IRQ, optionally ACCOUNT; the upper bits hold the three marks.
+                for offset in range(0, ptrsize * 32, 4):
+                    flags = read_int32_from_memory(mapping + offset_tree + offset, safe=True)
+                    if flags is None:
+                        break
+                    if flags & 0xff not in (1, 0x21) or flags & 0x007fff00:
+                        continue
+                    candidate = offset_tree + align_to_ptrsize(offset + 4)
+                    page = read_int_from_memory(mapping + candidate, safe=True)
+                    if page is None:
+                        continue
+                    if page and page & 3 == 0:
+                        if read_int_from_memory(page + offset_page_mapping, safe=True) != mapping:
+                            continue
+                        if read_int_from_memory(page + offset_page_index, safe=True) != 0:
+                            continue
+                    elif page and not page & 1:
+                        continue
+                    offset_head = candidate
+                    break
+            if offset_head is None:
+                self.meta.append((err, "Could not find address_space->i_pages.xa_head; pass --head-offset"))
+                return
+            tree.head_offset = offset_head - offset_tree
+        else:
+            tree = KernelRadixTree(mapping + offset_tree)
+            if offset_head is None:
+                head = tree.find_rnode_offset(ptrsize * 32)
+                if head is None:
+                    # A single page has no node; its mapping and index identify the direct root entry.
+                    for offset in range(0, ptrsize * 32, ptrsize):
+                        page = read_int_from_memory(mapping + offset_tree + offset, safe=True)
+                        if not page or page & 3:
+                            continue
+                        if read_int_from_memory(page + offset_page_mapping, safe=True) != mapping:
+                            continue
+                        if read_int_from_memory(page + offset_page_index, safe=True) == 0:
+                            head = offset
+                            break
+                if head is None:
+                    head = KernelRadixTree.default_rnode_offset()
+                offset_head = offset_tree + head
+            tree.rnode_offset = offset_head - offset_tree
+
+        self.meta.append((info, "offsetof(inode, i_mapping): {:#x}".format(offset_mapping)))
+        if offset_size is not None:
+            self.meta.append((info, "offsetof(inode, i_size): {:#x}".format(offset_size)))
+        self.meta.append((info, "offsetof(address_space, {:s}): {:#x}".format(head_member, offset_head)))
+        self.meta.append((info, "offsetof(page, mapping): {:#x}".format(offset_page_mapping)))
+        self.meta.append((info, "offsetof(page, index): {:#x}".format(offset_page_index)))
+
+        self.mapping = mapping
+        self.size = size
+        self.tree = tree
+        self.page_layout = layout
+        self.offset_page_mapping = offset_page_mapping
+        self.offset_page_index = offset_page_index
+        return True
+
+    def get_page_info(self, index, page):
+        if read_int_from_memory(page + self.offset_page_mapping, safe=True) != self.mapping:
+            return {"error": "Invalid page mapping: {:#x}".format(page)}
+        flags = read_int_from_memory(page)
+        order = 0
+        if KernelPage.has_flag(flags, "PG_head"):
+            if self.kversion >= "6.6":
+                order = KernelPage.get_folio_order(page, self.kpage.sizeof_struct_page)
+            elif "compound_dtor" in self.page_layout:
+                order = read_int8_from_memory(
+                    page + self.kpage.sizeof_struct_page + self.page_layout["compound_dtor"] + 1,
+                )
+        if order >= current_arch.ptrsize * 8 - self.kpage.PAGE_SHIFT:
+            return {"error": "Invalid compound order: {:#x}".format(page)}
+        first = read_int_from_memory(page + self.offset_page_index)
+        if not first <= index < first + (1 << order):
+            return {"error": "Invalid page index: {:#x}".format(page)}
+        start = first * self.page_size
+        end = min(self.size, start + (self.page_size << order))
+        if start >= end:
+            return None
+        return {"page": page, "flags": flags, "start": start, "end": end, "phys": self.kpage.page2phys(page)}
+
+    def read_page(self, info, offset, length):
+        if not KernelPage.has_flag(info["flags"], "PG_uptodate"):
+            return None, "not uptodate"
+        data = None
+        if info["phys"] is not None:
+            data = read_physmem(info["phys"] + offset - info["start"], length)
+        if data is None or len(data) != length:
+            virt = Kernel.page2virt(info["page"])
+            if virt is not None:
+                data = read_memory(virt + offset - info["start"], length, safe=True)
+        if data is None or len(data) != length:
+            return None, "unreadable"
+        return data, "cached"
+
+    def dump_text(self):
+        if self.text:
+            self.out.extend(self.text.decode("utf-8", errors="backslashreplace").splitlines())
+            self.text.clear()
+        return
+
+    def dump_page(self, offset, length, page, phys, status, data=None):
+        if self.args.text and status == "cached":
+            self.text.extend(data)
+            return
+        if self.args.text:
+            self.dump_text()
+        page_str = phys_str = "-"
+        if page is not None:
+            page_str = hex(page)
+        if phys is not None:
+            phys_str = hex(phys)
+        self.out.append(self.row_format.format(hex(offset), page_str, phys_str, hex(length), status))
+        if self.args.dump and data is not None:
+            lines = hexdump(data, base=offset, show_symbol=False, unit=1).splitlines()
+            self.out.extend(HexdumpCommand.merge_lines(lines))
+        return
+
+    def dump_pages(self, entries, output):
+        self.text = bytearray()
+        seen = set()
+        cursor = copied = 0
+        for index, page in entries:
+            page = KernelPage.get_head_page(page)
+            if page is None or page in seen:
+                continue
+            seen.add(page)
+            info = self.get_page_info(index, page)
+            if info is None:
+                continue
+            if "error" in info:
+                self.warn_add_out(info["error"])
+                continue
+            start = info["start"]
+            if start < cursor:
+                continue
+            if cursor < start:
+                self.dump_page(cursor, start - cursor, None, None, "not cached")
+            while start < info["end"]:
+                length = min(self.page_size, info["end"] - start)
+                data, status = self.read_page(info, start, length)
+                if status == "cached":
+                    copied += length
+                    if output is not None:
+                        output.seek(start)
+                        output.write(data)
+                phys = None
+                if info["phys"] is not None:
+                    phys = info["phys"] + start - info["start"]
+                self.dump_page(start, length, page, phys, status, data)
+                start += length
+            cursor = info["end"]
+        if self.args.text:
+            self.dump_text()
+        if cursor < self.size:
+            self.dump_page(cursor, self.size - cursor, None, None, "not cached")
+        return copied
+
+    def dump_pagecache(self):
+        self.kpage = Kernel.page()
+        if not self.kpage.initialize():
+            for func, line in Kernel.export_meta(self, self.kpage.meta):
+                func(line)
+            return
+        self.page_size = 1 << self.kpage.PAGE_SHIFT
+        try:
+            entries = self.tree.parse_indexed()
+        except gdb.MemoryError:
+            err("Memory error while walking the page cache")
+            return
+
+        self.quiet_info_add_out("inode: {:#x}, address_space: {:#x}, i_size: {:#x}".format(
+            self.args.inode, self.mapping, self.size,
+        ))
+        self.row_format = "{:18s} {:18s} {:18s} {:12s} {:s}"
+        if not self.args.text:
+            self.quiet_add_out(GefUtil.make_legend(self.row_format.format("offset", "page", "phys", "size", "status")))
+        try:
+            with contextlib.ExitStack() as stack:
+                output = None
+                if self.args.output:
+                    output = stack.enter_context(open(os.path.expanduser(self.args.output), "wb"))
+                copied = self.dump_pages(sorted(entries), output)
+                if output is not None:
+                    output.truncate(self.size)
+        except (gdb.MemoryError, OSError, ValueError, OverflowError) as exception:
+            err("Could not dump the page cache: {}".format(exception))
+            return
+
+        for node, reason in self.tree.broken.items():
+            self.warn_add_out("Broken page tree at {:#x}: {:s}".format(node, reason))
+        self.quiet_info_add_out("Cached bytes: {:#x}/{:#x}".format(copied, self.size))
+        if copied < self.size:
+            self.warn_add_out("{:#x} byte(s) could not be recovered; output holes read as zero".format(self.size - copied))
+        if self.args.output:
+            self.quiet_info_add_out("Saved to {:s}".format(os.path.expanduser(self.args.output)))
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        ret = self.initialize()
+        if args.meta or not ret:
+            for func, line in self.meta:
+                func(line)
+        if not ret:
+            return
+
+        if args.meta:
+            return
+
+        self.out = []
+        if not self.dump_pagecache():
+            return
         self.print_output(check_terminal_size=True)
         return
 
