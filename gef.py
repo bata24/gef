@@ -177660,7 +177660,7 @@ class V8Command(GenericCommand):
 
 @register_command
 class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
-    """PartitionAlloc free-list viewer for chromium stable."""
+    """PartitionAlloc free-list viewer for Chromium v160."""
 
     _cmdline_ = "partition-alloc-dump"
     _category_ = "05-c. Heap - Chromium/V8"
@@ -177688,7 +177688,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     _note_ = "\n".join([
         "Version numbers do not identify the build layout; the fixed layout is checked against the heap.",
         "Requires 4 KiB system pages, 2 MiB super pages and 32-byte metadata entries.",
-        "Settings must occupy 0x40, 0x80 or 0xc0 bytes; metadata placement is checked against the extents.",
+        "Settings must occupy 0x80 or 0xc0 bytes; metadata placement is checked against the extents.",
         "",
         "Simplified partition alloc structure:",
         "",
@@ -177771,6 +177771,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         return GefUtil.complete_candidates(self.modes, text, word)
 
     def initialize(self):
+        self.bucket_alignment = current_arch.ptrsize
+        if is_arm32():
+            self.bucket_alignment = 8
         auxv = Auxv.get_auxiliary_values()
         if auxv:
             page_size = auxv.get("AT_PAGESZ")
@@ -177779,7 +177782,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("PartitionAlloc version: unknown (build layout is checked, not inferred from a version).")
         self.out.append("Layout source: memory heuristic; fixed root/bucket/slot-span fields.")
         self.out.append("Supported layout: system page=0x1000, super page=0x200000, metadata entry=0x20.")
-        self.out.append("Supported Settings size: 0x40/0x80/0xc0; inline or verified separated metadata.")
+        self.out.append("Supported Settings size: 0x80/0xc0; inline or verified separated metadata.")
         if page_size is None:
             self.err_add_out("Cannot verify the target system page size: AT_PAGESZ is unavailable.")
             return False
@@ -177812,26 +177815,30 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     def get_roots_heuristic(self):
         """Search for fast_malloc_root, array_buffer_root_ and buffer_root_"""
 
-        # the pointers to each root are in the RW area.
-        # first, we list the RW area.
-        filepath = Path.get_filepath(append_proc_root_prefix=False)
+        # Linux roots live in the main executable's writable mappings and anonymous BSS.
+        # Android needs libchrome.so / APK ELF lookup; that module lookup is not implemented here.
+        filepath = Path.get_binary_map_path()
         maps = ProcessMap.get_process_maps()
-        if is_64bit():
-            codebase = ProcessMap.get_section_base_address(filepath)
-            if codebase is None:
-                return []
-            mask = 0x0000_ffff_0000_0000
-            chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
-            chromium_rw_maps = [
-                p for p in chromium_rw_maps if (p.page_start & mask) == (codebase & mask) and p.path != filepath
-            ]
-        elif is_32bit():
-            mask = 0xff00_0000
-            heapbase = HeapBaseCommand.heap_base()
-            if heapbase is None:
-                return []
-            chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
-            chromium_rw_maps = [p for p in chromium_rw_maps if p.page_start < heapbase and p.path != filepath]
+        image_maps = [p for p in maps if p.path == filepath]
+        if not image_maps:
+            return []
+        image_start = min(p.page_start for p in image_maps)
+        image_end = max(p.page_end for p in image_maps)
+        elf = Elf.get_elf(image_start)
+        if elf is not None and elf.is_valid():
+            load_bias = 0
+            if elf.e_type == Elf.ET_DYN:
+                load_bias = image_start
+            for phdr in elf.phdrs:
+                if phdr.p_type == Elf.Phdr.PT_LOAD and phdr.p_flags & Elf.Phdr.PF_W:
+                    image_end = max(image_end, align_to_pagesize(load_bias + phdr.p_vaddr + phdr.p_memsz))
+        chromium_rw_maps = [p for p in maps if p.permission.value == Permission.READ | Permission.WRITE]
+        # Include anonymous BSS, including PT_LOAD segments with no file-backed pages.
+        chromium_rw_maps = [p for p in chromium_rw_maps if image_start <= p.page_start <= image_end]
+        if not chromium_rw_maps:
+            return []
+        roots_start = min(p.page_start for p in chromium_rw_maps)
+        roots_end = max(p.page_end for p in chromium_rw_maps)
 
         # n_gram([1,2,3,4,5], 3) -> [[1, 2, 3], [2, 3, 4], [3, 4, 5]]
         def n_gram(target, n):
@@ -177853,76 +177860,78 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             partition_alloc::PartitionRoot* Partitions::array_buffer_root_ = nullptr;
             partition_alloc::PartitionRoot* Partitions::buffer_root_ = nullptr;
 
-            0x5a849775d5a8 <WTF::Partitions::fast_malloc_root_>:                                         0x0000000000000000
-            0x5a849775d5b0 <WTF::Partitions::array_buffer_root_>:                                        0x00005a8497761040
-            0x5a849775d5b8 <WTF::Partitions::buffer_root_>:                                              0x00005a849775d600
-            0x5a849775d5c0 <guard variable for WTF::Partitions::Initialize()::initialized>:              0x0000000100000101
-            ...
-            0x5a8497759bc0 <WTF::Partitions::InitializeOnce()::fast_malloc_allocator>:                   0x0000000000000000
-            ...
-            0x5a849775d600 <WTF::Partitions::InitializeOnce()::buffer_allocator>:                        0x0000000000010000
-            ...
-            0x5a8497761040 <WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator>:  0x0000000000000000
+            Observed v160 Linux x64 snapshot 1742397 (2026-11-15):
+            0x62264f791780 <blink::Partitions::fast_malloc_root_>: 0x0000000000000000
+            0x62264f791788 <blink::Partitions::array_buffer_root_>: 0x000062264f7953c0
+            0x62264f791790 <blink::Partitions::buffer_root_>: 0x000062264f7917c0
+            0x62264f791798 <guard variable for blink::Partitions::Initialize()::initialized>: 0x00184c7700000101
+
+            [blink::Partitions::InitializeOnce()::buffer_allocator]
+            0x62264f7917c0: 0x0000000000000000
+
+            [blink::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator]
+            0x62264f7953c0: 0x0000000000000000
             """
             # check consecutive quadruples
             for addr, data in zip(n_gram(addr_list, 4), n_gram(data_list, 4)):
-                # root pointer address and root address are close (see above example)
-                if data[0] != 0 and (addr[0] & mask) != (data[0] & mask):
-                    # fast_malloc_root_ may be zero. but if non-zero, it holds address close to itself
+                # Debian v156 x64 omits fast_malloc_root_; data[0] can be unrelated to Blink.
+                # array_buffer_root_, buffer_root_ and the initialization guard remain adjacent.
+                # array_buffer_root_ and buffer_root_ must both be non-zero.
+                # Both roots and their pointers must lie in the writable image/BSS range.
+                if not roots_start <= data[1] < roots_end or not roots_start <= data[2] < roots_end:
                     continue
-                if (addr[1] & mask) != (data[1] & mask):
-                    # array_buffer_root_ is must be non-zero. it holds address close to itself
+                # On Linux, PartitionRoot::Settings has 64-byte cacheline alignment; the roots must be distinct.
+                if data[1] & 0x3f or data[2] & 0x3f or data[1] == data[2]:
                     continue
-                if (addr[2] & mask) != (data[2] & mask):
-                    # buffer_root_ is must be non-zero. it holds address close to itself
+                # initialized must be bool 0x01; only the guard's low byte is the initialization flag.
+                if data[3] & 0xff != 1:
                     continue
-                # they should be aligned
-                if data[0] & 0x7:
-                    continue
-                if data[1] & 0x7:
-                    continue
-                if data[2] & 0x7:
-                    continue
-                # initialized must be bool 0x01
-                if (data[3] & 0xff) != 0x01:
-                    continue
-                # check root size
-                buffer_root_size = data[1] - data[2]
-                if buffer_root_size < 0x300: # 0x300 is heuristic value
-                    continue
-                if buffer_root_size > 0x4000: # 0x4000 is heuristic value
+                # Root spacing and Settings flag bytes vary; check inverted_self_ and extent backlinks.
+                # A fixed buffer_root_size range or zero-word pattern in Settings is not required.
+                # read_root() checks initialized_ == 1 after the buckets and inverted_self_ == ~root.addr.
+                # validate_root() checks the sentinel, ring bounds and extent -> root backlinks, if extents exist.
+                try:
+                    for root_addr in addr[1:3]:
+                        root, _ = self.read_root(root_addr, "candidate")
+                        self.root = root
+                        self.validate_root(root)
+                except gdb.error:
                     continue
                 # check root struct.
                 """
-                The first 64 bytes of root are mostly 0 due to padding considering the cache line.
-                This is same both at 64-bit and 32bit arch.
+                Settings values vary with the build and runtime configuration.
+                Observed v160 Linux x64 snapshot 1742397 (2026-11-15):
 
-                [WTF::Partitions::InitializeOnce()::buffer_allocator]
-                0x5a849775d600: 0x0000000000010000      0x0000000000000004
-                0x5a849775d610: 0x0000000000000000      0x00000000ffffffff
-                0x5a849775d620: 0x0000000400000001      0xfffffe7fec785000
-                0x5a849775d630: 0x0000000000000000      0x0000000000000000
+                [blink::Partitions::InitializeOnce()::buffer_allocator]
+                0x62264f7917c0: 0x0000000000000000      0xffffffffffffffff
+                0x62264f7917d0: 0x0000000200000001      0x00002b8400000000
+                0x62264f7917e0: 0xfffffffc00000000      0x000062264f566008
+                0x62264f7917f0: 0x00002b8400000000      0xfffffffc00000000
 
-                [WTF::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator]
-                0x5a8497761040: 0x0000000000000000      0x0000000000000000
-                0x5a8497761050: 0x0000000000000001      0x00000000ffffffff
-                0x5a8497761060: 0x0000000000000000      0xffffcefbec787000
-                0x5a8497761070: 0x0000000000000000      0x0000000000000000
+                [blink::Partitions::InitializeArrayBufferPartition()::array_buffer_allocator]
+                0x62264f7953c0: 0x0000000000000000      0xffffffffffffffff
+                0x62264f7953d0: 0x0000000300000000      0x000009c800000000
+                0x62264f7953e0: 0xfffffffc00000000      0x000062264f56a008
+                0x62264f7953f0: 0x000009c800000000      0xfffffffc00000000
                 """
-                if b"\0" * 8 not in read_memory(data[1], 64):
-                    continue
-                if b"\0" * 8 not in read_memory(data[2], 64):
-                    continue
                 if self.args.debug:
-                    info(f"buffer_root_size: {buffer_root_size:#x}")
                     gdb.execute(f"ml x/8xg {data[1]:#x}; x/8xg {data[2]:#x}")
-                # add candidate
                 Root = collections.namedtuple("Root", ["name", "address"])
                 root_candidate = [
-                    Root("fast_malloc_root_", addr[0]),
                     Root("array_buffer_root_", addr[1]),
                     Root("buffer_root_", addr[2]),
                 ]
+                # fast_malloc_root_ may be zero; a non-zero predecessor needs the same root validation.
+                if data[0] == 0:
+                    root_candidate.insert(0, Root("fast_malloc_root_", addr[0]))
+                elif roots_start <= data[0] < roots_end and data[0] & 0x3f == 0:
+                    try:
+                        root, _ = self.read_root(addr[0], "candidate")
+                        self.root = root
+                        self.validate_root(root)
+                        root_candidate.insert(0, Root("fast_malloc_root_", addr[0]))
+                    except gdb.error:
+                        pass
                 roots.append(root_candidate)
 
         # debug print
@@ -177975,19 +177984,10 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     def get_sentinel_slot_spans(self):
         """sentinel_slot_span is default slot_span, so search for it."""
         sentinel = []
-
-        # new version
-        ns = "partition_alloc::internal::SlotSpanMetadata<(partition_alloc::internal::MetadataKind)1>"
+        ns = "partition_alloc::internal::SlotSpanMetadata"
         t = Symbol.resolve_address("'{:s}::sentinel_slot_span_'".format(ns))
         if t is not None:
             sentinel.append(t)
-            return sentinel
-
-        # old version
-        for flag in ("true", "false"):
-            address = Symbol.resolve_address("'base::internal::SlotSpanMetadata<{:s}>::sentinel_slot_span_'".format(flag))
-            if address is not None:
-                sentinel.append(address)
         return sentinel
 
     def read_root(self, addr, name):
@@ -177999,31 +177999,29 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_root.h
 
-        struct base::PartitionRoot {
+        struct partition_alloc::PartitionRoot {
             struct alignas(internal::kPartitionCachelineSize) Settings {
                 BucketDistribution bucket_distribution = BucketDistribution::kNeutral; // uint8_t
-                size_t thread_cache_index = internal::kInvalidThreadCacheIndex;
                 bool with_thread_cache = false;
-                bool use_cookie = false;
+                bool intended_leak = false;
+                size_t thread_cache_index = internal::kInvalidThreadCacheIndex;
+                bool use_cookie = true; // USE_PARTITION_COOKIE only
                 bool brp_enabled_ = false;
-                size_t in_slot_metadata_size = 0;
                 internal::pool_handle pool_handle = internal::pool_handle::kNullPoolHandle;
                 internal::PoolOffsetLookup offset_lookup;
                 internal::ReservationOffsetTable reservation_offset_table;
                 bool eventually_zero_freed_memory = false;
-                internal::SchedulerLoopQuarantineConfig scheduler_loop_quarantine;
-                bool memory_tagging_enabled_ = false;
-                bool use_random_memory_tagging_enabled_ = false;
+                internal::SchedulerLoopQuarantineConfig scheduler_loop_quarantine_thread_local_config;
+                bool memory_tagging_enabled_ = false; // HAS_MEMORY_TAGGING only
                 TagViolationReportingMode memory_tagging_reporting_mode_ = TagViolationReportingMode::kUndefined;
-                ThreadIsolationOption thread_isolation;
+                ThreadIsolationOption thread_isolation; // ENABLE_THREAD_ISOLATION only
                 uint32_t extras_size = 0;
                 std::ptrdiff_t metadata_offset_ = 0;
-                bool enable_free_with_size = false;
-                bool enable_strict_free_size_check = true;
-            } settings_; // 0x40 bytes or 0x80 bytes or 0xc0 bytes
-            internal::Lock lock_;  // 8 bytes
-            Bucket buckets_[BucketIndexLookup::kNumBuckets] = {};
-            Bucket sentinel_bucket_{};
+                bool use_tighter_aligned_alloc_bound = false;
+                bool allow_giga_allocations = false;
+            } settings_; // 0x80 bytes or 0xc0 bytes
+            alignas(internal::kPartitionCachelineSize) internal::Lock lock_; // 4 bytes, or 12 with priority inheritance
+            std::array<Bucket, BucketIndexLookup::kNumBuckets + 1> buckets_ = {}; // last bucket is the sentinel
             bool initialized_ = false;
             std::atomic<size_t> total_size_of_committed_pages_{0};
             std::atomic<size_t> max_size_of_committed_pages_{0};
@@ -178045,90 +178043,77 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             SuperPageExtentEntry* current_extent_ = nullptr;
             SuperPageExtentEntry* first_extent_ = nullptr;
             DirectMapExtent* direct_map_list_ PA_GUARDED_BY(internal::PartitionRootLock(this)) = nullptr;
-            SlotSpanMetadata* global_empty_slot_span_ring_[internal::kMaxEmptySlotSpanRingSize] \
+            std::array<SlotSpanMetadata*, internal::kMaxEmptySlotSpanRingSize> global_empty_slot_span_ring_ \
                 PA_GUARDED_BY(internal::PartitionRootLock(this)) = {};
             int16_t global_empty_slot_span_ring_index_ PA_GUARDED_BY(internal::PartitionRootLock(this)) = 0;
             int16_t global_empty_slot_span_ring_size_ PA_GUARDED_BY(internal::PartitionRootLock(this)) = \
                 internal::kDefaultEmptySlotSpanRingSize;
             uintptr_t inverted_self_ = 0;
-            internal::Lock thread_cache_construction_lock_; // 8 bytes
+            internal::Lock thread_cache_construction_lock_;
             size_t scheduler_loop_quarantine_branch_capacity_in_bytes_ = 0;
             internal::SchedulerLoopQuarantineRoot scheduler_loop_quarantine_root_;
             internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_;
-            internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_for_advanced_memory_safety_checks_;
+            internal::SanitizedObjectSchedulerLoopQuarantineBranch scheduler_loop_quarantine_for_sanitized_object_;
         };
         """
-        for settings_size in (0x40, 0x80, 0xc0):
-            if is_valid_addr(read_int_from_memory(current + settings_size + 8)):
+        # Settings/lock sizes depend on build flags; bucket[0]'s minimum slot size is 2 * sizeof(void*).
+        buckets_addr = None
+        for settings_size in (0x80, 0xc0):
+            for lock_size in (4, 8, 12, 16):
+                candidate = align(root["addr"] + settings_size + lock_size, self.bucket_alignment)
+                if read_int_from_memory(candidate + 3 * ptrsize) != 2 * ptrsize:
+                    continue
+                if not is_valid_addr(read_int_from_memory(candidate)):
+                    continue
+                buckets_addr = candidate
+                self.lock_size = lock_size
+                break
+            if buckets_addr is not None:
                 break
         else:
             raise gdb.error("Unsupported Settings layout: first bucket not found")
         current += settings_size
 
         """
-        Observed layout with PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) enabled.
-        0x599a3e48af40|+0x0000|+000: settings (=&root)        : 0x0000000000010000
-        0x599a3e48af48|+0x0008|+001:                          : 0x0000000000000004
-        0x599a3e48af50|+0x0010|+002:                          : 0x0000000000000002
-        0x599a3e48af58|+0x0018|+003:                          : 0x000009f400000000
-        0x599a3e48af60|+0x0020|+004:                          : 0xfffffffc00000000
-        0x599a3e48af68|+0x0028|+005:                          : 0x0000599a3e1dc018
-        0x599a3e48af70|+0x0030|+006:                          : 0x000009f400000000
-        0x599a3e48af78|+0x0038|+007:                          : 0xfffffffc00000000
-        0x599a3e48af80|+0x0040|+008:                          : 0x0000000000000000
-        0x599a3e48af88|+0x0048|+009:                          : 0x0000000000000000
-        0x599a3e48af90|+0x0050|+010:                          : 0xaaaaaaaaaa000000
-        0x599a3e48af98|+0x0058|+011:                          : 0x00000000000f0000
-        0x599a3e48afa0|+0x0060|+012:                          : 0x0000000000000000
-        0x599a3e48afa8|+0x0068|+013:                          : 0x0000000000000000
-        0x599a3e48afb0|+0x0070|+014:                          : 0x0000000000000000
-        0x599a3e48afb8|+0x0078|+015:                          : 0x0000000000000000
-        0x599a3e48afc0|+0x0080|+016:                          : 0x00000000ffffffff
-        0x599a3e48afc8|+0x0088|+017:                          : 0x0000000000000004
-        0x599a3e48afd0|+0x0090|+018: settings.metadata_offset_: 0x00002e37f278b000 <-- here
-        0x599a3e48afd8|+0x0098|+019:                          : 0x0000000000000100
-        0x599a3e48afe0|+0x00a0|+020:                          : 0x0000000000000000
-        0x599a3e48afe8|+0x00a8|+021:                          : 0x0000000000000000
-        0x599a3e48aff0|+0x00b0|+022:                          : 0x0000000000000000
-        0x599a3e48aff8|+0x00b8|+023:                          : 0x0000000000000000
-        0x599a3e48b000|+0x00c0|+024: lock_                    : 0x0000000000000000
-        0x599a3e48b008|+0x00c8|+025: buckets[0]               : 0x0000382bf298b920
-        0x599a3e48b010|+0x00d0|+026: buckets[0]               : 0x0000000000000000
-        0x599a3e48b018|+0x00d8|+027: buckets[0]               : 0x0000000000000000
-        0x599a3e48b020|+0x00e0|+028: buckets[0]               : 0x0000000400000010
-        0x599a3e48b028|+0x00e8|+029: buckets[0]               : 0x0000004000000000
-        0x599a3e48b030|+0x00f0|+030: buckets[0]               : 0x0000000000000000
+        Observed v160 layout with PA_CONFIG(MOVE_METADATA_OUT_OF_GIGACAGE) enabled.
+        Linux x64 snapshot 1742397 (2026-11-15): telescope 'blink::Partitions::buffer_root_' 32 -n
+        0x62264f7917c0|+0x0000|+000: settings (=&root)        : 0x0000000000000000
+        0x62264f7917c8|+0x0008|+001:                          : 0xffffffffffffffff
+        0x62264f7917d0|+0x0010|+002:                          : 0x0000000200000001
+        0x62264f7917d8|+0x0018|+003:                          : 0x00002b8400000000
+        0x62264f7917e0|+0x0020|+004:                          : 0xfffffffc00000000
+        0x62264f7917e8|+0x0028|+005:                          : 0x000062264f566008
+        0x62264f7917f0|+0x0030|+006:                          : 0x00002b8400000000
+        0x62264f7917f8|+0x0038|+007:                          : 0xfffffffc00000000
+        0x62264f791800|+0x0040|+008:                          : 0x0000000000000000
+        0x62264f791808|+0x0048|+009:                          : 0x0000000000000000
+        0x62264f791810|+0x0050|+010:                          : 0xaaaa000000000000
+        0x62264f791818|+0x0058|+011:                          : 0x00000000000f0000
+        0x62264f791820|+0x0060|+012:                          : 0x00000000000f0000
+        0x62264f791828|+0x0068|+013:                          : 0x0000000000000000
+        0x62264f791830|+0x0070|+014:                          : 0x0000000000000000
+        0x62264f791838|+0x0078|+015:                          : 0x0000000000000000
+        0x62264f791840|+0x0080|+016:                          : 0x0000000000000000
+        0x62264f791848|+0x0088|+017:                          : 0x0000000000000000
+        0x62264f791850|+0x0090|+018: settings.thread_isolation: 0x00000000ffffffff
+        0x62264f791858|+0x0098|+019: settings.extras_size     : 0x0000000000000004
+        0x62264f791860|+0x00a0|+020: settings.metadata_offset_: 0xffffefe4b97db000 <-- here
+        0x62264f791868|+0x00a8|+021:                          : 0x0000000000000000
+        0x62264f791870|+0x00b0|+022:                          : 0x0000000000000000
+        0x62264f791878|+0x00b8|+023:                          : 0x0000000000000000
+        0x62264f791880|+0x00c0|+024: lock_                    : 0x0000000000000000
+        0x62264f791888|+0x00c8|+025: buckets[0]               : 0x00001b68b9bdb920
+        0x62264f791890|+0x00d0|+026: buckets[0]               : 0x0000000000000000
+        0x62264f791898|+0x00d8|+027: buckets[0]               : 0x0000000000000000
+        0x62264f7918a0|+0x00e0|+028: buckets[0].slot_size     : 0x0000000000000010
+        0x62264f7918a8|+0x00e8|+029: buckets[0]               : 0x0000000000000004
+        0x62264f7918b0|+0x00f0|+030: buckets[0]               : 0x0000004000000000
+        0x62264f7918b8|+0x00f8|+031: buckets[0]               : 0x0000000000000000
         """
-        root["metadata_offset_"] = get_pagesize()
-        if settings_size == 0xc0:
-            root["metadata_offset_"] = read_int_from_memory(root["addr"] + 0x90)
-        for type_name in ("partition_alloc::PartitionRoot::Settings", "base::PartitionRoot::Settings"):
-            field = GefUtil.lookup_field(type_name, "metadata_offset_")
-            if field is not None:
-                root["metadata_offset_"] = read_int_from_memory(root["addr"] + field.bitpos // 8)
-                break
-        if not root["metadata_offset_"] or root["metadata_offset_"] & get_pagesize_mask_low():
-            raise gdb.error("Unsupported or corrupted metadata offset")
-
-        root["lock_"] = read_int64_from_memory(current)
-        current += 8
-
-        # for 32bit, there is 2 patterns because aligned or packed
-        if is_32bit():
-            if self.align_pad is None:
-                x = read_int_from_memory(current)
-                if x == 0:
-                    self.align_pad = True
-                else:
-                    self.align_pad = False
-            if self.align_pad:
-                current += ptrsize
+        root["lock_"] = read_int32_from_memory(current)
+        current = buckets_addr
 
         root["buckets_"] = []
-        self.bucket_slot_size_width = 4
-        if is_64bit() and read_int32_from_memory(current + 3 * ptrsize + 4) == 0 and \
-                read_int64_from_memory(current + 5 * ptrsize) > 1:
-            self.bucket_slot_size_width = ptrsize
         for _ in range(1024):
             if read_int_from_memory(current) == 1: # search for `bool initialized`
                 break
@@ -178157,18 +178142,31 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         root["max_size_of_allocated_bytes_"] = read_int_from_memory(current)
         current += ptrsize
+        current = align(current, 8) # std::atomic<uint64_t> is also aligned to 8 on x86.
         root["syscall_count_"] = read_int64_from_memory(current)
         current += 8
         root["syscall_total_time_ns_"] = read_int64_from_memory(current)
         current += 8
-        root["total_size_of_brp_quarantined_bytes"] = read_int_from_memory(current)
-        current += ptrsize
-        root["total_count_of_brp_quarantined_slots_"] = read_int_from_memory(current)
-        current += ptrsize
-        root["cumulative_size_of_brp_quarantined_bytes_"] = read_int_from_memory(current)
-        current += ptrsize
-        root["cumulative_count_of_brp_quarantined_slots_"] = read_int_from_memory(current)
-        current += ptrsize
+        # BRP counters are conditional; inverted_self_ anchors both layouts.
+        # The ring array has 128 or 1024 entries, independently of its configured active size.
+        inv = root["addr"] ^ AddressUtil.get_vmem_end_mask()
+        for brp_count, ring_size in ((4, 1024), (0, 1024), (4, 128), (0, 128)):
+            inverted_addr = current + (brp_count + 8 + ring_size) * ptrsize + max(4, ptrsize)
+            try:
+                if read_int_from_memory(inverted_addr) == inv:
+                    break
+            except gdb.MemoryError:
+                continue
+        else:
+            raise gdb.error("Unsupported root layout: BRP counters or empty slot-span ring")
+        for field in (
+            "total_size_of_brp_quarantined_bytes", "total_count_of_brp_quarantined_slots_",
+            "cumulative_size_of_brp_quarantined_bytes_", "cumulative_count_of_brp_quarantined_slots_",
+        ):
+            root[field] = 0
+            if brp_count:
+                root[field] = read_int_from_memory(current)
+                current += ptrsize
         root["empty_slot_spans_dirty_bytes_"] = read_int_from_memory(current)
         current += ptrsize # with pad
         root["max_empty_slot_spans_dirty_bytes_shift_"] = read_int32_from_memory(current)
@@ -178204,17 +178202,27 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             current += 4 # pad
         root["inverted_self_"] = read_int_from_memory(current)
         current += ptrsize
-        root["thread_cache_construction_lock_"] = read_int64_from_memory(current)
-        current += 8
+        root["thread_cache_construction_lock_"] = read_int32_from_memory(current)
+        current = align_to_ptrsize(current + self.lock_size)
         root["scheduler_loop_quarantine_branch_capacity_in_bytes_"] = read_int_from_memory(current)
         current += ptrsize # with pad
-        root["scheduler_loop_quarantine_root_"] = read_int_from_memory(current)
-        current += ptrsize
-        root["scheduler_loop_quarantine_"] = read_int_from_memory(current)
-        current += ptrsize
-        root["scheduler_loop_quarantine_for_advanced_memory_safety_checks_"] = read_int_from_memory(current)
-        current += ptrsize
-
+        # Debian v156 x64 uses +0x90 instead of v160 x64's +0xa0; verify both extent placements.
+        # Build flags also affect this offset; version numbers alone do not determine it.
+        metadata_offsets = [get_pagesize()]
+        if settings_size == 0xc0:
+            metadata_offsets = [read_int_from_memory(root["addr"] + offset) for offset in (0xa0, 0x98, 0x90)]
+        field = GefUtil.lookup_field("partition_alloc::PartitionRoot::Settings", "metadata_offset_")
+        if field is not None:
+            metadata_offsets = [read_int_from_memory(root["addr"] + field.bitpos // 8)]
+        for offset in metadata_offsets:
+            if not offset or offset & get_pagesize_mask_low():
+                continue
+            if any((head - offset) & 0x1f_ffff for head in (root["first_extent_"], root["current_extent_"]) if head):
+                continue
+            root["metadata_offset_"] = offset
+            break
+        else:
+            raise gdb.error("Unsupported or corrupted metadata offset")
         root = GefUtil.dict_to_namedtuple("Root", root)
         return root, current
 
@@ -178227,11 +178235,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         https://source.chromium.org/chromium/chromium/src/+/main:base/allocator/partition_allocator/  \
         src/partition_alloc/partition_bucket.h
 
-        struct base::internal::PartitionBucket {
+        struct partition_alloc::internal::PartitionBucket {
             SlotSpanMetadata* active_slot_spans_head;
             SlotSpanMetadata* empty_slot_spans_head;
             SlotSpanMetadata* decommitted_slot_spans_head;
-            size_t slot_size; // uint32_t in older builds
+            size_t slot_size;
             uint32_t num_system_pages_per_slot_span : 8;
             uint32_t num_full_slot_spans : 24;
             uint64_t slot_size_reciprocal;
@@ -178244,27 +178252,19 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         current += ptrsize
         bucket["decommitted_slot_spans_head"] = read_int_from_memory(current)
         current += ptrsize
-        if self.bucket_slot_size_width == 8:
-            bucket["slot_size"] = read_int64_from_memory(current)
-        else:
-            bucket["slot_size"] = read_int32_from_memory(current)
-        current += self.bucket_slot_size_width
+        bucket["slot_size"] = read_int_from_memory(current)
+        current += ptrsize
         x = read_int32_from_memory(current)
         bucket["num_system_pages_per_slot_span"] = x & 0xff
         bucket["num_full_slot_spans"] = (x >> 8) & 0xff_ffff
         current += 4
-        if self.bucket_slot_size_width == 8:
-            current += 4 # pad
-
-        # for 32bit, there is 2 patterns because aligned or packed
-        if is_32bit() and self.align_pad:
-            current += 4
+        # uint64_t alignment is 4 on x86 and 8 on ARM32/x64/ARM64.
+        current = align(current, self.bucket_alignment)
         bucket["slot_size_reciprocal"] = read_int64_from_memory(current)
         current += 8
 
-        x = read_int32_from_memory(current)
-        bucket["can_store_raw_size"] = x & 0xff
-        current += ptrsize # with pad
+        bucket["can_store_raw_size"] = read_int8_from_memory(current)
+        current = align(current + 1, self.bucket_alignment)
 
         bucket = GefUtil.dict_to_namedtuple("Bucket", bucket)
         return bucket, current
@@ -178282,7 +178282,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         src/partition_alloc/partition_superpage_extent_entry.h
 
         struct PartitionSuperPageExtentEntry {
-          PartitionRootBase* root;
+          PartitionRoot* root;
           PartitionSuperPageExtentEntry* next;
           uint16_t number_of_consecutive_super_pages;
           uint16_t number_of_nonempty_slot_spans;
@@ -178313,7 +178313,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         struct PartitionDirectMapExtent {
           PartitionDirectMapExtent* next_extent;
           PartitionDirectMapExtent* prev_extent;
-          const PartitionBucket* bucket;
+          PartitionBucket* bucket;
           size_t reservation_size;
           size_t padding_for_alignment;
         };
@@ -178357,7 +178357,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
           const uint32_t can_store_raw_size_ : 1;
           uint16_t freelist_is_sorted_ : 1;
           uint16_t in_empty_cache_ : 1;
-          uint16_t empty_cache_index_ : internal::base::bits::BitWidth(kMaxEmptySlotSpanRingSize - 1); // 7 or 10 bits
+          uint16_t empty_cache_index_ : std::bit_width(kMaxEmptySlotSpanRingSize - 1); // 7 or 10 bits
         };
         """
         slot_span["freelist_head"] = read_int_from_memory(current)
@@ -178528,16 +178528,11 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
         self.out.append("size_t scheduler_loop_quarantine_branch_capacity_in_bytes_:     {:#x}".format(
             root.scheduler_loop_quarantine_branch_capacity_in_bytes_,
         ))
-        self.out.append("internal::SchedulerLoopQuarantineRoot scheduler_loop_quarantine_root_: {:#x}".format(
-            root.scheduler_loop_quarantine_root_,
-        ))
-        self.out.append("internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_: {:#x}".format(
-            root.scheduler_loop_quarantine_,
-        ))
-        fmt = (
-            "internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_for_advanced_memory_safety_checks_: {:#x}"
+        self.out.append("internal::SchedulerLoopQuarantineRoot scheduler_loop_quarantine_root_: ...")
+        self.out.append("internal::GlobalSchedulerLoopQuarantineBranch scheduler_loop_quarantine_: ...")
+        self.out.append(
+            "internal::SanitizedObjectSchedulerLoopQuarantineBranch scheduler_loop_quarantine_for_sanitized_object_: ..."
         )
-        self.out.append(fmt.format(root.scheduler_loop_quarantine_for_advanced_memory_safety_checks_))
         return
 
     def dump_extent_list(self, head):
@@ -178690,9 +178685,12 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             self.out.append("                   next_slot_span:{:s} ".format(
                 self.C(slot_span.next_slot_span),
             ))
+            span_size = bucket.num_system_pages_per_slot_span * get_pagesize()
+            if bucket.num_system_pages_per_slot_span == 0:
+                span_size = bucket.slot_size
             self.out.append("                   slot_span_area:{:s}-{:s} ".format(
                 self.P(slot_span.partition_page_start),
-                self.P(slot_span.partition_page_start + bucket.num_system_pages_per_slot_span * get_pagesize()),
+                self.P(slot_span.partition_page_start + span_size),
             ))
             self.out.append("                   num_allocated_slots:{:#x}".format(
                 slot_span.num_allocated_slots),
@@ -178763,9 +178761,6 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
-        if is_32bit():
-            self.align_pad = None
-
         if self.args.target_buffer_root == "fm":
             self.args.target_buffer_root = "fast_malloc"
         elif self.args.target_buffer_root == "b":
@@ -178782,6 +178777,8 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             self.print_output()
             return
         roots = self.get_roots(args.force_heuristic)
+        if roots and not any(r.name == args.target_buffer_root + "_root_" for r in roots):
+            self.out.append("{:s}_root_ was not found; it may be omitted by the linker.".format(args.target_buffer_root))
 
         for r in roots:
 
@@ -178800,6 +178797,9 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
                 continue
 
             try:
+                if not read_int_from_memory(r.address):
+                    self.out.append("{:s} is not initialized.".format(r.name))
+                    continue
                 root, _ = self.read_root(r.address, r.name)
                 self.root = root
                 self.validate_root(root)

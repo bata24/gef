@@ -575,8 +575,10 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `partition-alloc-dump`: dumps Partition-Alloc free-list for chromium.
     - ![](images/partition-alloc-dump.png)
     - This command is reserved for the implementation of the latest version of Chromium.
-        - Currently tested: v150.x / [1632226](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1632226/) / 59f0b217abe111a4da9ba967f3586c048f6d4c47
-    - Supported on x64 and ARM64 (maybe it works on x86/ARM too, but not tested).
+        - Currently tested: v160.x (x64) / [1742397](https://commondatastorage.googleapis.com/chromium-browser-snapshots/index.html?prefix=Linux_x64/1742397/) / 473f38565a3a1d796d7bf99ff39152800c81213f
+    - Supported on Linux x64, x86, ARM64 and ARM32.
+    - Prebuilt sources: official Chromium (Linux x64 / Android ARM32, ARM64) and Debian (all four architectures).
+      Android heap parsing is unverified.
     - It will try heuristic search if the binary has no symbol.
     - How to test:
         - See [dev/partition-alloc-dump/downloader.py](dev/partition-alloc-dump/downloader.py).

@@ -7523,7 +7523,7 @@ options:
 
 ## `partition-alloc-dump`
 
-PartitionAlloc free-list viewer for chromium stable.
+PartitionAlloc free-list viewer for Chromium v160.
 
 
 ### Syntax
@@ -7557,7 +7557,7 @@ partition-alloc-dump ab            # same above
 ```text
 Version numbers do not identify the build layout; the fixed layout is checked against the heap.
 Requires 4 KiB system pages, 2 MiB super pages and 32-byte metadata entries.
-Settings must occupy 0x40, 0x80 or 0xc0 bytes; metadata placement is checked against the extents.
+Settings must occupy 0x80 or 0xc0 bytes; metadata placement is checked against the extents.
 
 Simplified partition alloc structure:
 
