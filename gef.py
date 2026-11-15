@@ -6925,10 +6925,7 @@ class Symbol:
 class ProgressBar:
     """A progress bar for a slow loop. This is a substitute of the `tqdm` package."""
 
-    # If non-ASCII characters are included, they will affect
-    # the processing of dev/update-syscalls/update-syscalls.py and
-    # other programs for developing, so they should be written in hexadecimal.
-    BLOCKS = b" \xe2\x96\x8f\xe2\x96\x8e\xe2\x96\x8d\xe2\x96\x8c\xe2\x96\x8b\xe2\x96\x8a\xe2\x96\x89\xe2\x96\x88".decode()
+    BLOCKS = " ▏▎▍▌▋▊▉█"
     MIN_INTERVAL = 0.1 # the same value as the default of tqdm
 
     def __init__(self, iterable=None, total=None, desc=None, disable=False):
@@ -20864,9 +20861,9 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         details = ", ".join(filter(None, (attributes, ", ".join(flags))))
         if depth:
             if last:
-                tree = prefix + "\u2514\u2500\u2500 "
+                tree = prefix + "└── "
             else:
-                tree = prefix + "\u251c\u2500\u2500 "
+                tree = prefix + "├── "
         else:
             tree = ""
         mapped_address = ProcessMap.lookup(address)
@@ -20893,7 +20890,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             if last:
                 prefix += "    "
             else:
-                prefix += "\u2502   "
+                prefix += "│   "
         for i, (base, offset, flags) in enumerate(record["bases"]):
             if flags & 2:
                 attributes = "public"
@@ -54129,6 +54126,7 @@ asmlinkage long sys_faccessat2(int dfd, const char __user* filename, int mode, i
 asmlinkage long sys_chdir(const char __user* filename);
 asmlinkage long sys_fchdir(unsigned int fd);
 asmlinkage long sys_chroot(const char __user* filename);
+asmlinkage long sys_fchroot(int fd, unsigned int flags);
 asmlinkage long sys_fchmod(unsigned int fd, umode_t mode);
 asmlinkage long sys_fchmodat(int dfd, const char __user* filename, umode_t mode);
 asmlinkage long sys_fchmodat2(int dfd, const char __user* filename, umode_t mode, unsigned int flags);
@@ -54383,7 +54381,7 @@ asmlinkage long sys_renameat2(int olddfd, const char __user* oldname, int newdfd
 asmlinkage long sys_seccomp(unsigned int op, unsigned int flags, void __user* uargs);
 asmlinkage long sys_getrandom(char __user* buf, size_t count, unsigned int flags);
 asmlinkage long sys_memfd_create(const char __user* uname_ptr, unsigned int flags);
-asmlinkage long sys_bpf(int cmd, union bpf_attr __user* attr, unsigned int size);
+asmlinkage long sys_bpf(int cmd, union bpf_attr __user* attr, unsigned int size, struct bpf_common_attr __user* attr_common, unsigned int size_common);
 asmlinkage long sys_execveat(int dfd, const char __user* filename, const char __user* const __user* argv, const char __user* const __user* envp, int flags);
 asmlinkage long sys_userfaultfd(int flags);
 asmlinkage long sys_membarrier(int cmd, unsigned int flags, int cpu_id);
@@ -55021,6 +55019,7 @@ x64_syscall_tbl = """
 469     common  file_setattr            sys_file_setattr
 470     common  listns                  sys_listns
 471     common  rseq_slice_yield        sys_rseq_slice_yield
+472     common  fchroot                 sys_fchroot
 512     x32     rt_sigaction            compat_sys_rt_sigaction
 513     x32     rt_sigreturn            compat_sys_x32_rt_sigreturn
 514     x32     ioctl                   compat_sys_ioctl
@@ -55524,6 +55523,7 @@ x86_syscall_tbl = """
 469     i386    file_setattr            sys_file_setattr
 470     i386    listns                  sys_listns
 471     i386    rseq_slice_yield        sys_rseq_slice_yield
+472     i386    fchroot                 sys_fchroot
 """
 
 
@@ -55925,6 +55925,7 @@ arm64_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -56355,6 +56356,7 @@ arm_compat_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -56797,6 +56799,7 @@ arm_native_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -57248,6 +57251,7 @@ mips_o32_syscall_tbl = """
 469     o32     file_setattr                    sys_file_setattr
 470     o32     listns                          sys_listns
 471     o32     rseq_slice_yield                sys_rseq_slice_yield
+472     o32     fchroot                         sys_fchroot
 """
 
 
@@ -57653,6 +57657,7 @@ mips_n32_syscall_tbl = """
 469     n32     file_setattr                    sys_file_setattr
 470     n32     listns                          sys_listns
 471     n32     rseq_slice_yield                sys_rseq_slice_yield
+472     n32     fchroot                         sys_fchroot
 """
 
 
@@ -58034,6 +58039,7 @@ mips_n64_syscall_tbl = """
 469     n64     file_setattr                    sys_file_setattr
 470     n64     listns                          sys_listns
 471     n64     rseq_slice_yield                sys_rseq_slice_yield
+472     n64     fchroot                         sys_fchroot
 """
 
 
@@ -58590,6 +58596,7 @@ ppc_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     nospu   rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -59103,6 +59110,7 @@ sparc_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -59507,6 +59515,7 @@ s390x_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -59949,6 +59958,7 @@ sh4_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -60398,6 +60408,7 @@ m68k_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -60903,6 +60914,7 @@ alpha_syscall_tbl = """
 579     common  file_setattr                    sys_file_setattr
 580     common  listns                          sys_listns
 581     common  rseq_slice_yield                sys_rseq_slice_yield
+582     common  fchroot                         sys_fchroot
 """
 
 
@@ -61353,6 +61365,7 @@ hppa_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -61831,6 +61844,7 @@ microblaze_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -62254,6 +62268,7 @@ xtensa_syscall_tbl = """
 469     common  file_setattr                    sys_file_setattr
 470     common  listns                          sys_listns
 471     common  rseq_slice_yield                sys_rseq_slice_yield
+472     common  fchroot                         sys_fchroot
 """
 
 
@@ -98460,6 +98475,7 @@ class KernelTask:
             unsigned long last_switch_time;
         #endif
             struct thread_struct thread; // ~v4.1
+            struct fs_struct *real_fs; // v7.3~
             struct fs_struct *fs;
             struct files_struct *files; <-- here
             ...
@@ -98479,7 +98495,7 @@ class KernelTask:
         if kversion is None:
             return None
         if "4.2" <= kversion:
-            repeat_times = 6
+            repeat_times = 7
         else:
             # sizeof(struct thread_struct) is very large, need more exproring
             repeat_times = 100
@@ -99618,7 +99634,7 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
             return
 
         self.out.append('task: {:#018x} (pid: {:d}, comm: "{:s}")'.format(task, pid, comm))
-        self.out.append("  \u2514\u2500 cred " + Symbol.format(cred, ksym="prefer", show_address=True, nocolor=True))
+        self.out.append("  └─ cred " + Symbol.format(cred, ksym="prefer", show_address=True, nocolor=True))
 
         lines = []
         lines.append(("real_cred", Symbol.format(real_cred, ksym="prefer", show_address=True, nocolor=True)))
@@ -99641,9 +99657,9 @@ class KernelCredCommand(GenericCommand, BufferingOutput):
 
         for i, (name, value) in enumerate(lines):
             if i == len(lines) - 1:
-                mark = "\u2514\u2500"
+                mark = "└─"
             else:
-                mark = "\u251c\u2500"
+                mark = "├─"
             self.out.append("     {:s} {:<15s} {:s}".format(mark, name, value))
         self.out.append("")
         return
@@ -104095,7 +104111,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
         "Reading values requires debug information or a known kernel config for conditional members.",
         "Without debug information, CONFIG_RANDSTRUCT=n is required.",
         "",
-        "Currently it supports from 3.0 to 7,0-rc7.",
+        "Currently it supports from 3.0 to 7.3.4.",
         "",
         "Supported structure:",
         *["  " + ", ".join(t_grp) + "," for t_grp in slicer(types, 4)],
@@ -104369,7 +104385,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "error_remove_folio",                      "6.8.0",   None],
             ["func_ptr", "swap_activate",                           "3.6.0",   None],
             ["func_ptr", "swap_deactivate",                         "3.6.0",   None],
-            ["func_ptr", "swap_rw",                                 "5.19.0",  None],
+            ["func_ptr", "swap_rw",                                 "5.19.0",  "7.3.0"],
         ]
         members["address_space_operations"] = adapt_to_kernel_version(address_space_operations)
 
@@ -104410,6 +104426,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "free_inode",                              "5.2.0",   None],
             ["func_ptr", "dirty_inode",                             None,      None],
             ["func_ptr", "write_inode",                             None,      None],
+            ["func_ptr", "sync_inode_metadata",                     "7.3.0",   None],
             ["func_ptr", "drop_inode",                              None,      None],
             ["func_ptr", "evict_inode",                             None,      None],
             ["func_ptr", "put_super",                               None,      None],
@@ -104731,6 +104748,7 @@ class KernelOperationsCommand(GenericCommand, BufferingOutput):
             ["func_ptr", "get_parent",                              "3.4.0",   None],
             ["func_ptr", "set_rate",                                None,      None],
             ["func_ptr", "set_rate_and_parent",                     "3.14.0",  None],
+            ["func_ptr", "set_spread_spectrum",                     "7.3.0",   None],
             ["func_ptr", "set_parent",                              None,      "3.4.0"],
             ["func_ptr", "round_rate",                              None,      "3.4.0"],
             ["func_ptr", "recalc_accuracy",                         "3.14.0",  None],
@@ -105777,12 +105795,12 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
     def dump_inode(self, inode, prefix, mount=None):
         info = self.kpath.get_inode_info(inode, mount)
         self.out.append(prefix + "struct inode {:#018x}".format(inode))
-        self.out.append(prefix + "\u251c\u2500 i_ino {:d} ({:#x})".format(info.ino, info.ino))
-        self.out.append(prefix + "\u251c\u2500 i_mode 0{:06o} ({:s})".format(info.mode, KernelPath.mode_string(info.mode)))
-        self.out.append(prefix + "\u2514\u2500 struct super_block {:#018x}".format(info.super_block))
-        self.out.append(prefix + "   \u251c\u2500 filesystem {:s}".format(info.fstype or "???"))
-        self.out.append(prefix + "   \u251c\u2500 s_dev {:d}:{:d} ({:#x})".format(info.major, info.minor, info.dev))
-        self.out.append(prefix + "   \u2514\u2500 mount source {:s}".format(info.devname or "???"))
+        self.out.append(prefix + "├─ i_ino {:d} ({:#x})".format(info.ino, info.ino))
+        self.out.append(prefix + "├─ i_mode 0{:06o} ({:s})".format(info.mode, KernelPath.mode_string(info.mode)))
+        self.out.append(prefix + "└─ struct super_block {:#018x}".format(info.super_block))
+        self.out.append(prefix + "   ├─ filesystem {:s}".format(info.fstype or "???"))
+        self.out.append(prefix + "   ├─ s_dev {:d}:{:d} ({:#x})".format(info.major, info.minor, info.dev))
+        self.out.append(prefix + "   └─ mount source {:s}".format(info.devname or "???"))
         return
 
     def dump_dentry(self, dentry, prefix="", mount=None, path=None):
@@ -105792,12 +105810,12 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         if path is None:
             path = kpath.decorate_pseudo_path(kpath.dentry_path(dentry), dentry) or "???"
         self.out.append(prefix + "struct dentry {:#018x}".format(dentry))
-        self.out.append(prefix + "\u251c\u2500 d_name {!r}".format(name))
-        self.out.append(prefix + "\u251c\u2500 path {!r}".format(path))
+        self.out.append(prefix + "├─ d_name {!r}".format(name))
+        self.out.append(prefix + "├─ path {!r}".format(path))
         if not kpath.is_inode(inode):
-            self.out.append(prefix + "\u2514\u2500 d_inode {:#018x} (unreadable or negative dentry)".format(inode))
+            self.out.append(prefix + "└─ d_inode {:#018x} (unreadable or negative dentry)".format(inode))
             return
-        self.out.append(prefix + "\u2514\u2500 d_inode")
+        self.out.append(prefix + "└─ d_inode")
         self.dump_inode(inode, prefix + "   ", mount)
         return
 
@@ -105808,9 +105826,9 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         mount = vfsmnt - kpath.offset_mount_mnt
         path = kpath.get_file_path(file) or "???"
         self.out.append("struct file {:#018x}".format(file))
-        self.out.append("\u2514\u2500 struct path f_path {:#018x}".format(file + kpath.offset_file_mnt))
-        self.out.append("   \u251c\u2500 struct vfsmount {:#018x}".format(vfsmnt))
-        self.out.append("   \u2514\u2500 dentry")
+        self.out.append("└─ struct path f_path {:#018x}".format(file + kpath.offset_file_mnt))
+        self.out.append("   ├─ struct vfsmount {:#018x}".format(vfsmnt))
+        self.out.append("   └─ dentry")
         self.dump_dentry(dentry, "      ", mount, path)
         return
 
@@ -106250,13 +106268,13 @@ class KernelMount:
                 mark, child_prefix = "", ""
             else:
                 if is_last:
-                    mark = prefix + "\u2514\u2500 "
+                    mark = prefix + "└─ "
                 else:
-                    mark = prefix + "\u251c\u2500 "
+                    mark = prefix + "├─ "
                 if is_last:
                     child_prefix = prefix + "   "
                 else:
-                    child_prefix = prefix + "\u2502  "
+                    child_prefix = prefix + "│  "
             entries.append((mount, mark))
             children = self.get_children(mount)
             for i, child in enumerate(reversed(children)):
@@ -165113,13 +165131,10 @@ class KmemCacheAliasCommand(GenericCommand, BufferingOutput):
             # print as tree
             children.sort(key=lambda x: x["logical_name"])
             for i, child in enumerate(children):
-                # If non-ASCII characters are included, they will affect
-                # the processing of dev/update-syscalls/update-syscalls.py and
-                # other programs for developing, so they should be written in hexadecimal.
                 if i == len(children) - 1:
-                    tree_char = b"\xe2\x94\x94\xe2\x94\x80\xe2\x94\x80 ".decode()
+                    tree_char = "└── "
                 else:
-                    tree_char = b"\xe2\x94\x9c\xe2\x94\x80\xe2\x94\x80 ".decode()
+                    tree_char = "├── "
 
                 # coloring
                 name_str = child["logical_name"]
@@ -166994,16 +167009,16 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         queue = self.ksocket.get_queue(sk, off)
         head, qlen, skbs = queue["address"], queue["qlen"], queue["skbs"]
         if qlen:
-            self.out.append("     \u251c\u2500 {:<14s} {:#018x} ({:d} skb)".format(name, head, qlen))
+            self.out.append("     ├─ {:<14s} {:#018x} ({:d} skb)".format(name, head, qlen))
         else:
-            self.out.append("     \u251c\u2500 {:<14s} {:#018x} ({:d} skb)".format(name, head, 0))
+            self.out.append("     ├─ {:<14s} {:#018x} ({:d} skb)".format(name, head, 0))
         if self.args.list_skb and skbs:
             for idx, skb in enumerate(skbs):
-                self.out.append("     \u2502    [{:d}] {:#018x}".format(idx, skb))
+                self.out.append("     │    [{:d}] {:#018x}".format(idx, skb))
                 if self.args.dump:
-                    self.dump_skb_data(skb, "     \u2502        ")
+                    self.dump_skb_data(skb, "     │        ")
             if queue["truncated"]:
-                self.out.append("     \u2502    ... (truncated by 4096-skb limit; qlen={:d})".format(qlen))
+                self.out.append("     │    ... (truncated by 4096-skb limit; qlen={:d})".format(qlen))
         return
 
     def dump_skb_data(self, skb, prefix):
@@ -167031,25 +167046,25 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if file:
             parts.insert(0, "file: {:#018x}".format(file))
         self.out.append("  " + "  ".join(parts))
-        self.out.append("  \u2514\u2500 sock {:#018x}".format(sk))
+        self.out.append("  └─ sock {:#018x}".format(sk))
 
         # family / state
         fam = info["family"]
         if fam is not None:
-            self.out.append("     \u251c\u2500 {:<14s} {:s}".format("family", self.ksocket.AF_FAMILY.get(fam, str(fam))))
+            self.out.append("     ├─ {:<14s} {:s}".format("family", self.ksocket.AF_FAMILY.get(fam, str(fam))))
             st = info["state"]
             proto_name = (info["protocol_name"] or info["protocol_symbol"] or "").lower()
             if proto_name.startswith(("tcp", "mptcp")):
                 state = self.ksocket.SK_STATE.get(st)
             else:
                 state = None
-            self.out.append("     \u251c\u2500 {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
+            self.out.append("     ├─ {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
 
         # socket->{type,state}
         if socket:
             stype, sstate = info["type"], info["socket_state"]
-            self.out.append("     \u251c\u2500 {:<14s} {:s}".format("type", self.ksocket.SOCK_TYPE.get(stype, str(stype))))
-            self.out.append("     \u251c\u2500 {:<14s} {:s}".format(
+            self.out.append("     ├─ {:<14s} {:s}".format("type", self.ksocket.SOCK_TYPE.get(stype, str(stype))))
+            self.out.append("     ├─ {:<14s} {:s}".format(
                 "socket_state", self.ksocket.SS_STATE.get(sstate, str(sstate)),
             ))
 
@@ -167064,19 +167079,19 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
                 annot = " <{:s}>".format(prot_sym)
             else:
                 annot = ""
-            self.out.append("     \u251c\u2500 {:<14s} {:s} ({:#x}{:s})".format("protocol", proto_disp, prot, annot))
+            self.out.append("     ├─ {:<14s} {:s} ({:#x}{:s})".format("protocol", proto_disp, prot, annot))
 
         # queues
         queues = info["queues"]
         if not queues:
-            self.out.append("     \u251c\u2500 {:<14s} ??? (layout could not be resolved)".format("queues"))
+            self.out.append("     ├─ {:<14s} ??? (layout could not be resolved)".format("queues"))
         for name in ("receive_queue", "write_queue", "error_queue"):
             if name in queues:
                 self.dump_queue(sk, name, queues[name])
 
         # callbacks
         if info["callbacks"]:
-            self.out.append("     \u2514\u2500 callbacks")
+            self.out.append("     └─ callbacks")
             for label, p, nm, _, _ in info["callbacks"]:
                 if nm:
                     self.out.append("        {:<16s} {:#018x} <{:s}>".format(label, p, nm))
@@ -209875,7 +209890,7 @@ class KernelAllocTracer:
         EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
         EXPORT_SYMBOL(kmem_cache_alloc_noprof);
         EXPORT_SYMBOL(krealloc_noprof);
-        [6.18~]
+        [6.18~7.1]
         EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
         EXPORT_SYMBOL(__kmalloc_cache_noprof);
         EXPORT_SYMBOL(__kmalloc_large_node_noprof);
@@ -209890,6 +209905,37 @@ class KernelAllocTracer:
         EXPORT_SYMBOL(krealloc_node_align_noprof);
         EXPORT_SYMBOL_GPL(kfree_nolock);
         EXPORT_SYMBOL_GPL(kmalloc_nolock_noprof);
+        [7.2]
+        EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_cache_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_node_align_noprof);
+        EXPORT_SYMBOL_GPL(kfree_nolock);
+        EXPORT_SYMBOL_GPL(_kmalloc_nolock_noprof);
+        [7.3~]
+        EXPORT_SYMBOL(__kmalloc_cache_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_cache_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_large_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_noprof);
+        EXPORT_SYMBOL(__kmalloc_node_track_caller_noprof);
+        EXPORT_SYMBOL(__kmalloc_noprof);
+        EXPORT_SYMBOL(kfree);
+        EXPORT_SYMBOL(kmem_cache_alloc_lru_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_node_noprof);
+        EXPORT_SYMBOL(kmem_cache_alloc_noprof);
+        EXPORT_SYMBOL(krealloc_node_align_noprof);
+        EXPORT_SYMBOL_GPL(kfree_nolock);
+        EXPORT_SYMBOL_GPL(_kmalloc_nolock_noprof);
+        EXPORT_SYMBOL_GPL(kfree_call_rcu_nolock);
         """
 
         # This list may be incomplete.
@@ -209996,7 +210042,7 @@ class KernelAllocTracer:
                 ["kmem_cache_alloc_noprof", -1],
                 ["krealloc_noprof", 1],
             ]
-        else:
+        elif kversion < "7.2":
             kmalloc_syms = [
                 ["__kmalloc_cache_node_noprof", 3],
                 ["__kmalloc_cache_noprof", 2],
@@ -210011,15 +210057,36 @@ class KernelAllocTracer:
                 ["krealloc_node_align_noprof", 1],
                 ["kmalloc_nolock_noprof", 0],
             ]
+        else:
+            kmalloc_syms = [
+                ["__kmalloc_cache_node_noprof", 3],
+                ["__kmalloc_cache_noprof", 2],
+                ["__kmalloc_large_node_noprof", 0],
+                ["__kmalloc_large_noprof", 0],
+                ["__kmalloc_node_noprof", 0],
+                ["__kmalloc_node_track_caller_noprof", 0],
+                ["__kmalloc_noprof", 0],
+                ["kmem_cache_alloc_lru_noprof", -1],
+                ["kmem_cache_alloc_node_noprof", -1],
+                ["kmem_cache_alloc_noprof", -1],
+                ["krealloc_node_align_noprof", 1],
+                ["_kmalloc_nolock_noprof", 0],
+            ]
 
         if kversion < "6.18":
             kfree_syms = [
                 ["kfree", 0],
             ]
+        elif kversion < "7.3":
+            kfree_syms = [
+                ["kfree", 0],
+                ["kfree_nolock", 0],
+            ]
         else:
             kfree_syms = [
                 ["kfree", 0],
                 ["kfree_nolock", 0],
+                ["kfree_call_rcu_nolock", 1],
             ]
         return kmalloc_syms, kfree_syms
 
@@ -212627,6 +212694,9 @@ class KuafWatchCommand(GenericCommand):
                     gef_print(sym + ": ", end="")
                     breakpoints.append(KuafWatchAllocBreakpoint(func_addr, sym, self))
             for sym, index_of_addr_arg in kfree_syms:
+                # RCU requests leave the object accessible until the grace period ends.
+                if sym == "kfree_call_rcu_nolock":
+                    continue
                 func_addr = Ksym.get_addr(sym)
                 if func_addr:
                     gef_print(sym + ": ", end="")
@@ -219352,9 +219422,9 @@ class KernelProcfsCommand(GenericCommand, BufferingOutput):
                 self.warn_add_out("Stopped at the entry limit ({:#x})".format(KernelProcfs.MAX_ENTRIES))
                 return
             if index == len(entries) - 1:
-                tree, next_prefix = "\u2514\u2500\u2500 ", prefix + "    "
+                tree, next_prefix = "└── ", prefix + "    "
             else:
-                tree, next_prefix = "\u251c\u2500\u2500 ", prefix + "\u2502   "
+                tree, next_prefix = "├── ", prefix + "│   "
             parent = read_int_from_memory(child + self.kprocfs.layout["parent"], safe=True)
             if parent != pde or child in self.seen:
                 # not followed; the child is not linked consistently
@@ -220403,9 +220473,9 @@ class KernelCgroup(KernelLayoutReader):
                 self.warnings.append("Stopped at the cgroup limit ({:#x})".format(self.MAX_CGROUPS))
                 return
             if index == len(entries) - 1:
-                tree, next_prefix = "\u2514\u2500\u2500 ", prefix + "    "
+                tree, next_prefix = "└── ", prefix + "    "
             else:
-                tree, next_prefix = "\u251c\u2500\u2500 ", prefix + "\u2502   "
+                tree, next_prefix = "├── ", prefix + "│   "
             if read_int_from_memory(child + self.layout["cgrp_parent"], safe=True) != cgroup or child in self.paths:
                 self.warnings.append("{:#x} under {:s} is not linked consistently".format(child, path))
                 continue
@@ -222081,13 +222151,13 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
             status = child["status"]
             entry_last = index == len(children) - 1
             if entry_last:
-                connector = "\u2514\u2500 "
+                connector = "└─ "
             else:
-                connector = "\u251c\u2500 "
+                connector = "├─ "
             if entry_last:
                 extension = "   "
             else:
-                extension = "\u2502  "
+                extension = "│  "
             if kind == "chains":
                 if rules is None:
                     rules_text = ""
@@ -222107,7 +222177,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 if self.args.verbose:
                     for line in self.chain_detail(entry, table["family"]):
                         if rules:
-                            self.out.append(prefix + extension + "\u2502  " + line)
+                            self.out.append(prefix + extension + "│  " + line)
                         else:
                             self.out.append(prefix + extension + "   " + line)
                     if rules:
@@ -222116,9 +222186,9 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                     names = [expr["name"] for expr in rule["exprs"]]
                     rule_last = rule_index == len(rules) - 1
                     if rule_last:
-                        rule_connector = "\u2514\u2500 "
+                        rule_connector = "└─ "
                     else:
-                        rule_connector = "\u251c\u2500 "
+                        rule_connector = "├─ "
                     if names:
                         suffix = " [{:s}]".format(", ".join(names))
                     else:
@@ -222138,7 +222208,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                         if rule_last:
                             self.out.append(prefix + extension + "   " + "   " + line)
                         else:
-                            self.out.append(prefix + extension + "\u2502  " + "   " + line)
+                            self.out.append(prefix + extension + "│  " + "   " + line)
             elif kind == "sets":
                 info = self.knft.sets.parse_set(entry, elements=not self.args.no_elements)
                 expected = info["nelems"]
@@ -222160,15 +222230,15 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 if self.args.verbose:
                     for line in self.set_detail(entry):
                         if info["elements"]:
-                            self.out.append(prefix + extension + "\u2502  " + line)
+                            self.out.append(prefix + extension + "│  " + line)
                         else:
                             self.out.append(prefix + extension + "   " + line)
                 for element_index, element in enumerate(info["elements"]):
                     element_last = element_index == len(info["elements"]) - 1
                     if element_last:
-                        element_conn = "\u2514\u2500 "
+                        element_conn = "└─ "
                     else:
-                        element_conn = "\u251c\u2500 "
+                        element_conn = "├─ "
                     key = "0x" + element["key"].hex()
                     if element["key_end"] is not None:
                         key += "-0x" + element["key_end"].hex()
@@ -222217,13 +222287,13 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         for table_index, (table, children) in enumerate(selected):
             table_last = table_index == len(selected) - 1
             if table_last:
-                table_connector = "\u2514\u2500 "
+                table_connector = "└─ "
             else:
-                table_connector = "\u251c\u2500 "
+                table_connector = "├─ "
             if table_last:
                 text = "  "
             else:
-                text = "\u2502 "
+                text = "│ "
             meta = []
             if table["family"] is not None:
                 meta.append(KernelNftables.FAMILIES.get(table["family"], "family{:d}".format(table["family"])))
@@ -222239,7 +222309,7 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
                 detail = self.table_detail(table, nftables)
                 if detail:
                     if children:
-                        self.out.append(text + "\u2502  " + detail)
+                        self.out.append(text + "│  " + detail)
                     else:
                         self.out.append(text + "   " + detail)
             self.dump_table(table, text, children)
@@ -223827,7 +223897,7 @@ class FrequencyAnalysisCommand(GenericCommand, BufferingOutput):
         if self.args.ascii_gradation:
             GRAD = ".:-=+*$#%@"
         else:
-            GRAD = u" _\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+            GRAD = u" _▂▃▄▅▆▇█"
 
         def scale_to_grad(value, vmax):
             if vmax <= 0:

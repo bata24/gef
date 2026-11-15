@@ -10653,7 +10653,7 @@ options:
 # 06-f. Qemu-system/KGDB Cooperation - Linux Task
 ## `kbt`
 
-Scan the saved kernel stacks of inactive tasks for text addresses (like crash `bt -t`).
+Scan the saved kernel stacks of inactive tasks for text addresses.
 
 
 ### Syntax
@@ -12366,7 +12366,7 @@ kops -V 6.6.0 file_operations
 Reading values requires debug information or a known kernel config for conditional members.
 Without debug information, CONFIG_RANDSTRUCT=n is required.
 
-Currently it supports from 3.0 to 7,0-rc7.
+Currently it supports from 3.0 to 7.3.4.
 
 Supported structure:
   address_space_operations, ata_port_operations, btf_kind_operations, block_device_operations,

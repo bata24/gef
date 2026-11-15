@@ -202,11 +202,11 @@ def which(command):
 
 
 def read_text(path):
-    return open(path, "rb").read().decode("ascii")
+    return open(path, "rb").read().decode("utf-8")
 
 
 def write_text(path, text):
-    open(path, "wb").write(text.encode("ascii"))
+    open(path, "wb").write(text.encode("utf-8"))
     return
 
 

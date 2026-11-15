@@ -27,7 +27,7 @@
 
 # What Is This?
 This is a fork of [GEF](https://github.com/hugsy/gef) that includes three major improvements:
-1. Adds [heuristic commands for kernel debugging](#qemu-systemkgdb-cooperation) __without requiring a symbolized `vmlinux`__ (for `qemu-system`, supports Linux kernel 3.x-7.0.x).
+1. Adds [heuristic commands for kernel debugging](#qemu-systemkgdb-cooperation) __without requiring a symbolized `vmlinux`__ (for `qemu-system`, supports Linux kernel 3.x-7.x).
 2. Expands support to [many architectures](docs/QEMU-USER-SUPPORTED-ARCH.md) (for `qemu-user`).
 3. Provides [heap dump commands](#heap-dump-features) for multiple memory allocators.
 
@@ -229,7 +229,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 <summary><code>ksymaddr-remote</code>, <code>ksymaddr-remote-apply</code>, <code>vmlinux-to-elf-apply</code>, <code>ktypes</code>, <code>ktypes-load</code>, <code>kload</code>, <code>kmod-load</code></summary>
 
 - `ksymaddr-remote`: displays kallsyms information from scanning kernel memory.
-    - Supported kernel versions: 3.x to 7.0.x.
+    - Supported kernel versions: 3.x to 7.x.
     - ![](images/ksymaddr-remote.png)
 - `ksymaddr-remote-apply`/`vmlinux-to-elf-apply`: applies kallsyms information obtained by `ksymaddr-remote` or `vmlinux-to-elf` to gdb.
     - ![](images/ksymaddr-remote-apply.png)
@@ -1454,7 +1454,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - `current-stack-frame`, `xref-telescope`, `bytearray`, and `bincompare`.
     - This is because a single file is more attractive for me than ease of maintenance.
 - The system-call table used by `syscall-args` is moved from `gef-extras`.
-    - It was updated up to Linux kernel 7.0 for each architecture.
+    - It was updated up to Linux kernel 7.x for each architecture.
 - Removed some features that I don't use: `$`, `ida-interact`, `gef-remote`, `pie`, `pcustom`, `ksymaddr`, `trace-run`, `shellcode`.
 - Many bug fixes / formatting improvements / usability enhancements (made it easy for me to use).
 
