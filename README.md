@@ -51,6 +51,7 @@ __The installer has been refactored. I recommend re-installing.__ (2026-10-17)
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sh
 
     # Install GEF in a different directory
+    wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | sudo env GEF_INSTALL_DIR="/path/to/gef" sh
     wget -q https://raw.githubusercontent.com/bata24/gef/dev/install-uv.sh -O- | env GEF_INSTALL_DIR="/path/to/gef" sh
     ```
     - Notes
