@@ -80423,6 +80423,11 @@ class Kernel:
         return KernelProcfs.get_instance()
 
     @staticmethod
+    def locks():
+        """Return the lock layout resolver."""
+        return KernelLocks.get_instance()
+
+    @staticmethod
     def task(init_task=None):
         """Return the task_struct resolver."""
         return KernelTask.get_instance(init_task)
@@ -215751,8 +215756,9 @@ class KernelLsm:
         # DWARF when present, while retaining offset zero as the ABI fallback.
         offsets = [0]
         dwarf_offset = GefUtil.offsetof("lsm_id", "name")
-        if dwarf_offset is not None and dwarf_offset not in offsets:
-            offsets.insert(0, dwarf_offset)
+        if dwarf_offset is not None:
+            if dwarf_offset not in offsets:
+                offsets.insert(0, dwarf_offset)
         for offset in offsets:
             name_ptr = read_int_from_memory(addr + offset, safe=True)
             if name_ptr is None:
@@ -215851,8 +215857,9 @@ class KernelLsm:
                         loaded[m.group(1)] = 0
                     continue
                 m = re.search(r"bl[rx]\s+(\w+)", line)
-                if m and m.group(1) in loaded:
-                    return loaded[m.group(1)]
+                if m:
+                    if m.group(1) in loaded:
+                        return loaded[m.group(1)]
             return None
         return None
 
@@ -215896,8 +215903,9 @@ class KernelLsm:
             prefixes += [p for name, p in KernelLsm.LSM_PREFIXES if name == lsm]
         prefixes += [p for _name, p in KernelLsm.LSM_PREFIXES]
         for prefix in sorted(set(prefixes), key=len, reverse=True):
-            if func_name.startswith(prefix) and len(func_name) > len(prefix):
-                return func_name[len(prefix):]
+            if func_name.startswith(prefix):
+                if len(func_name) > len(prefix):
+                    return func_name[len(prefix):]
         return None
 
     #
@@ -215949,11 +215957,9 @@ class KernelLsm:
             func = 0
             if code[0] == 0xe9: # jmp rel32
                 target = AddressUtil.normalize_address(addr + 5 + struct.unpack("<i", code[1:5])[0])
-                if (
-                    self.is_kernel_text(target)
-                    and "return_thunk" not in Symbol.format(target, ksym="prefer", bracket="")
-                ):
-                    func = target
+                if self.is_kernel_text(target):
+                    if "return_thunk" not in Symbol.format(target, ksym="prefer", bracket=""):
+                        func = target
             hooks.setdefault(hook, []).append((int(slot), addr, func))
         for entries in hooks.values():
             entries.sort()
@@ -216054,23 +216060,25 @@ class KernelLsm:
                 continue
             if re.match(patterns["call"], insn):
                 continue
-            if "base" in patterns and re.match(patterns["base"], insn):
-                m = re.match(patterns["base"], insn)
-                bases[m.group(1)] = int(m.group(2), 16)
-                loaded.pop(m.group(1), None)
-                materialized.append(bases[m.group(1)])
-                continue
-            if "auipc" in patterns and re.match(patterns["auipc"], insn):
-                m = re.match(patterns["auipc"], insn)
-                hi20 = int(m.group(2), 0) & 0xfffff
-                if hi20 & 0x80000:
-                    hi20 -= 0x100000
-                if mnemonic == "auipc":
-                    bases[m.group(1)] = AddressUtil.normalize_address(pc + (hi20 << 12))
-                else:
-                    bases[m.group(1)] = AddressUtil.normalize_address(hi20 << 12)
-                loaded.pop(m.group(1), None)
-                continue
+            if "base" in patterns:
+                if re.match(patterns["base"], insn):
+                    m = re.match(patterns["base"], insn)
+                    bases[m.group(1)] = int(m.group(2), 16)
+                    loaded.pop(m.group(1), None)
+                    materialized.append(bases[m.group(1)])
+                    continue
+            if "auipc" in patterns:
+                if re.match(patterns["auipc"], insn):
+                    m = re.match(patterns["auipc"], insn)
+                    hi20 = int(m.group(2), 0) & 0xf_ffff
+                    if hi20 & 0x8_0000:
+                        hi20 -= 0x10_0000
+                    if mnemonic == "auipc":
+                        bases[m.group(1)] = AddressUtil.normalize_address(pc + (hi20 << 12))
+                    else:
+                        bases[m.group(1)] = AddressUtil.normalize_address(hi20 << 12)
+                    loaded.pop(m.group(1), None)
+                    continue
             if "movw" in patterns:
                 m = re.match(patterns["movw"], insn)
                 if m:
@@ -216078,10 +216086,11 @@ class KernelLsm:
                     loaded.pop(m.group(1), None)
                     continue
                 m = re.match(patterns["movt"], insn)
-                if m and m.group(1) in bases:
-                    bases[m.group(1)] = (bases[m.group(1)] & 0xffff) | (int(m.group(2), 16) << 16)
-                    materialized.append(bases[m.group(1)])
-                    continue
+                if m:
+                    if m.group(1) in bases:
+                        bases[m.group(1)] = (bases[m.group(1)] & 0xffff) | (int(m.group(2), 16) << 16)
+                        materialized.append(bases[m.group(1)])
+                        continue
                 m = re.match(patterns["literal"], insn)
                 if m:
                     value = read_int_from_memory(int(m.group(2), 16), safe=True)
@@ -216091,11 +216100,12 @@ class KernelLsm:
                         materialized.append(value)
                         continue
             m = re.match(patterns["add"], insn)
-            if m and m.group(2) in bases:
-                bases[m.group(1)] = AddressUtil.normalize_address(bases[m.group(2)] + int(m.group(3), 0))
-                loaded.pop(m.group(1), None)
-                materialized.append(bases[m.group(1)])
-                continue
+            if m:
+                if m.group(2) in bases:
+                    bases[m.group(1)] = AddressUtil.normalize_address(bases[m.group(2)] + int(m.group(3), 0))
+                    loaded.pop(m.group(1), None)
+                    materialized.append(bases[m.group(1)])
+                    continue
             m = re.match(patterns["load"], insn)
             if m:
                 if is_riscv32() or is_riscv64():
@@ -216165,12 +216175,15 @@ class KernelLsm:
             keys = []
             for addr in called:
                 value = read_int_from_memory(addr, safe=True)
-                if value is not None and (value == 0 or self.is_kernel_text(value)):
-                    keys.append(addr)
+                if value is not None:
+                    if value == 0 or self.is_kernel_text(value):
+                        keys.append(addr)
             for addr in materialized:
                 value = read_int_from_memory(addr, safe=True)
-                if value and not self.is_kernel_text(value) and is_valid_addr(value):
-                    table_refs.setdefault(hook, []).append(addr)
+                if value:
+                    if not self.is_kernel_text(value):
+                        if is_valid_addr(value):
+                            table_refs.setdefault(hook, []).append(addr)
             refs[hook] = keys
 
         counts = collections.Counter(len(keys) for keys in refs.values() if keys)
@@ -216182,18 +216195,31 @@ class KernelLsm:
         for hook, candidates in table_refs.items():
             for addr in candidates:
                 try:
-                    entries = [slice_unpack(read_memory(addr + stride * i, stride), ptrsize) for i in range(nr_slots)]
+                    entries = []
+                    for i in range(nr_slots):
+                        entries.append(slice_unpack(read_memory(addr + stride * i, stride), ptrsize))
                     keys = [key for key, _trampoline, _hl, _active in entries]
                     funcs = [read_int_from_memory(key) for key in keys]
                 except (gdb.MemoryError, OverflowError):
                     continue
                 # the trampoline is NULL without CONFIG_HAVE_STATIC_CALL, and every slot has its static key
-                if any(trampoline or not is_valid_addr(active) for _key, trampoline, _hl, active in entries):
+                valid = True
+                for _, trampoline, _, active in entries:
+                    if trampoline or not is_valid_addr(active):
+                        valid = False
+                        break
+                if not valid:
                     continue
                 # the keys of a hook point are adjacent, while other variables may be between them
                 if len(set(keys)) != nr_slots or max(keys) - min(keys) >= stride * nr_slots:
                     continue
-                if any(func and not self.is_kernel_text(func) for func in funcs):
+                valid = True
+                for func in funcs:
+                    if func:
+                        if not self.is_kernel_text(func):
+                            valid = False
+                            break
+                if not valid:
                     continue
                 refs[hook] = list(dict.fromkeys(refs[hook] + keys))
 
@@ -216209,9 +216235,12 @@ class KernelLsm:
                 continue
             # the keys of each hook point are adjacent, while the slot order is the order in `refs`
             groups = [keys]
-            if len(keys) > nr_slots and len(keys) % nr_slots == 0:
-                by_address = sorted(keys)
-                groups = [sorted(by_address[i:i + nr_slots], key=keys.index) for i in range(0, len(keys), nr_slots)]
+            if len(keys) > nr_slots:
+                if len(keys) % nr_slots == 0:
+                    by_address = sorted(keys)
+                    groups = []
+                    for i in range(0, len(keys), nr_slots):
+                        groups.append(sorted(by_address[i:i + nr_slots], key=keys.index))
             unnamed = []
             for group in groups:
                 # the slots are filled from the first one, so the empty keys follow
@@ -216219,13 +216248,15 @@ class KernelLsm:
                 group = sorted(group, key=lambda x: not funcs[x])
                 entries = [(slot, key, funcs[key]) for slot, key in enumerate(group)]
                 guessed = None
-                if len(groups) > 1 and funcs[group[0]]:
-                    name = Symbol.format(funcs[group[0]], ksym="prefer", bracket="")
-                    guessed = self.hook_name_from_callback(name, None)
-                if guessed and guessed != hook:
-                    hooks.setdefault(guessed + " (guessed)", entries)
-                else:
-                    unnamed.append(entries)
+                if len(groups) > 1:
+                    if funcs[group[0]]:
+                        name = Symbol.format(funcs[group[0]], ksym="prefer", bracket="")
+                        guessed = self.hook_name_from_callback(name, None)
+                if guessed:
+                    if guessed != hook:
+                        hooks.setdefault(guessed + " (guessed)", entries)
+                        continue
+                unnamed.append(entries)
             # the one that has callbacks is its own hook point among the ones that cannot be named
             unnamed.sort(key=lambda x: -sum(1 for _slot, _key, func in x if func))
             for i, entries in enumerate(unnamed):
@@ -216312,8 +216343,9 @@ class KernelLsm:
             current = read_int_from_memory(current, safe=True)
             if current is None:
                 return None
-        if is_list_head and last != prev:
-            return None
+        if is_list_head:
+            if last != prev:
+                return None
         return nodes
 
     def find_node_offsets(self, anchors):
@@ -216329,8 +216361,9 @@ class KernelLsm:
                 except gdb.MemoryError:
                     break
                 ok += 1
-            if ok and ok == len(anchors):
-                return off
+            if ok:
+                if ok == len(anchors):
+                    return off
         return None
 
     def collect_hook_head_refs(self):
@@ -216397,29 +216430,34 @@ class KernelLsm:
 
     def get_head_array_range(self, refs, anchors, stride, is_valid_head, is_empty_head, base, sizeof):
         """Return [start, end) of the security_hook_heads array."""
-        if base is not None and sizeof:
-            return base, base + sizeof
+        if base is not None:
+            if sizeof:
+                return base, base + sizeof
         heads = sorted({h for h, _n in anchors})
         if not heads:
             return None, None
         lo, hi = heads[0], heads[-1] + stride
-        if base is not None and base <= lo:
-            # The next symbol bounds the array, but a variable that follows it can lack a symbol.
-            ret = Ksym.get_kallsyms()
-            if ret:
-                kallsyms, _kallsyms_map = ret
-            else:
-                kallsyms, _kallsyms_map = ([], {})
-            end = min([a for a, _n, _t in kallsyms if a > base], default=None)
-            if end is not None and hi <= end:
-                lo = base
-                while hi < end and is_valid_head(hi):
-                    hi += stride
-                # the alignment padding before the next variable looks like empty heads
-                referred = {x for candidates in refs.values() for x in candidates}
-                while hi - stride > heads[-1] and hi - stride not in referred and is_empty_head(hi - stride):
-                    hi -= stride
-                return lo, hi
+        if base is not None:
+            if base <= lo:
+                # The next symbol bounds the array, but a variable that follows it can lack a symbol.
+                ret = Ksym.get_kallsyms()
+                if ret:
+                    kallsyms, _kallsyms_map = ret
+                else:
+                    kallsyms, _kallsyms_map = ([], {})
+                end = min([a for a, _n, _t in kallsyms if a > base], default=None)
+                if end is not None:
+                    if hi <= end:
+                        lo = base
+                        while hi < end and is_valid_head(hi):
+                            hi += stride
+                        # the alignment padding before the next variable looks like empty heads
+                        referred = set()
+                        for candidates in refs.values():
+                            referred.update(candidates)
+                        while hi - stride > heads[-1] and hi - stride not in referred and is_empty_head(hi - stride):
+                            hi -= stride
+                        return lo, hi
 
         # Without the symbol the range comes from the heads that were confirmed to hold a hook list, which misses the empty ones
         # at both ends. Widen it to the heads the dispatchers referred to, as long as every head up to there is a valid list.
@@ -216459,10 +216497,10 @@ class KernelLsm:
         # v4.11 turned each head from a `struct list_head` into a `struct hlist_head`, which halves the stride.
         # The distance between the confirmed heads shows it directly, so trust that when there are enough of them.
         kversion = Kernel.version()
-        if kversion and kversion < "4.11":
-            stride = ptrsize * 2
-        else:
-            stride = ptrsize
+        stride = ptrsize
+        if kversion:
+            if kversion < "4.11":
+                stride = ptrsize * 2
         heads = sorted({h for h, _n in anchors})
         gaps = [b - a for a, b in zip(heads, heads[1:]) if b > a]
         if len(gaps) >= 8:
@@ -216493,10 +216531,15 @@ class KernelLsm:
         # is the canonical one among the dispatchers that refer to the head first.
         heads_by_hook = {}
         for hook, candidates in refs.items():
-            heads_by_hook[hook] = [
-                x for x in candidates if start <= x < end and (x - start) % stride == 0 and walk(x) is not None
-            ]
-        users = collections.Counter(x for heads in heads_by_hook.values() for x in set(heads))
+            heads_by_hook[hook] = []
+            for head in candidates:
+                if start <= head < end:
+                    if (head - start) % stride == 0:
+                        if walk(head) is not None:
+                            heads_by_hook[hook].append(head)
+        users = collections.Counter()
+        for heads in heads_by_hook.values():
+            users.update(set(heads))
         name_by_head = {}
         hooks = sorted(heads_by_hook, key=lambda x: (len(x), x))
         for hook in hooks:
@@ -216513,9 +216556,10 @@ class KernelLsm:
                 if head not in name_by_head:
                     name_by_head[head] = hook
                     named.add(hook)
-        if base == start and sizeof:
-            for offset, name in member_names.items():
-                name_by_head[start + offset] = name
+        if base == start:
+            if sizeof:
+                for offset, name in member_names.items():
+                    name_by_head[start + offset] = name
 
         chains = []
         nodes_seen = set()
@@ -216529,7 +216573,11 @@ class KernelLsm:
         # Each LSM registers its hooks from one static array.
         # The distance between the neighboring nodes is the size of the struct.
         sorted_nodes = sorted(nodes_seen)
-        node_size = min((b - a for a, b in zip(sorted_nodes, sorted_nodes[1:]) if b > a), default=None)
+        gaps = []
+        for a, b in zip(sorted_nodes, sorted_nodes[1:]):
+            if b > a:
+                gaps.append(b - a)
+        node_size = min(gaps, default=None)
         has_lsm = node_size is not None and node_size >= (off_head + 3) * ptrsize
 
         rows = []
@@ -216554,10 +216602,11 @@ class KernelLsm:
                     lsms.add(lsm)
                 callbacks.append((node, func, name, lsm))
             name = name_by_head.get(head)
-            if name is None and callbacks:
-                name = self.hook_name_from_callback(callbacks[0][2], callbacks[0][3])
-                if name:
-                    name += " (guessed)"
+            if name is None:
+                if callbacks:
+                    name = self.hook_name_from_callback(callbacks[0][2], callbacks[0][3])
+                    if name:
+                        name += " (guessed)"
             rows.append((i, head, name, nodes is None, callbacks))
         return self.HookHeads(
             start, end, len(name_by_head), off_head, stride, is_list_head, node_size, has_lsm, rows, lsms,
@@ -216632,8 +216681,9 @@ class KernelLsm:
             if ret is not None:
                 kallsyms, _kallsyms_map = ret
                 end = min([a for a, _n, _t in kallsyms if a > ops], default=None)
-                if end is not None and ops < end:
-                    limit = (end - ops) // ptrsize
+                if end is not None:
+                    if ops < end:
+                        limit = (end - ops) // ptrsize
 
         # several dispatchers can share one member (security_capable / _capable_noaudit),
         # and the shorter name is the canonical one
@@ -216644,8 +216694,12 @@ class KernelLsm:
         miss = 0
         i = 0
         while limit is None or i < limit:
-            if limit is None and ((rows and miss >= 16) or i >= 0x200):
-                break
+            if limit is None:
+                if rows:
+                    if miss >= 16:
+                        break
+                if i >= 0x200:
+                    break
             func = read_int_from_memory(ops + i * ptrsize, safe=True)
             if func is None:
                 break
@@ -216707,22 +216761,28 @@ class KernelLsm:
             return False
         since, until = version_range
         kversion = Kernel.version()
-        if since is not None and kversion < since:
-            return False
-        if until is not None and kversion >= until:
-            return False
+        if since is not None:
+            if kversion < since:
+                return False
+        if until is not None:
+            if kversion >= until:
+                return False
         return True
 
-    def trace_arg_accesses(self, res):
+    @staticmethod
+    def trace_arg_accesses(res, all_sizes=False, include_addresses=False):
         """Return ([offsets stored zero], [offsets loaded]) of the pointer-sized members accessed through the first argument.
         A register that holds the argument plus a constant is followed too, because a member far from the head is
-        reached by adding the upper part of the offset first (e.g. `lui a0, 0x1; add s1, s1, a0; sd zero, -1384(s1)`)."""
+        reached by adding the upper part of the offset first (e.g. `lui a0, 0x1; add s1, s1, a0; sd zero, -1384(s1)`).
+        `all_sizes` includes scalar fields; `include_addresses` includes member addresses passed to callees."""
         branch = r"b(?:\.\w+|eq|ne|cs|cc|hs|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?"
         if is_x86():
             if is_x86_64():
                 width = "QWORD"
             else:
                 width = "DWORD"
+            if all_sizes:
+                width = r"(?:BYTE|WORD|DWORD|QWORD)"
             mem = width + r" PTR \[(?P<base>\w+)(?P<disp>[+-]0x\w+)?\]"
             # -mregparm=3 on x86_32
             if is_x86_64():
@@ -216734,7 +216794,7 @@ class KernelLsm:
                 ("call", r"call.*"),
                 ("probe", r"(?:cmp|test)\s+\w+," + mem),
                 ("skip", r"(?:j\w+|cmp|test|push|nop\w*|ret\w*|bt)(?:\s.*)?|\S+\s+\w+ PTR .*"),
-                ("load", r"(?:mov|add)\s+(?P<dst>\w+)," + mem),
+                ("load", r"(?:mov|movzx|movsx|add)\s+(?P<dst>\w+)," + mem),
                 ("move", r"mov\s+(?P<dst>\w+),(?P<src>\w+)"),
                 # `lea esi,[esi+eiz*1+0x0]` is a multi-byte nop
                 ("add", r"lea\s+(?P<dst>\w+),(?:ds:)?\[(?P<src>\w+)(?:\+eiz\*1)?(?P<imm>[+-]0x\w+)?\]"),
@@ -216766,6 +216826,8 @@ class KernelLsm:
                 size = "d"
             else:
                 size = "w"
+            if all_sizes:
+                size = r"(?:b|bu|h|hu|w|wu|d)"
             mem = r",(?P<disp>-?\d+)\((?P<base>\w+)\)"
             arg = "a0"
             clobbered = (
@@ -216787,9 +216849,15 @@ class KernelLsm:
 
         def norm(reg):
             # x86_64: the 32-bit name of a register refers to the same one
-            if reg and is_x86_64():
-                reg = re.sub(r"^e([abcd]x|[sd]i|[sb]p)$", r"r\1", reg)
-                reg = re.sub(r"^(r\d+)d$", r"\1", reg)
+            if reg:
+                if is_x86_64():
+                    reg = re.sub(r"^e([abcd]x|[sd]i|[sb]p)$", r"r\1", reg)
+                    reg = re.sub(r"^(r\d+)d$", r"\1", reg)
+            if all_sizes:
+                if is_arm64():
+                    if reg:
+                        if re.fullmatch(r"w\d+", reg):
+                            reg = "x" + reg[1:]
             return reg
 
         def imm(x):
@@ -216808,31 +216876,34 @@ class KernelLsm:
                 continue
             insn = re.split(r"\s+(?:#|;|//|@)\s", m.group(1))[0].strip()
             kind, g = None, {}
-            for _kind, regex in rules:
+            for rule_kind, regex in rules:
                 m = re.fullmatch(regex, insn)
                 if m:
-                    kind = _kind
+                    kind = rule_kind
                     g = {k: norm(v) for k, v in m.groupdict().items()}
                     break
             else:
                 kind = None
             if kind == "store":
                 src = g["src"]
-                # a pointer-sized store only; ARM64 has `w` registers for 32-bit
-                if (
-                    g["base"] in aliases
-                    and not src.startswith("w")
-                    and (src in ("xzr", "zero") or imm(src) == 0 or consts.get(src) == 0)
-                ):
-                    stores.append(aliases[g["base"]] + (imm(g["disp"]) or 0))
+                if g["base"] in aliases:
+                    # Only pointer-sized stores by default; ARM64 uses `w` registers for 32-bit.
+                    if all_sizes or not src.startswith("w"):
+                        if src in ("xzr", "zero") or imm(src) == 0 or consts.get(src) == 0:
+                            stores.append(aliases[g["base"]] + (imm(g["disp"]) or 0))
                 continue
             if kind == "call":
+                if include_addresses:
+                    if aliases.get(arg, 0) > 0:
+                        loads.append(aliases[arg])
                 for reg in clobbered:
                     aliases.pop(reg, None)
                     consts.pop(reg, None)
                 continue
-            if kind in ("load", "probe") and g["base"] in aliases and not g.get("dst", "").startswith("w"):
-                loads.append(aliases[g["base"]] + (imm(g["disp"]) or 0))
+            if kind in ("load", "probe"):
+                if g["base"] in aliases:
+                    if all_sizes or not g.get("dst", "").startswith("w"):
+                        loads.append(aliases[g["base"]] + (imm(g["disp"]) or 0))
             if kind in ("skip", "probe"):
                 continue
             if kind is None:
@@ -216844,26 +216915,36 @@ class KernelLsm:
                 g = {"dst": dst}
             dst = g["dst"]
             alias = aliases.get(g.get("src"))
-            if kind == "add" and alias is None and g.get("reg") in aliases:
-                # `add rd, rs1, rs2` is commutative
-                g["src"], g["reg"] = g["reg"], g["src"]
-                alias = aliases[g["src"]]
+            if kind == "add":
+                if alias is None:
+                    if g.get("reg") in aliases:
+                        # `add rd, rs1, rs2` is commutative
+                        g["src"], g["reg"] = g["reg"], g["src"]
+                        alias = aliases[g["src"]]
             aliases.pop(dst, None)
             consts.pop(dst, None)
-            if kind == "move" and alias is not None:
-                aliases[dst] = alias
-            elif kind == "add" and alias is not None and imm(g.get("imm")) is not None:
-                aliases[dst] = alias + (imm(g["imm"]) << int(g.get("shift") or 0))
-            elif kind == "add" and alias is not None and g.get("reg") in consts:
-                aliases[dst] = alias + consts[g["reg"]]
+            if kind == "move":
+                if alias is not None:
+                    aliases[dst] = alias
+            elif kind == "add":
+                if alias is not None:
+                    if imm(g.get("imm")) is not None:
+                        aliases[dst] = alias + (imm(g["imm"]) << int(g.get("shift") or 0))
+                    elif g.get("reg") in consts:
+                        aliases[dst] = alias + consts[g["reg"]]
             elif kind == "zero":
                 consts[dst] = 0
-            elif kind == "const" and imm(g["imm"]) is not None:
+            elif kind == "const":
                 value = imm(g["imm"])
-                if g.get("shift") == "":
-                    consts[dst] = value << 12
-                else:
-                    consts[dst] = value
+                if value is not None:
+                    if g.get("shift") == "":
+                        consts[dst] = value << 12
+                    else:
+                        consts[dst] = value
+            if include_addresses:
+                if kind == "add":
+                    if dst in aliases:
+                        loads.append(aliases[dst])
         return stores, loads
 
     def find_arg_member_offset(self, func_names):
@@ -216879,8 +216960,9 @@ class KernelLsm:
                 continue
             stores, loads = self.trace_arg_accesses(res)
             for offset in stores + loads:
-                if 0 < offset < 0x4000 and offset % current_arch.ptrsize == 0:
-                    return offset
+                if 0 < offset < 0x4000:
+                    if offset % current_arch.ptrsize == 0:
+                        return offset
         return None
 
     def is_blob_value(self, value):
@@ -216965,6 +217047,10 @@ class KernelLsm:
         layout = {}
         for kind, values in samples.items():
             users = [lsm for lsm in sorted(lsms) if self.is_blob_user(lsm, kind)]
+            nr_values = 0
+            for blob, _ in values:
+                if blob:
+                    nr_values += 1
             entries = []
             for lsm in users:
                 if lsm not in self.DECODABLE_BLOBS:
@@ -216976,7 +217062,7 @@ class KernelLsm:
                 decodable = kind in self.DECODABLE_BLOBS[lsm]
                 offset = self.get_blob_sizes_offset(lsm, kind)
                 if offset is not None:
-                    if not decodable or self.count_decodable(lsm, kind, offset, values) * 2 >= len([x for x in values if x[0]]):
+                    if not decodable or self.count_decodable(lsm, kind, offset, values) * 2 >= nr_values:
                         entries.append((lsm, offset, "{:s}_blob_sizes".format(lsm)))
                         continue
                 if len(users) == 1:
@@ -216985,7 +217071,7 @@ class KernelLsm:
                         offset = current_arch.ptrsize * 2
                     else:
                         offset = 0
-                    if not decodable or self.count_decodable(lsm, kind, offset, values) * 2 >= len([x for x in values if x[0]]):
+                    if not decodable or self.count_decodable(lsm, kind, offset, values) * 2 >= nr_values:
                         entries.append((lsm, offset, "only user"))
                         continue
                     # a distro kernel may put its own data at the head (e.g. the display LSM slot of Ubuntu)
@@ -216997,24 +217083,32 @@ class KernelLsm:
                         offset = None
                 entries.append((lsm, offset, "guessed"))
             # the part of the LSM initialized first starts at the head of the blob
-            if kind == "inode" and kversion >= "5.1":
-                base = current_arch.ptrsize * 2
-            else:
-                base = 0
+            base = 0
+            if kind == "inode":
+                if kversion >= "5.1":
+                    base = current_arch.ptrsize * 2
             unknown = [i for i, (_lsm, offset, _how) in enumerate(entries) if offset is None]
-            if len(unknown) == 1 and len(entries) == len(users) and all(offset != base for _lsm, offset, _how in entries):
-                entries[unknown[0]] = (entries[unknown[0]][0], base, "guessed")
+            if len(unknown) == 1:
+                if len(entries) == len(users):
+                    if all(offset != base for _lsm, offset, _how in entries):
+                        entries[unknown[0]] = (entries[unknown[0]][0], base, "guessed")
             layout[kind] = entries
         return layout
 
     def count_decodable(self, lsm, kind, offset, samples):
-        return sum(1 for blob, obj in samples if blob and self.decode_blob(lsm, kind, blob + offset, obj) is not None)
+        count = 0
+        for blob, obj in samples:
+            if blob:
+                if self.decode_blob(lsm, kind, blob + offset, obj) is not None:
+                    count += 1
+        return count
 
     def guess_blob_offset(self, lsm, kind, samples, allow_weak=False):
         """Return the lowest offset where the part decodes on the majority of the samples. The same part of the next object
         in the slab also decodes beyond the end of the blob, and so does a later member that looks like the first one."""
-        if (lsm, kind) in self.WEAK_BLOBS and not allow_weak:
-            return None
+        if (lsm, kind) in self.WEAK_BLOBS:
+            if not allow_weak:
+                return None
         blobs = [(blob, obj) for blob, obj in samples if blob]
         if not blobs:
             return None
@@ -217027,8 +217121,9 @@ class KernelLsm:
         """Read the string at `addr` if it looks like a label."""
         # do not cross the page, which may be unmapped
         name = self.read_cstring(addr, min(0x100, get_pagesize() - addr % get_pagesize()))
-        if name and re.fullmatch(pattern, name):
-            return name
+        if name:
+            if re.fullmatch(pattern, name):
+                return name
         return ""
 
     def apparmor_label_name(self, label):
@@ -217041,10 +217136,11 @@ class KernelLsm:
             ptr = read_int_from_memory(label + i * current_arch.ptrsize, safe=True)
             if ptr is None:
                 break
-            if ptr and is_valid_addr(ptr):
-                name = self.read_label(ptr)
-                if len(name) >= 2:
-                    return name
+            if ptr:
+                if is_valid_addr(ptr):
+                    name = self.read_label(ptr)
+                    if len(name) >= 2:
+                        return name
         return ""
 
     def smack_label_name(self, skp):
@@ -217053,10 +217149,11 @@ class KernelLsm:
             return ""
         # smk_known follows `struct list_head list` and `struct hlist_node smk_hashed`
         ptr = read_int_from_memory(skp + current_arch.ptrsize * 4, safe=True)
-        if ptr and is_valid_addr(ptr):
-            name = self.read_label(ptr, r"[\x21-\x7e]{1,255}")
-            if name:
-                return name
+        if ptr:
+            if is_valid_addr(ptr):
+                name = self.read_label(ptr, r"[\x21-\x7e]{1,255}")
+                if name:
+                    return name
         return self.read_label(skp, r"[\x21-\x7e]{1,255}")
 
     def tomoyo_domain_name(self, domain):
@@ -217069,10 +217166,11 @@ class KernelLsm:
             if not path_info or not is_valid_addr(path_info):
                 continue
             ptr = read_int_from_memory(path_info, safe=True)
-            if ptr and is_valid_addr(ptr):
-                name = self.read_label(ptr, r"<[\x20-\x7e]+")
-                if name:
-                    return name
+            if ptr:
+                if is_valid_addr(ptr):
+                    name = self.read_label(ptr, r"<[\x20-\x7e]+")
+                    if name:
+                        return name
         return ""
 
     def format_label_ptr(self, ptr, name):
@@ -217101,12 +217199,18 @@ class KernelLsm:
                 if GefUtil.type_size(type_name):
                     return None, ""
                 configs = Kernel.config().get_configs()
-                if not configs or any(configs.get(key) == "y" for key in ("CONFIG_RANDSTRUCT", "CONFIG_GCC_PLUGIN_RANDSTRUCT")):
+                if not configs:
                     return None, ""
+                for key in ("CONFIG_RANDSTRUCT", "CONFIG_GCC_PLUGIN_RANDSTRUCT"):
+                    if configs.get(key) == "y":
+                        return None, ""
                 offsets = [offset + i * 4 for i in range(len(names))]
             values = [read_int32_from_memory(part + offset, safe=True) for offset in offsets]
-            if not all(x is not None and x < 0x100000 for x in values):
-                return None, ""
+            for value in values:
+                if value is None:
+                    return None, ""
+                if value >= 0x10_0000:
+                    return None, ""
             return values, " ".join("{:s}={:d}".format(n, x) for n, x in zip(names, values))
 
         def labels(names, resolve, ptrs=None, optional=False):
@@ -217114,8 +217218,11 @@ class KernelLsm:
             (if `optional`, if a non-NULL one is not labeled). `ptrs` defaults to the pointers at `part`."""
             if ptrs is None:
                 ptrs = [read_int_from_memory(part + i * ptrsize, safe=True) for i in range(len(names))]
-            if not all(x is not None and self.is_blob_value(x) for x in ptrs):
-                return None
+            for ptr in ptrs:
+                if ptr is None:
+                    return None
+                if not self.is_blob_value(ptr):
+                    return None
             resolved = []
             for ptr in ptrs:
                 if ptr:
@@ -217128,15 +217235,18 @@ class KernelLsm:
                 unlabeled = not resolved[0]
             if unlabeled:
                 return None
-            return resolved[0], " ".join(
-                "{:s}={:s}".format(n, self.format_label_ptr(x, y)) for n, x, y in zip(names, ptrs, resolved)
-            )
+            parts = []
+            for name, ptr, label in zip(names, ptrs, resolved):
+                parts.append("{:s}={:s}".format(name, self.format_label_ptr(ptr, label)))
+            return resolved[0], " ".join(parts)
 
         if lsm == "selinux":
             if kind == "cred":
                 values, detail = sids(["osid", "sid", "exec_sid", "create_sid", "keycreate_sid", "sockcreate_sid"])
-                if values and values[0] and values[1]:
-                    return "sid={:d}".format(values[1]), detail
+                if values:
+                    if values[0]:
+                        if values[1]:
+                            return "sid={:d}".format(values[1]), detail
             elif kind == "task":
                 values, detail = sids(["avdcache.sid", "avdcache.seqno"])
                 if values:
@@ -217144,44 +217254,51 @@ class KernelLsm:
             elif kind == "file":
                 # isid is 0 for a file that was not opened through a path (e.g. a pipe)
                 values, detail = sids(["sid", "fown_sid", "isid", "pseqno"])
-                if values and values[0] and values[1]:
-                    return "sid={:d}".format(values[0]), detail
-            elif kind == "inode" and read_int_from_memory(part, safe=True) == obj:
-                # inode, list, task_sid, sid, sclass, initialized
-                values, detail = sids(["task_sid", "sid"], ptrsize * 3)
-                sclass = read_int16_from_memory(part + ptrsize * 3 + 8, safe=True)
-                initialized = read_int8_from_memory(part + ptrsize * 3 + 10, safe=True)
-                if values and sclass is not None and initialized is not None:
-                    detail = "inode={:s} {:s} sclass={:d} initialized={:d}".format(
-                        AddressUtil.format_address(obj), detail, sclass, initialized,
-                    )
-                    return "sid={:d}".format(values[1]), detail
+                if values:
+                    if values[0]:
+                        if values[1]:
+                            return "sid={:d}".format(values[0]), detail
+            elif kind == "inode":
+                if read_int_from_memory(part, safe=True) == obj:
+                    # inode, list, task_sid, sid, sclass, initialized
+                    values, detail = sids(["task_sid", "sid"], ptrsize * 3)
+                    sclass = read_int16_from_memory(part + ptrsize * 3 + 8, safe=True)
+                    initialized = read_int8_from_memory(part + ptrsize * 3 + 10, safe=True)
+                    if values:
+                        if sclass is not None:
+                            if initialized is not None:
+                                detail = "inode={:s} {:s} sclass={:d} initialized={:d}".format(
+                                    AddressUtil.format_address(obj), detail, sclass, initialized,
+                                )
+                                return "sid={:d}".format(values[1]), detail
 
         elif lsm == "apparmor":
             if kind == "cred":
                 # a pointer to the label (v5.1~), the label itself (v4.17~), or the first member of struct aa_task_ctx (~v4.16)
-                if not stacked and kversion >= "4.17":
-                    ptrs = [part]
-                else:
-                    ptrs = None
+                ptrs = None
+                if not stacked:
+                    if kversion >= "4.17":
+                        ptrs = [part]
                 return labels(["label"], self.apparmor_label_name, ptrs)
             if kind == "task":
                 ret = labels(["nnp", "onexec", "previous"], self.apparmor_label_name, optional=True)
                 return ret and ("", ret[1])
-            if kind == "file" and kversion < "4.13":
-                allow = read_int16_from_memory(part, safe=True)
-                if allow is not None:
-                    return "", "allow={:#x}".format(allow)
-            elif kind == "file":
-                # the label follows a spinlock, which grows after SPINLOCK_MAGIC with CONFIG_DEBUG_SPINLOCK
-                if read_int32_from_memory(part + 4, safe=True) == 0xdead_4ead:
-                    scan_indices = range(2, 12)
+            if kind == "file":
+                if kversion < "4.13":
+                    allow = read_int16_from_memory(part, safe=True)
+                    if allow is not None:
+                        return "", "allow={:#x}".format(allow)
                 else:
-                    scan_indices = [1]
-                for i in scan_indices:
-                    ret = labels(["label"], self.apparmor_label_name, [read_int_from_memory(part + i * ptrsize, safe=True)])
-                    if ret is not None:
-                        return ret
+                    # the label follows a spinlock, which grows after SPINLOCK_MAGIC with CONFIG_DEBUG_SPINLOCK
+                    if read_int32_from_memory(part + 4, safe=True) == 0xdead_4ead:
+                        scan_indices = range(2, 12)
+                    else:
+                        scan_indices = [1]
+                    for i in scan_indices:
+                        ptr = read_int_from_memory(part + i * ptrsize, safe=True)
+                        ret = labels(["label"], self.apparmor_label_name, [ptr])
+                        if ret is not None:
+                            return ret
 
         elif lsm == "smack":
             if kind == "cred":
@@ -217195,18 +217312,22 @@ class KernelLsm:
                     return labels(["smk_file"], self.smack_label_name, [part])
 
         elif lsm == "tomoyo":
-            if kind == "cred" and not stacked:
-                return labels(["domain"], self.tomoyo_domain_name, [part])
-            if kind == "task" and stacked:
-                return labels(["domain_info", "old_domain_info"], self.tomoyo_domain_name)
+            if kind == "cred":
+                if not stacked:
+                    return labels(["domain"], self.tomoyo_domain_name, [part])
+            if kind == "task":
+                if stacked:
+                    return labels(["domain_info", "old_domain_info"], self.tomoyo_domain_name)
 
-        elif lsm == "landlock" and kind == "cred":
-            domain = read_int_from_memory(part, safe=True)
-            if domain is not None and self.is_blob_value(domain):
-                if domain:
-                    return "domain={:#x}".format(domain), "domain={:s}".format(self.format_label_ptr(domain, ""))
-                else:
-                    return "", "domain={:s}".format(self.format_label_ptr(domain, ""))
+        elif lsm == "landlock":
+            if kind == "cred":
+                domain = read_int_from_memory(part, safe=True)
+                if domain is not None:
+                    if self.is_blob_value(domain):
+                        if domain:
+                            return "domain={:#x}".format(domain), "domain={:s}".format(self.format_label_ptr(domain, ""))
+                        else:
+                            return "", "domain={:s}".format(self.format_label_ptr(domain, ""))
         return None
 
     def get_task_files(self, task, limit=0x400):
@@ -217224,14 +217345,15 @@ class KernelLsm:
         if not max_fds or not array or not is_valid_addr(array):
             return []
         ret = []
-        for fd in range(min(max_fds, 0x10000)):
+        for fd in range(min(max_fds, 0x1_0000)):
             file = read_int_from_memory(array + fd * ptrsize, safe=True)
             if file is None:
                 break
-            if file and is_valid_addr(file):
-                ret.append((fd, file))
-                if len(ret) >= limit:
-                    break
+            if file:
+                if is_valid_addr(file):
+                    ret.append((fd, file))
+                    if len(ret) >= limit:
+                        break
         return ret
 
     def get_file_inode(self, file):
@@ -217265,7 +217387,11 @@ class KernelLsm:
         if ret is None:
             return True
         kallsyms, _kallsyms_map = ret
-        count = sum(1 for _a, name, typ in kallsyms if name.startswith("security_") and typ.lower() in ("t", "w"))
+        count = 0
+        for _, name, typ in kallsyms:
+            if name.startswith("security_"):
+                if typ.lower() in ("t", "w"):
+                    count += 1
         return count >= 16
 
     def detect_lsms(self, kversion):
@@ -217299,11 +217425,18 @@ class KernelLsm:
             pid = read_int32_from_memory(task + task_command.offset_pid, safe=True)
             comm = read_cstring_from_memory(task + task_command.offset_comm, safe=True)
             cred = read_int_from_memory(task + task_command.offset_cred, safe=True)
-            if pid is not None and comm is not None and cred and is_valid_addr(cred):
-                tasks.append((task, pid, comm, cred))
+            if pid is not None:
+                if comm is not None:
+                    if cred:
+                        if is_valid_addr(cred):
+                            tasks.append((task, pid, comm, cred))
         files = []
-        if detail and getattr(task_command, "kpath", None) is not None:
-            files = [file for task in tasks for _fd, file in self.get_task_files(task[0])][:0x400]
+        if detail:
+            if getattr(task_command, "kpath", None) is not None:
+                for task in tasks:
+                    for _, file in self.get_task_files(task[0]):
+                        files.append(file)
+                files = files[:0x400]
         self.security_offsets = offsets = self.resolve_security_offsets(lsms, [x[3] for x in tasks], files)
         if "cred" not in offsets:
             return lsms, None
@@ -217313,13 +217446,17 @@ class KernelLsm:
                 return read_int_from_memory(obj + offsets[kind], safe=True)
             return None
 
-        entries = [(task, pid, comm, cred, read_blob("cred", cred), read_blob("task", task)) for task, pid, comm, cred in tasks]
+        entries = []
+        for task, pid, comm, cred in tasks:
+            entries.append((task, pid, comm, cred, read_blob("cred", cred), read_blob("task", task)))
         inodes = [x for x in dict.fromkeys(self.get_file_inode(file) for file in files) if x]
         samples = {"cred": [(e[4], e[3]) for e in entries], "task": [(e[5], e[0]) for e in entries]}
-        samples.update(
-            {"file": [(read_blob("file", x), x) for x in files], "inode": [(read_blob("inode", x), x) for x in inodes]}
-        )
-        self.blob_layout = self.resolve_blob_layout(lsms, {kind: v for kind, v in samples.items() if kind in offsets})
+        for kind, objects in (("file", files), ("inode", inodes)):
+            samples[kind] = []
+            for obj in objects:
+                samples[kind].append((read_blob(kind, obj), obj))
+        samples = {kind: values for kind, values in samples.items() if kind in offsets}
+        self.blob_layout = self.resolve_blob_layout(lsms, samples)
         return lsms, entries
 
 
@@ -222110,6 +222247,619 @@ class KernelBinderCommand(GenericCommand, BufferingOutput):
             self.warn_add_out(message)
         if args.pid is not None and not matched:
             self.warn_add_out("No binder_proc of pid {:d}".format(args.pid))
+        self.print_output(check_terminal_size=True)
+        return
+
+
+class KernelLocks(KernelLayoutReader):
+    """Resolve lock layouts from the kernel's locking and lockdep routines."""
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.layouts = {}
+        self.held = None
+        self.config = Kernel.config().get_configs() or {}
+        names = ("mutex_rt_init_generic", "mutex_rt_init_lockdep", "__mutex_rt_init")
+        self.rt = self.config.get("CONFIG_PREEMPT_RT") == "y" or any(Ksym.get_addr(name) for name in names)
+        return
+
+    @staticmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    @Decorator.switch_to_intel_syntax
+    def code_accesses(names, all_sizes=False, include_addresses=False):
+        stores, loads, code = [], [], []
+        for name in names:
+            for address in Ksym.get_addrs(name, match="split"):
+                text = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 256)
+                zeroes, members = KernelLsm.trace_arg_accesses(text, all_sizes, include_addresses)
+                stores.extend(zeroes)
+                loads.extend(members)
+                code.append(text)
+        return stores, loads, "\n".join(code)
+
+    def lock_layout(self, kind):
+        if kind in self.layouts:
+            return self.layouts[kind]
+        ptr = current_arch.ptrsize
+        if kind == "mutex":
+            type_name, path = "mutex", "rtmutex.owner"
+        else:
+            type_name, path = "rw_semaphore", "rwbase.rtmutex.owner"
+        rt = self.rt or GefUtil.offsetof(type_name, path) is not None
+        if rt:
+            layout = self.rt_layout(kind, type_name, path)
+        elif kind == "mutex":
+            layout = self.mutex_layout()
+        else:
+            owner = GefUtil.offsetof(type_name, "owner")
+            if owner is None:
+                stores, _, _ = self.code_accesses(("up_write", "__up_write"))
+                owner = next((offset for offset in stores if ptr <= offset < 0x100), None)
+            size = ptr
+            if self.config.get("CONFIG_RWSEM_GENERIC_SPINLOCK") == "y":
+                size = 4
+            layout = {"owner": owner, "count": 0, "count_size": size, "rt": False, "has_count": True}
+        self.layouts[kind] = layout
+        return layout
+
+    def mutex_layout(self):
+        owner = GefUtil.offsetof("mutex", "owner")
+        count = GefUtil.offsetof("mutex", "count")
+        if owner is None:
+            if count is None:
+                stores, _, _ = self.code_accesses(("mutex_init_generic", "__mutex_init"))
+                modern = 0 in stores or Kernel.version() >= "4.10"
+                if modern:
+                    owner = 0
+                else:
+                    count = 0
+                    stores, _, _ = self.code_accesses(("mutex_unlock", "debug_mutex_unlock", "__mutex_unlock_slowpath"))
+                    minimum = align(4, current_arch.ptrsize) + 2 * current_arch.ptrsize
+                    owner = next((offset for offset in stores if minimum <= offset < 0x100), None)
+                    if owner is None:
+                        owner = self.legacy_mutex_owner()
+        return {"owner": owner, "count": count, "count_size": 4, "rt": False, "has_count": count is not None}
+
+    def legacy_mutex_owner(self):
+        tracking = self.config.get("CONFIG_DEBUG_MUTEXES") == "y"
+        tracking |= self.config.get("CONFIG_MUTEX_SPIN_ON_OWNER") == "y"
+        if Kernel.version() < "3.13":
+            tracking |= self.config.get("CONFIG_SMP") == "y"
+        if not tracking:
+            if not Ksym.get_addrs("mutex_spin_on_owner", match="split"):
+                return None
+        ptr = current_arch.ptrsize
+        names = ("uevent_sock_mutex", "module_mutex", "cgroup_mutex", "rtnl_mutex", "oom_lock")
+        objects = [address for name in names if (address := Ksym.get_addr(name))]
+        if not objects:
+            return None
+        candidates = []
+        for offset in range(align(4, ptr), 0x80, ptr):
+            valid = True
+            for address in objects:
+                # An initialized empty wait_list links to itself in both directions.
+                if read_int_from_memory(address + offset, safe=True) != address + offset:
+                    valid = False
+                    break
+                if read_int_from_memory(address + offset + ptr, safe=True) != address + offset:
+                    valid = False
+                    break
+            if valid:
+                candidates.append(offset + 2 * ptr)
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def rt_layout(self, kind, type_name, path):
+        owner = GefUtil.offsetof(type_name, path)
+        if owner is None:
+            stores, _, _ = self.code_accesses(("rt_mutex_base_init", "__rt_mutex_init"))
+            offsets = [offset for offset in stores if 2 * current_arch.ptrsize <= offset < 0x100]
+            if offsets:
+                # owner follows the wait lock and the cached rb_root; the base has no trailing members.
+                owner = max(offsets)
+                if kind == "rwsem":
+                    owner += align(4, current_arch.ptrsize)
+        count = None
+        if kind == "rwsem":
+            count = 0
+        return {"owner": owner, "count": count, "count_size": 4, "rt": True, "has_count": False}
+
+    def read_lock(self, address, kind):
+        layout = self.lock_layout(kind)
+        owner, count = None, None
+        if layout["owner"] is not None:
+            owner = read_int_from_memory(address + layout["owner"], safe=True)
+        if layout["count"] is not None:
+            if layout["count_size"] == 4:
+                count = read_int32_from_memory(address + layout["count"], safe=True, signed=True)
+            else:
+                count = read_int_from_memory(address + layout["count"], safe=True, signed=True)
+        if owner is None:
+            if count is None:
+                return None
+        instance = None
+        offset = self.dep_map_offset(kind)
+        if offset is not None:
+            instance = address + offset
+        return dict(layout, owner=owner, count=count, instance=instance, address=address, kind=kind)
+
+    @staticmethod
+    def mutex_owner(info):
+        owner, count = info["owner"], info["count"]
+        state, task, flags = "unknown", 0, "-"
+        if owner is not None:
+            if info["rt"]:
+                task = owner & ~1
+                if owner & 1:
+                    flags = "HAS_WAITERS"
+            elif info["has_count"]:
+                task = owner
+            else:
+                task = owner & ~7
+                names, _ = GefUtil.flags_to_names(owner & 7, {1: "WAITERS", 2: "HANDOFF", 4: "PICKUP"})
+                flags = "|".join(names) or "-"
+            if task:
+                state = "locked"
+            elif owner:
+                state = "transition"
+            else:
+                state = "unlocked"
+        if count is not None:
+            if count == 1:
+                state, task = "unlocked", 0
+            else:
+                state = "locked"
+        return task, state, flags
+
+    @staticmethod
+    def rwsem_owner(info):
+        owner, count = info["owner"], info["count"]
+        state, task, flags = "locked (owner unknown)", 0, "-"
+        if owner is not None:
+            if info["rt"]:
+                task = owner & ~1
+                if owner & 1:
+                    flags = "HAS_WAITERS"
+            else:
+                task = owner & ~3
+                names, _ = GefUtil.flags_to_names(owner & 3, {1: "READER_OWNED", 2: "NONSPINNABLE"})
+                flags = "|".join(names) or "-"
+        if info["rt"]:
+            if count is None:
+                state = "unknown"
+            elif (count & 0xffff_ffff) == 0x8000_0000:
+                state, task = "unlocked", 0
+            elif (count & 0xffff_ffff) == 0x4000_0000:
+                state = "writer"
+            elif task:
+                # The rtmutex owner can be a writer still waiting for the readers to leave.
+                state = "writer pending"
+            else:
+                state = "readers"
+        elif count == 0:
+            # The owner can still point to the last reader after unlock.
+            state, task = "unlocked", 0
+        else:
+            if owner is not None:
+                if owner & 1:
+                    state, task = "readers", 0
+            if task:
+                state = "writer"
+        return task, state, flags
+
+    def lockdep_enabled(self):
+        names = ("lockdep_init_task", "lockdep_print_held_locks", "debug_show_held_locks")
+        return self.config.get("CONFIG_LOCKDEP") == "y" or any(Ksym.get_addrs(name, match="split") for name in names)
+
+    def dep_map_offset(self, kind):
+        type_name = {"mutex": "mutex", "rwsem": "rw_semaphore"}[kind]
+        offset = GefUtil.offsetof(type_name, "dep_map")
+        if offset is not None or not self.lockdep_enabled():
+            return offset
+        names = ("__init_rwsem",)
+        if kind == "mutex":
+            names = ("mutex_init_lockdep", "debug_mutex_init", "__mutex_init", "mutex_rt_init_lockdep", "__mutex_rt_init")
+        _, addresses, _ = self.code_accesses(names, include_addresses=True)
+        # dep_map is the final member; its address is passed to lockdep_init_map*().
+        offsets = [offset for offset in addresses if 0 < offset < 0x400]
+        if offsets:
+            return max(offsets)
+        return None
+
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    @Decorator.switch_to_intel_syntax
+    def acquisition_kind(self, ip):
+        try:
+            address = Disasm.gdb_get_nth_previous_instruction_address(ip, 1)
+            if address is None:
+                return None
+            insn = get_insn(address)
+            if not insn or not current_arch.is_call(insn) or address + insn.size != ip:
+                return None
+            # A historical indirect call cannot be resolved using the current CPU registers.
+            target = re.match(r"#?(0x[0-9a-fA-F]+)(?:\s|$)", insn.operands[-1])
+            if target is None:
+                return None
+            location = Ksym.get_location_from_peek(int(target[1], 16))
+        except gdb.error:
+            return None
+        if location is None:
+            return None
+        name, _ = location
+        if re.match(r"_*(?:ww_)?mutex_(?:lock|trylock)", name):
+            return "mutex"
+        if self.rt:
+            if re.match(r"_*rt_mutex_(?:lock|trylock)", name):
+                return "mutex"
+        if re.match(r"_*down_(?:read|write)|downgrade_write", name):
+            return "rwsem"
+        return "other"
+
+    def resolve_lock(self, entry, tasks):
+        hint = self.acquisition_kind(entry["ip"])
+        candidates = []
+        for kind in ("mutex", "rwsem"):
+            if hint is not None:
+                if hint != kind:
+                    continue
+            offset = self.dep_map_offset(kind)
+            if offset is None:
+                continue
+            address = entry["instance"] - offset
+            # Debug mutex/rwsem magic points back to the containing object, immediately before dep_map.
+            magic = read_int_from_memory(entry["instance"] - current_arch.ptrsize, safe=True) == address
+            if hint is None:
+                if self.rt or not magic:
+                    continue
+            info = self.read_lock(address, kind)
+            if info is None:
+                continue
+            decoder = {"mutex": self.mutex_owner, "rwsem": self.rwsem_owner}[kind]
+            owner, state, flags = decoder(info)
+            if owner:
+                if owner not in tasks:
+                    continue
+            waiters = self.lock_waiters(info, tasks)
+            if state == "writer pending" or "PICKUP" in flags:
+                waiters.add(owner)
+                owner = 0
+            candidates.append(dict(info, task=owner, state=state, flags=flags, waiters=waiters))
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def lock_waiters(self, info, tasks):
+        ptr = current_arch.ptrsize
+        if info["rt"]:
+            root = info["address"] + self.lock_layout(info["kind"])["owner"] - 2 * ptr
+            tree = KernelRBTree(root)
+            nodes = tree.parse()
+            if tree.broken:
+                return set()
+            base = info["address"]
+            if info["kind"] == "rwsem":
+                base += align(4, ptr)
+            return self.waiter_tasks(nodes, tasks, base) or set()
+        end = info["instance"]
+        # magic, and the owner on older kernels, can follow the waiter list.
+        if read_int_from_memory(end - ptr, safe=True) == info["address"]:
+            end -= ptr
+        if self.lock_layout(info["kind"])["owner"] == end - info["address"] - ptr:
+            end -= ptr
+        for embedded in (True, False):
+            head = end - 2 * ptr
+            if not embedded:
+                head = read_int_from_memory(end - ptr, safe=True)
+                if not head:
+                    continue
+            if head < info["address"]:
+                if embedded:
+                    continue
+            nodes = self.read_list(head, 0x1000)
+            if nodes is None:
+                continue
+            if not embedded:
+                nodes.insert(0, head)
+            waiters = self.waiter_tasks(nodes, tasks)
+            if waiters:
+                return waiters
+        return set()
+
+    @staticmethod
+    def waiter_tasks(nodes, tasks, lock=None):
+        ptr = current_arch.ptrsize
+        # mutex/rwsem waiters start with list_head, then task. RT waiters contain two rb nodes first.
+        offsets = (2 * ptr,)
+        if lock is not None:
+            offsets = range(6 * ptr, 0x100, ptr)
+        for offset in offsets:
+            waiters = {read_int_from_memory(node + offset, safe=True) for node in nodes}
+            if not waiters.issubset(tasks):
+                continue
+            # The following RT waiter member must point back to this exact rt_mutex_base.
+            if lock is not None:
+                if not all(read_int_from_memory(node + offset + ptr, safe=True) == lock for node in nodes):
+                    continue
+            return waiters
+        return None
+
+    def held_layout(self, tasks):
+        depth = GefUtil.offsetof("task_struct", "lockdep_depth")
+        names = ("lockdep_print_held_locks", "debug_show_held_locks")
+        _, loads, _ = self.code_accesses(names, all_sizes=True)
+        if depth is None:
+            stores, _, _ = self.code_accesses(("lockdep_init_task",), all_sizes=True)
+            offsets = []
+            for offset in loads:
+                if offset in stores:
+                    if 0 < offset < 0x1_0000:
+                        offsets.append(offset)
+            if offsets:
+                # The initializer confirms the field even when a task's live depth is corrupted.
+                depth = offsets[0]
+            else:
+                offsets = [offset for offset in loads if 0 < offset < 0x1_0000]
+                depth = next((offset for offset in offsets if self.valid_depth(offset, tasks)), None)
+        if depth is None:
+            return None
+        base = GefUtil.offsetof("task_struct", "held_locks")
+        if base is None:
+            # These members form the lockdep block: depth, recursion, then the embedded array.
+            base = depth + 8
+        flags = self.held_flags_offset()
+        sizes = self.held_sizes(base, flags)
+        for size in sizes:
+            if self.valid_held_layout(tasks, depth, base, size):
+                self.held = {"depth": depth, "base": base, "size": size, "flags": flags}
+                return self.held
+        return None
+
+    @staticmethod
+    def valid_depth(offset, tasks):
+        values = [read_int32_from_memory(task + offset, safe=True) for task, _, _ in tasks]
+        return bool(values) and all(value is not None and value <= 48 for value in values)
+
+    def held_flags_offset(self):
+        bitfield = GefUtil.member_bitfield("struct held_lock", "class_idx")
+        if bitfield is not None:
+            position, _ = bitfield
+            return position // 8
+        minimum = 8 + 3 * current_arch.ptrsize
+        _, loads, _ = self.code_accesses(("print_lock",), all_sizes=True)
+        return next((offset for offset in loads if minimum <= offset <= minimum + 24), minimum)
+
+    def held_sizes(self, base, flags):
+        size = GefUtil.sizeof("struct held_lock")
+        if size is not None:
+            return [size]
+        names = ("lockdep_print_held_locks", "debug_show_held_locks")
+        _, addresses, code = self.code_accesses(names, include_addresses=True)
+        sizes = []
+        for offset in addresses:
+            if flags + 4 <= offset - base <= flags + 16:
+                sizes.append(offset - base)
+        if sizes:
+            return list(dict.fromkeys(sizes))
+        regex = r"\badd(?:i|s)?(?:\.w)?\s+(\w+),\s*(?:\1,\s*)?#?(0x[0-9a-f]+|\d+)"
+        for match in re.finditer(regex, code):
+            increment = int(match[2], 0)
+            if flags + 4 <= increment <= flags + 16:
+                sizes.append(increment)
+        # u64 gives at least pointer alignment; pin_count fits in the old 64-bit tail padding.
+        sizes += [align(flags + 4, current_arch.ptrsize), align(flags + 8, current_arch.ptrsize)]
+        return list(dict.fromkeys(sizes))
+
+    def valid_held_layout(self, tasks, depth_offset, base, size):
+        for task, _, _ in tasks:
+            depth = read_int32_from_memory(task + depth_offset, safe=True)
+            if depth is None or depth > 48:
+                continue
+            for index in range(depth):
+                held = task + base + index * size
+                ip = read_int_from_memory(held + 8, safe=True)
+                instance = read_int_from_memory(held + 8 + current_arch.ptrsize, safe=True)
+                if not ip or not instance:
+                    return False
+                # A module's acquisition site need not have a name in the kernel's kallsyms table.
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(ip) or read_memory(ip, 1, safe=True) is None:
+                    return False
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(instance):
+                    return False
+        return True
+
+    def read_held_lock(self, address):
+        flags = read_int32_from_memory(address + self.held["flags"], safe=True)
+        instance = read_int_from_memory(address + 8 + current_arch.ptrsize, safe=True)
+        ip = read_int_from_memory(address + 8, safe=True)
+        if flags is None or instance is None or ip is None:
+            return None
+        state = "recorded"
+        if self.held["flags"] >= 8 + 3 * current_arch.ptrsize + 16:
+            stat = Ksym.get_addr("lock_stat")
+            debug = Ksym.get_addr("debug_locks")
+            if stat:
+                if debug:
+                    if read_int32_from_memory(stat, safe=True) == 1:
+                        if read_int32_from_memory(debug, safe=True) == 1:
+                            # lock_contended sets waittime; lock_acquired advances holdtime after ownership is obtained.
+                            wait = read_int64_from_memory(address + self.held["flags"] - 16, safe=True)
+                            hold = read_int64_from_memory(address + self.held["flags"] - 8, safe=True)
+                            if wait:
+                                if hold is not None:
+                                    state = "acquired"
+                                    if wait > hold:
+                                        state = "waiting"
+        return {
+            "instance": instance, "ip": ip, "state": state,
+            "read": flags >> 16 & 3, "trylock": flags >> 15 & 1, "irq_context": flags >> 13 & 3,
+        }
+
+
+@register_command
+class KernelLocksCommand(GenericCommand, BufferingOutput):
+    """Display mutex/rwsem owners and the locks held by each task. Useful for investigating hangs and deadlocks."""
+
+    _cmdline_ = "klocks"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-p", "--pid", type=int, help="select the held locks of this task pid (including threads).")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="select the held locks of this task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}                              # list task->held_locks",
+        "{0:s} --pid 1337",
+        "{0:s} -f getty",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Lists task lock records and resolves mutex/rwsem owners and waiters automatically (CONFIG_LOCKDEP=y).",
+        "Unknown lock types keep their records; a reader-owned rwsem has no single owner.",
+        "State: held=holding the lock, waiting=waiting to acquire it, ?=unknown.",
+        "",
+        "Simplified lock structures:",
+        "",
+        "                               +--->+-task_struct-----------------+",
+        "+-mutex/rw_semaphore-+         |    | pid, comm                   |",
+        "| owner              |---------+    | lockdep_depth               |",
+        "| ...                |              | held_locks[]                |",
+        "| dep_map            |<---------+   |   +-held_lock------------+  |",
+        "+--------------------+          +---|---| instance             |  |",
+        "                                    |   | acquire_ip           |--|-->acquisition site",
+        "                                    |   | read, trylock        |  |",
+        "                                    |   +----------------------+  |",
+        "                                    +-----------------------------+",
+        "",
+        "With PREEMPT_RT, the owner is in mutex.rtmutex or rw_semaphore.rwbase.rtmutex.",
+    ])
+
+    def add_wrapped(self, text):
+        import textwrap
+        width = max(1, GefUtil.get_terminal_size()[1])
+        lines = textwrap.wrap(text, width, subsequent_indent=" " * min(4, width - 1), break_on_hyphens=False)
+        self.out.extend(lines)
+        return
+
+    def get_task_entries(self):
+        ktask = Kernel.task()
+        if not ktask.initialize(threads=True):
+            for func, line in Kernel.export_meta(self, ktask.meta):
+                func(line)
+            return None
+        if not ktask.lwp_available():
+            self.warn_add_out("Could not resolve the thread layout; only process leaders are shown")
+        entries = ktask.get_task_entries(threads=True)
+        self.tasks = {task: (pid, comm) for task, pid, comm in entries}
+        return entries
+
+    def dump_tasks(self):
+        resolver = Kernel.locks()
+        if not resolver.lockdep_enabled():
+            self.info_add_out("lockdep is disabled (CONFIG_LOCKDEP=n)")
+            return
+        entries = self.get_task_entries()
+        if entries is None:
+            return
+        if resolver.held_layout(entries) is None:
+            self.err_add_out("Could not resolve the lockdep layout")
+            return
+        entries = KernelTask.filter_task_entries(
+            entries, pid=self.args.pid, task_filter=self.args.task_filter, comm_filter=self.args.filter,
+        )
+        if not entries:
+            self.err_add_out("No task matched")
+        total = 0
+        for task, pid, comm in entries:
+            total += self.dump_task_locks(task, pid, comm)
+        self.quiet_info_add_out("Number of lockdep records: {:d}".format(total))
+        return
+
+    def dump_task_locks(self, task, pid, comm):
+        resolver = Kernel.locks()
+        layout = resolver.held
+        depth = read_int32_from_memory(task + layout["depth"], safe=True)
+        if depth is None:
+            self.warn_add_out("Could not read held_locks of task {:#x}".format(task))
+            return 0
+        if depth > 48:
+            self.warn_add_out("Invalid lockdep_depth {:d} of task {:#x}".format(depth, task))
+            return 0
+        entries = []
+        for index in range(depth):
+            entry = resolver.read_held_lock(task + layout["base"] + index * layout["size"])
+            if entry is None:
+                self.warn_add_out("Could not read held_locks[{:d}] of task {:#x}".format(index, task))
+            else:
+                key = entry["instance"], entry["ip"]
+                if key not in self.locks:
+                    self.locks[key] = resolver.resolve_lock(entry, self.tasks)
+                entry["lock"] = self.locks[key]
+                entries.append((index, entry))
+        if not entries:
+            return 0
+        title = "PID {:d} ({:s}), task {:#x}".format(pid, comm, task)
+        if len(title) + 2 <= GefUtil.get_terminal_size()[1]:
+            self.out.append(titlify(title, color="bold", msg_color="bold"))
+        else:
+            self.add_wrapped(title)
+        if not self.args.quiet:
+            legend = ["#", "lockdep_map", "kind", "state", "mode", "trylock", "context", "owner", "acquire_ip"]
+            self.out.append(GefUtil.make_legend(self.fmt.format(*legend)))
+        for index, entry in entries:
+            self.dump_held_lock(entry, index, task)
+        return len(entries)
+
+    def dump_held_lock(self, entry, index, task):
+        mode = {0: "exclusive", 1: "read", 2: "read-recursive"}.get(entry["read"], "?")
+        state = {"acquired": "held", "waiting": "waiting"}.get(entry["state"], "?")
+        kind, owner = "?", "-"
+        info = entry["lock"]
+        if info is not None:
+            kind = info["kind"]
+            if task in info["waiters"]:
+                state = "waiting"
+            elif info["task"] == task:
+                state = "held"
+            if info["task"]:
+                owner = "{:d}/{:s}".format(*self.tasks[info["task"]])
+            elif info["state"] == "readers":
+                owner = "shared"
+        cells = [str(index), AddressUtil.format_address(entry["instance"]), kind, state, mode]
+        context = {0: "task", 1: "softirq", 2: "hardirq", 3: "soft+hardirq"}[entry["irq_context"]]
+        trylock = "no"
+        if entry["trylock"]:
+            trylock = "yes"
+        acquire_ip = Symbol.format(entry["ip"], ksym="prefer", show_address=True, nocolor=True)
+        self.out.append(self.fmt.format(*cells, trylock, context, owner, acquire_ip))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        self.locks = {}
+        width = max(11, AddressUtil.get_format_address_width())
+        self.fmt = "{:>3s} {:%ds} {:5s} {:7s} {:14s} {:7s} {:12s} {:24s} {:s}" % width
+        self.quiet_info("Wait for memory scan")
+        if Kernel.version() is None:
+            err("Could not find Linux kernel")
+            return
+        self.out = []
+        self.dump_tasks()
         self.print_output(check_terminal_size=True)
         return
 

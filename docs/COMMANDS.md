@@ -11966,6 +11966,58 @@ A keyring leaf may itself be another keyring, so the command walks child keys re
 The request-key authorisation key held by an upcall helper is shown as the `request` root.
 ```
 
+## `klocks`
+
+Display mutex/rwsem owners and the locks held by each task. Useful for investigating hangs and deadlocks.
+
+
+### Syntax
+
+```text
+usage: klocks [-h] [-hh] [-p PID] [-T TASK_FILTER] [-f FILTER] [-n] [-q]
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -p, --pid PID         select the held locks of this task pid (including threads).
+  -T, --task-filter TASK_FILTER
+                        select the held locks of this task_struct address.
+  -f, --filter FILTER   comm string REGEXP filter.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+klocks                              # list task->held_locks
+klocks --pid 1337
+klocks -f getty
+```
+
+### Notes
+
+```text
+Lists task lock records and resolves mutex/rwsem owners and waiters automatically (CONFIG_LOCKDEP=y).
+Unknown lock types keep their records; a reader-owned rwsem has no single owner.
+State: held=holding the lock, waiting=waiting to acquire it, ?=unknown.
+
+Simplified lock structures:
+
+                               +--->+-task_struct-----------------+
++-mutex/rw_semaphore-+         |    | pid, comm                   |
+| owner              |---------+    | lockdep_depth               |
+| ...                |              | held_locks[]                |
+| dep_map            |<---------+   |   +-held_lock------------+  |
++--------------------+          +---|---| instance             |  |
+                                    |   | acquire_ip           |--|-->acquisition site
+                                    |   | read, trylock        |  |
+                                    |   +----------------------+  |
+                                    +-----------------------------+
+
+With PREEMPT_RT, the owner is in mutex.rtmutex or rw_semaphore.rwbase.rtmutex.
+```
+
 ## `klsm`
 
 Dump the registered Linux Security Module hooks.
