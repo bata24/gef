@@ -224852,10 +224852,68 @@ class BytearrayCommand(GenericCommand):
 
 
 @register_command
-class SixelMemoryCommand(GenericCommand):
-    """Show image (png, jpg, bmp, etc.) to terminal by imagemagick."""
+class LsixCommand(GenericCommand):
+    """Show images from memory or files in the terminal using imagemagick."""
 
-    _cmdline_ = "sixel-memory"
+    _cmdline_ = "lsix"
+    _category_ = "03-g. Memory - Investigation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
+    else:
+        subparsers = parser.add_subparsers(title="command")
+    subparsers.add_parser("memory")
+    subparsers.add_parser("file")
+    _syntax_ = parser.format_help()
+
+    def __init__(self, *args, **kwargs):
+        prefix = kwargs.get("prefix", True)
+        complete = kwargs.get("complete", gdb.COMPLETE_NONE)
+        super().__init__(prefix=prefix, complete=complete)
+        return
+
+    def show_image(self, path):
+        try:
+            convert_command = GefUtil.which("convert") # imagemagick
+        except FileNotFoundError as e:
+            err("{}".format(e))
+            return
+
+        GefUtil.os_system("{:s} {:s} sixel:-".format(shlex.quote(convert_command), shlex.quote(path)))
+        if self.args.decode_barcode:
+            self.decode_barcode(path)
+        return
+
+    def decode_barcode(self, path):
+        try:
+            import PIL.Image
+            import pyzbar.pyzbar
+        except ImportError as e:
+            err("Import error {}".format(e))
+            return
+
+        with PIL.Image.open(path) as image:
+            decoded = pyzbar.pyzbar.decode(image)
+        if decoded == []:
+            err("Not found")
+            return
+
+        for i, data in enumerate(decoded):
+            gef_print("[{}] type:{} data:{}".format(i, data.type, data.data))
+        return
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        self.usage()
+        return
+
+
+@register_command
+class LsixMemoryCommand(LsixCommand):
+    """Show an image from memory in the terminal using imagemagick."""
+
+    _cmdline_ = "lsix memory"
     _category_ = "03-g. Memory - Investigation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -224865,6 +224923,10 @@ class SixelMemoryCommand(GenericCommand):
                         help="the size of the image.")
     parser.add_argument("-b", "--decode-barcode", action="store_true", help="decode barcode if found.")
     _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
+        return
 
     def get_jpg_size(self, start_address):
         # parse header
@@ -224946,33 +225008,9 @@ class SixelMemoryCommand(GenericCommand):
             read_size = min(get_pagesize(), MAX_FILE_SIZE - len(png_data))
         return None
 
-    def decode_barcode(self, path):
-        try:
-            import PIL.Image
-            import pyzbar.pyzbar
-        except ImportError as e:
-            err("Import error {}".format(e))
-            return
-
-        with PIL.Image.open(path) as image:
-            decoded = pyzbar.pyzbar.decode(image)
-        if decoded == []:
-            err("Not found")
-            return
-
-        for i, data in enumerate(decoded):
-            gef_print("[{}] type:{} data:{}".format(i, data.type, data.data))
-        return
-
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        try:
-            convert_command = GefUtil.which("convert") # imagemagick
-        except FileNotFoundError as e:
-            err("{}".format(e))
-            return
-
         if not is_valid_addr(args.location):
             err("Memory read error")
             return
@@ -224994,11 +225032,38 @@ class SixelMemoryCommand(GenericCommand):
             err("Memory read error")
             return
 
-        with ContextManager.temporary_file(data, prefix="sixel-memory", suffix=".img") as tmp_path:
-            GefUtil.os_system("{:s} {:s} sixel:-".format(shlex.quote(convert_command), shlex.quote(tmp_path)))
+        with ContextManager.temporary_file(data, prefix="lsix-memory", suffix=".img") as tmp_path:
+            self.show_image(tmp_path)
+        return
 
-            if args.decode_barcode:
-                self.decode_barcode(tmp_path)
+
+@register_command
+class LsixFileCommand(LsixCommand):
+    """Show an image file in the terminal using imagemagick."""
+
+    _cmdline_ = "lsix file"
+    _category_ = "03-g. Memory - Investigation"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("filename", metavar="FILE", help="the image file path.")
+    parser.add_argument("-b", "--decode-barcode", action="store_true", help="decode barcode if found.")
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False, complete=gdb.COMPLETE_FILENAME)
+        return
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        path = os.path.abspath(os.path.expanduser(args.filename))
+        if not os.path.exists(path):
+            err("File not found")
+            return
+        if not os.path.isfile(path):
+            err("Not a regular file")
+            return
+
+        self.show_image(path)
         return
 
 

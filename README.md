@@ -1280,14 +1280,14 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Investigation
 
 <details>
-<summary><code>binwalk-memory</code>, <code>filetype-memory</code>, <code>sixel-memory</code>, <code>peek-pageframe</code>, <code>peek-pageflags</code>, <code>vdump</code>, <code>freq-analysis</code>, <code>stack-recover</code></summary>
+<summary><code>binwalk-memory</code>, <code>filetype-memory</code>, <code>lsix</code>, <code>peek-pageframe</code>, <code>peek-pageflags</code>, <code>vdump</code>, <code>freq-analysis</code>, <code>stack-recover</code></summary>
 
 - `binwalk-memory`: scans memory by `binwalk`.
     - ![](images/binwalk-memory.png)
 - `filetype-memory`: scans memory by `file` and `magika`.
     - ![](images/filetype-memory.png)
-- `sixel-memory`: shows image to terminal by `imagemagick`.
-    - ![](images/sixel-memory.png)
+- `lsix`: shows images in the terminal by `imagemagick`.
+    - ![](images/lsix.png)
     - If you have `pillow` and `pyzbar` installed, a barcode detection option is also available.
 - `peek-pageframe`: reads page frame data.
     - ![](images/peek-pageframe.png)
