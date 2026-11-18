@@ -88102,6 +88102,12 @@ class KernelSocket:
         ("sock.skc_family", "sock", "__sk_common.skc_family"),
         ("sock.skc_state", "sock", "__sk_common.skc_state"),
         ("sock.skc_prot", "sock", "__sk_common.skc_prot"),
+        ("sock.skc_daddr", "sock", "__sk_common.skc_daddr"),
+        ("sock.skc_rcv_saddr", "sock", "__sk_common.skc_rcv_saddr"),
+        ("sock.skc_dport", "sock", "__sk_common.skc_dport"),
+        ("sock.skc_num", "sock", "__sk_common.skc_num"),
+        ("sock.skc_v6_daddr", "sock", "__sk_common.skc_v6_daddr"),
+        ("sock.skc_v6_rcv_saddr", "sock", "__sk_common.skc_v6_rcv_saddr"),
         ("sock.sk_error_queue", "sock", "sk_error_queue"),
         ("sock.sk_receive_queue", "sock", "sk_receive_queue"),
         ("sock.sk_write_queue", "sock", "sk_write_queue"),
@@ -88178,6 +88184,11 @@ class KernelSocket:
             if details:
                 state = read_int8_from_memory(sk + off_state)
 
+        # local / peer of AF_INET and AF_INET6
+        addresses = None
+        if fam in [2, 10]:
+            addresses = self.find_addresses(sk, fam, off_fam, offset_prot)
+
         # socket->{type,state}
         stype = sstate = None
         if socket and details:
@@ -88205,7 +88216,7 @@ class KernelSocket:
         return {
             "sock": sk, "socket": socket, "file": file, "family": fam, "state": state,
             "type": stype, "socket_state": sstate, "protocol": prot,
-            "protocol_symbol": prot_sym, "protocol_name": prot_iname,
+            "protocol_symbol": prot_sym, "protocol_name": prot_iname, "addresses": addresses,
             "queues": queues, "callbacks": callbacks, "meta": self.layout_meta,
         }
 
@@ -88520,6 +88531,54 @@ class KernelSocket:
                     return fam, off, off + 2, "heuristic"
         off, fam, _st = matches[0]
         return fam, off, off + 2, "heuristic"
+
+    def find_addresses(self, sk, family, offset_family, offset_prot):
+        """Return (local, peer) of an AF_INET or AF_INET6 sock as "address:port", or None.
+        skc_daddr and skc_rcv_saddr are the head of sock_common, and skc_dport and skc_num follow skc_hash.
+        skc_v6_daddr and skc_v6_rcv_saddr follow skc_prot and skc_net, where skc_net is a pointer only with
+        CONFIG_NET_NS=y."""
+        import socket
+        ptrsize = current_arch.ptrsize
+        names = ["skc_daddr", "skc_rcv_saddr", "skc_dport", "skc_num", "skc_v6_daddr", "skc_v6_rcv_saddr"]
+        offsets = {}
+        for name in names:
+            offsets[name] = self.dwarf["sock." + name]
+        source = "DWARF"
+        if offsets["skc_dport"] is None:
+            # skc_dport and skc_num put skc_family at 0x10 (v3.8~); the older kernels have the ports in inet_sock
+            if offset_family != 0x10:
+                return None
+            offsets.update({"skc_daddr": 0, "skc_rcv_saddr": 4, "skc_dport": 0xc, "skc_num": 0xe})
+            source = "heuristic"
+            # the older kernels than v3.13 have the IPv6 addresses in ipv6_pinfo
+            if offset_prot is not None and Kernel.version() >= "3.13":
+                offset_v6 = offset_prot + ptrsize
+                # skc_net points to struct net, while an IPv6 address does not look like a kernel address
+                net = read_int_from_memory(sk + offset_v6, safe=True)
+                if net and KernelAddressHeuristicFinderUtil.is_kernel_space(net):
+                    if is_valid_addr(net):
+                        offset_v6 += ptrsize
+                offsets.update({"skc_v6_daddr": offset_v6, "skc_v6_rcv_saddr": offset_v6 + 16})
+
+        if family == 10:
+            keys = ["skc_v6_daddr", "skc_v6_rcv_saddr"]
+            size, af, fmt = 16, socket.AF_INET6, "[{:s}]:{:d}"
+        else:
+            keys = ["skc_daddr", "skc_rcv_saddr"]
+            size, af, fmt = 4, socket.AF_INET, "{:s}:{:d}"
+        if offsets[keys[0]] is None:
+            return None
+        daddr = read_memory(sk + offsets[keys[0]], size, safe=True)
+        saddr = read_memory(sk + offsets[keys[1]], size, safe=True)
+        ports = read_memory(sk + offsets["skc_dport"], 4, safe=True)
+        if None in [daddr, saddr, ports]:
+            return None
+        for name in keys + ["skc_dport", "skc_num"]:
+            self.add_meta("offsetof(sock, __sk_common.{:s})".format(name), offsets[name], source)
+        # skc_dport is in the network byte order, and skc_num is not
+        dport = int.from_bytes(ports[:2], "big")
+        num = u16(ports[2:])
+        return fmt.format(socket.inet_ntop(af, saddr), num), fmt.format(socket.inet_ntop(af, daddr), dport)
 
     def looks_like_backlog(self, addr):
         """`struct { atomic_t rmem_alloc; int len; struct sk_buff *head, *tail; } sk_backlog`.
@@ -167446,13 +167505,19 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         "",
         "+-file------+  +->+-socket----+  +->+-sock--------------------+",
         "| ...       |  |  | state     |  |  | (sock_common)           |",
-        "| private   |--+  | type      |  |  |   skc_family            |",
-        "| ...       |     | flags     |  |  |   skc_state             |",
-        "+-----------+     | file      |  |  |   skc_prot              |--->struct proto (name)",
-        "                  | sk        |--+  | ...                     |",
-        "                  | ops       |     | sk_receive_queue        |--->skb->skb->...",
-        "                  | ...       |     | sk_write_queue          |--->skb->skb->...",
-        "                  +-----------+     | sk_error_queue          |--->skb->skb->...",
+        "| private   |--+  | type      |  |  |   skc_daddr             |",
+        "| ...       |     | flags     |  |  |   skc_rcv_saddr         |",
+        "+-----------+     | file      |  |  |   skc_dport, skc_num    |",
+        "                  | sk        |--+  |   skc_family            |",
+        "                  | ops       |     |   skc_state             |",
+        "                  | ...       |     |   skc_prot              |--->struct proto (name)",
+        "                  +-----------+     |   ...                   |",
+        "                                    |   skc_v6_daddr          |",
+        "                                    |   skc_v6_rcv_saddr      |",
+        "                                    | ...                     |",
+        "                                    | sk_receive_queue        |--->skb->skb->...",
+        "                                    | sk_write_queue          |--->skb->skb->...",
+        "                                    | sk_error_queue          |--->skb->skb->...",
         "                                    | sk_state_change         |",
         "                                    | sk_data_ready           |",
         "                                    | sk_write_space          |",
@@ -167537,6 +167602,12 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
             else:
                 state = None
             self.out.append("     ├─ {:<14s} {:s}".format("state", state or "{:#x}".format(st)))
+
+        # local / peer
+        if info["addresses"]:
+            local, peer = info["addresses"]
+            self.out.append("     ├─ {:<14s} {:s}".format("local", local))
+            self.out.append("     ├─ {:<14s} {:s}".format("peer", peer))
 
         # socket->{type,state}
         if socket:

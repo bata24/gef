@@ -13033,13 +13033,19 @@ Simplified socket structure:
 
 +-file------+  +->+-socket----+  +->+-sock--------------------+
 | ...       |  |  | state     |  |  | (sock_common)           |
-| private   |--+  | type      |  |  |   skc_family            |
-| ...       |     | flags     |  |  |   skc_state             |
-+-----------+     | file      |  |  |   skc_prot              |--->struct proto (name)
-                  | sk        |--+  | ...                     |
-                  | ops       |     | sk_receive_queue        |--->skb->skb->...
-                  | ...       |     | sk_write_queue          |--->skb->skb->...
-                  +-----------+     | sk_error_queue          |--->skb->skb->...
+| private   |--+  | type      |  |  |   skc_daddr             |
+| ...       |     | flags     |  |  |   skc_rcv_saddr         |
++-----------+     | file      |  |  |   skc_dport, skc_num    |
+                  | sk        |--+  |   skc_family            |
+                  | ops       |     |   skc_state             |
+                  | ...       |     |   skc_prot              |--->struct proto (name)
+                  +-----------+     |   ...                   |
+                                    |   skc_v6_daddr          |
+                                    |   skc_v6_rcv_saddr      |
+                                    | ...                     |
+                                    | sk_receive_queue        |--->skb->skb->...
+                                    | sk_write_queue          |--->skb->skb->...
+                                    | sk_error_queue          |--->skb->skb->...
                                     | sk_state_change         |
                                     | sk_data_ready           |
                                     | sk_write_space          |
