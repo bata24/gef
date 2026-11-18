@@ -209078,6 +209078,155 @@ class XSkipCommand(GenericCommand):
 
 
 @register_command
+class InterruptAfterCommand(GenericCommand):
+    """Continue and interrupt after the specified seconds."""
+
+    _cmdline_ = "interrupt-after"
+    _category_ = "01-d. Debugging Support - Execution"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("seconds", metavar="SECONDS", type=float, help="the seconds to wait before interrupting.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="do not show the countdown.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} 3      # continue and interrupt after 3 seconds",
+        "{0:s} 0.5    # continue and interrupt after 0.5 seconds",
+        "{0:s} -q 3   # same as above, but do not show the countdown",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "If the inferior stops earlier (e.g., breakpoint, Ctrl+C), the interrupt is canceled.",
+        "Only when qemu-user or pin, SIGTRAP is sent instead of `interrupt`, as with `continue-for-qemu-user`.",
+    ])
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    def do_invoke(self, args):
+        if not math.isfinite(args.seconds):
+            err("Invalid seconds")
+            return
+        if args.seconds <= 0:
+            err("Invalid seconds")
+            return
+
+        import threading
+
+        # `interrupt` (= Ctrl+C) does not work for qemu-user or pin
+        pid = None
+        if is_qemu_user() or is_pin():
+            pid = Pid.get_pid()
+
+        fmt = "{:s} Interrupting in {{:.1f}} seconds".format(Color.colorify("[+]", "bold blue"))
+        width = len(fmt.format(args.seconds))
+        end_time = time.monotonic() + args.seconds
+        stopped = threading.Event()
+
+        # GDB API is not thread-safe, so the countdown thread posts the following to the main thread.
+        # They do nothing once the inferior has stopped by itself.
+        def show(remain):
+            if stopped.is_set():
+                return
+            # the leading `\r` overwrites `^C` echoed by the terminal, and the trailing one lets GDB overwrite the countdown
+            gef_print("\r" + fmt.format(remain).ljust(width) + "\r", end="")
+            gdb.flush()
+            return
+
+        def interrupt():
+            if stopped.is_set():
+                return
+            if not args.quiet:
+                gef_print("\r" + " " * width + "\r", end="")
+            if pid:
+                os.kill(pid, signal.SIGTRAP)
+                return
+            gdb.execute("interrupt")
+            return
+
+        def countdown():
+            while True:
+                remain = end_time - time.monotonic()
+                if remain <= 0:
+                    break
+                if not args.quiet:
+                    gdb.post_event(functools.partial(show, remain))
+                if stopped.wait(min(remain, 0.1)):
+                    return
+            gdb.post_event(interrupt)
+            return
+
+        thread = threading.Thread(target=countdown, daemon=True)
+        thread.start()
+        try:
+            gdb.execute("c") # use c wrapper
+        except gdb.error as e:
+            err(e)
+        finally:
+            stopped.set()
+            thread.join()
+        return
+
+
+@register_command
+class ContinueAfterCommand(GenericCommand):
+    """Continue after the specified seconds."""
+
+    _cmdline_ = "continue-after"
+    _category_ = "01-d. Debugging Support - Execution"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("seconds", metavar="SECONDS", type=float, help="the seconds to wait before continuing.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="do not show the countdown.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} 3      # continue after 3 seconds",
+        "{0:s} 0.5    # continue after 0.5 seconds",
+        "{0:s} -q 3   # same as above, but do not show the countdown",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "Waiting can be canceled with Ctrl+C.",
+    ])
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    def do_invoke(self, args):
+        if not math.isfinite(args.seconds):
+            err("Invalid seconds")
+            return
+        if args.seconds <= 0:
+            err("Invalid seconds")
+            return
+
+        fmt = "{:s} Continuing in {{:.1f}} seconds (Ctrl+C to cancel)".format(Color.colorify("[+]", "bold blue"))
+        width = len(fmt.format(args.seconds))
+        end_time = time.monotonic() + args.seconds
+        try:
+            while True:
+                remain = end_time - time.monotonic()
+                if remain <= 0:
+                    break
+                if not args.quiet:
+                    gef_print("\r" + fmt.format(remain).ljust(width) + "\r", end="")
+                    gdb.flush()
+                time.sleep(min(remain, 0.1))
+        except KeyboardInterrupt:
+            # also erase `^C` echoed by the terminal
+            gef_print("\r" + " " * width + "\r", end="")
+            info("Canceled")
+            return
+
+        if not args.quiet:
+            gef_print("\r" + " " * width + "\r", end="")
+        try:
+            gdb.execute("c") # use c wrapper
+        except gdb.error as e:
+            err(e)
+        return
+
+
+@register_command
 class ExecUntilCommand(GenericCommand):
     """The base command to execute until specific condition."""
 

@@ -876,7 +876,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Execution
 
 <details>
-<summary><code>exec-until</code>, <code>call-trace</code>, <code>xuntil</code>, <code>strings-continue</code>, <code>xskip</code></summary>
+<summary><code>exec-until</code>, <code>call-trace</code>, <code>xuntil</code>, <code>strings-continue</code>, <code>xskip</code>, <code>interrupt-after</code>, <code>continue-after</code></summary>
 
 - `exec-until`: executes until specified operation.
     - Supports the following patterns: call, jmp, syscall, ret, indirect-branch (x64/x86 only), all-branch (call || jmp || ret), memory-access, specified-keyword-regex, specified-condition (expressions using register or memory values), user-code, libc-code, secure-world, region-change.
@@ -887,6 +887,8 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - It is slightly easier to use than the original until command.
 - `strings-continue`: single-steps and prints ASCII strings referenced by general-purpose registers.
 - `xskip`: skips instructions easily.
+- `interrupt-after`: continues and interrupts after the specified seconds.
+- `continue-after`: continues after the specified seconds.
 
 </details>
 

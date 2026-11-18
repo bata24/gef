@@ -753,6 +753,38 @@ options:
   -N, --no-file-output  disable writing trace output to a file.
 ```
 
+## `continue-after`
+
+Continue after the specified seconds.
+
+
+### Syntax
+
+```text
+usage: continue-after [-h] [-q] SECONDS
+
+positional arguments:
+  SECONDS      the seconds to wait before continuing.
+
+options:
+  -h, --help   show this help message and exit
+  -q, --quiet  do not show the countdown.
+```
+
+### Examples
+
+```gdb
+continue-after 3      # continue after 3 seconds
+continue-after 0.5    # continue after 0.5 seconds
+continue-after -q 3   # same as above, but do not show the countdown
+```
+
+### Notes
+
+```text
+Waiting can be canceled with Ctrl+C.
+```
+
 ## `exec-until`
 
 The base command to execute until specific condition.
@@ -1082,6 +1114,39 @@ options:
   -N, --skip-lib        use `ni` instead of `si` if instruction is `call xxx@plt`.
   -e, --exclude EXCLUDE
                         the address to exclude from breakpoints.
+```
+
+## `interrupt-after`
+
+Continue and interrupt after the specified seconds.
+
+
+### Syntax
+
+```text
+usage: interrupt-after [-h] [-q] SECONDS
+
+positional arguments:
+  SECONDS      the seconds to wait before interrupting.
+
+options:
+  -h, --help   show this help message and exit
+  -q, --quiet  do not show the countdown.
+```
+
+### Examples
+
+```gdb
+interrupt-after 3      # continue and interrupt after 3 seconds
+interrupt-after 0.5    # continue and interrupt after 0.5 seconds
+interrupt-after -q 3   # same as above, but do not show the countdown
+```
+
+### Notes
+
+```text
+If the inferior stops earlier (e.g., breakpoint, Ctrl+C), the interrupt is canceled.
+Only when qemu-user or pin, SIGTRAP is sent instead of `interrupt`, as with `continue-for-qemu-user`.
 ```
 
 ## `strings-continue`
