@@ -10139,7 +10139,7 @@ options:
   -h, --help     show this help message and exit
   -S             ARMv7: use TTBRn_ELm_S to parse start. ARMv8: heuristic search the memory of qemu-system.
   -s             ARMv7/v8: use TTBRn_ELm to parse start.
-  -v, --verbose  verbose output (for arm64 secure memory).
+  -v, --verbose  verbose output and a full alias walk in KGDB.
 ```
 
 ### Examples
@@ -10330,6 +10330,7 @@ options:
 
 ```text
 One page may correspond to multiple virtual addresses.
+In x86_64/AArch64 KGDB, known linear-map and kernel-image aliases are preferred. Use p2v -v for a full walk.
 ```
 
 ## `pageinfo`

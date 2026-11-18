@@ -70987,6 +70987,8 @@ class KernelConstsBase:
 class KernelConstsX86(KernelConstsBase):
     """A class that manages x86 constants by version."""
 
+    START_KERNEL_MAP = 0xffff_ffff_8000_0000
+
     def __init__(self, version=None, kaslr=None, pae=None):
         super().__init__(version)
         self.kaslr = kaslr
@@ -71569,7 +71571,7 @@ class KernelConstsX64(KernelConstsBase):
     @property
     def __START_KERNEL_map(self):
         if "3.0" <= self.kversion:
-            return 0xffff_ffff_8000_0000
+            return self.START_KERNEL_MAP
         return None
 
     @property
@@ -80898,15 +80900,15 @@ class KernelConfig:
         self.quiet = True
         return
 
-    def extract_config(self, addr, end=None):
+    def extract_config(self, addr, end=None, reader=read_memory):
         # v5.1~: `kernel_config_data` points just after IKCFG_ST
         # ~v5.0: `kernel_config_data` is a static array that begins with IKCFG_ST
-        data = read_memory(addr, len(self.MAGIC_START), safe=True)
+        data = reader(addr, len(self.MAGIC_START), safe=True)
         if data is None:
             return None
         if data != self.MAGIC_START:
             addr -= len(self.MAGIC_START)
-            if read_memory(addr, len(self.MAGIC_START), safe=True) != self.MAGIC_START:
+            if reader(addr, len(self.MAGIC_START), safe=True) != self.MAGIC_START:
                 return None
 
         import zlib
@@ -80922,7 +80924,7 @@ class KernelConfig:
                 self.meta.append(("warn", "Truncated gzip stream at {:#x}".format(addr)))
                 return None
             size = min(limit, (pos & ~0xfff) + 0x1000) - pos
-            data = read_memory(pos, size, safe=True)
+            data = reader(pos, size, safe=True)
             if data is None:
                 self.meta.append(("warn", "Failed to read the gzip stream at {:#x}".format(pos)))
                 return None
@@ -80933,7 +80935,7 @@ class KernelConfig:
                 return None
             pos += size
         end_pos = pos - len(decompressor.unused_data)
-        found_end = read_memory(end_pos, len(self.MAGIC_END), safe=True) == self.MAGIC_END
+        found_end = reader(end_pos, len(self.MAGIC_END), safe=True) == self.MAGIC_END
         self.markers = (addr, end_pos, found_end)
         return String.bytes2str(b"".join(configs))
 
@@ -80985,32 +80987,70 @@ class KernelConfig:
         return None
 
     def get_config_from_symbol(self):
-        addr = Ksym.get_addr("kernel_config_data")
+        lookup = Ksym.get_addr
+        if is_kgdb():
+            lookup = Symbol.resolve_address
+        addr = lookup("kernel_config_data")
         if not addr:
             return None
-        end = Ksym.get_addr("kernel_config_data_end") # v5.1~
+        end = lookup("kernel_config_data_end") # v5.1~
         configs = self.extract_config(addr, end)
         if configs is None:
             self.meta.append(("warn", "kernel_config_data ({:#x}) does not have a valid config".format(addr)))
         return configs
 
     def get_config_from_rodata(self):
+        if is_kgdb():
+            filename = Ksym.Vmlinux.loaded_path(False, quiet=True)
+            banner = Symbol.resolve_address("linux_banner")
+            if not filename or banner is None:
+                return None
+            elf = Elf.get_elf(filename)
+            if elf is None:
+                return None
+            rodata = elf.get_shdr(".rodata")
+            symbols = elf.get_symbol_values(("linux_banner",))
+            build_id = KernelLoadCommand.get_build_id(elf)
+            if rodata is None or "linux_banner" not in symbols or build_id is None:
+                return None
+            slide = banner - symbols["linux_banner"]
+            address, desc = build_id
+            if read_memory(address + slide, len(desc), safe=True) != desc:
+                self.meta.append(("warn", "Could not verify the loaded vmlinux build ID"))
+                return None
+            data = elf.read_shdr(".rodata")
+            base = rodata.sh_addr + slide
+
+            def reader(addr, size, safe=False):
+                if addr < base or addr + size > base + len(data):
+                    return None
+                return data[addr - base:addr - base + size]
+
+            for match in re.finditer(self.MAGIC_START, data):
+                addr = base + match.start()
+                limit = min(base + len(data), addr + len(self.MAGIC_START) + self.MAX_CONFIG_GZ_SIZE)
+                configs = self.extract_config(addr, limit, reader=reader)
+                if configs is not None:
+                    self.meta.append(("info", "Read embedded config from the loaded vmlinux"))
+                    return configs
+            self.meta.append(("info", "Could not find IKCFG_ST in the loaded vmlinux"))
+            return None
+
         klayout = Kernel.layout()
         if klayout.ro_base is None:
             self.meta.append(("warn", "Not recognized .rodata"))
             return None
-
-        if is_kgdb():
-            self.meta.append(("info", "The config is often near the top of .rodata; once found, the search stops early."))
-            chunk_size = 0x1000
-        else:
-            chunk_size = 0x100000
-        configs = self.search_config(klayout.ro_base, klayout.ro_base + klayout.ro_size, chunk_size)
+        configs = self.search_config(klayout.ro_base, klayout.ro_base + klayout.ro_size, 0x100000)
         if configs is None:
             self.meta.append(("info", "Could not find IKCFG_ST in .rodata"))
         return configs
 
     def get_config_from_module(self):
+        if is_kgdb():
+            head = Symbol.resolve_address("modules")
+            if head is not None and read_int_from_memory(head, safe=True) == head:
+                self.meta.append(("info", "The configs module is not loaded"))
+                return None
         kmod = Kernel.modules()
         if not kmod.initialize():
             self.meta.append(("info", "Could not find modules (CONFIG_MODULES may not be set)"))
@@ -81056,7 +81096,10 @@ class KernelConfig:
         self.meta = []
         self.markers = None
         self.module_addr = None
-        for getter in (self.get_config_from_symbol, self.get_config_from_rodata, self.get_config_from_module):
+        getters = (self.get_config_from_symbol, self.get_config_from_rodata, self.get_config_from_module)
+        if is_kgdb():
+            getters = (self.get_config_from_rodata, self.get_config_from_symbol, self.get_config_from_module)
+        for getter in getters:
             configs = getter()
             if configs is not None:
                 self.record_markers()
@@ -87248,8 +87291,8 @@ class KernelMM:
         return None
 
     @staticmethod
-    def get_user_maps(pgd_phys):
-        """Walk the page table at `pgd_phys` with `pagewalk` and return the user-land mappings."""
+    def get_user_maps(pgd_phys, addresses=()):
+        """Walk the user page table, optionally limited to the pages covering `addresses`."""
         if is_x86_64():
             # the user copy of KPTI has the NX bits of the user-land, and is fast to walk
             commands = [
@@ -87280,10 +87323,11 @@ class KernelMM:
             else:
                 satp = (satp & ~0x3f_ffff) | (pgd_phys >> 12)
             commands = ["pagewalk riscv --satp {:#x}".format(satp)]
+        trace = "".join(" --trace {:#x}".format(address) for address in addresses)
         for command in commands:
             # a probing walk: a candidate root may fault during the detection of mm->pgd, and the traceback
             # pagewalk then prints must not be echoed into the output of the caller
-            maps = AddrMap.probe_maps(command + " --quiet --no-pager --no-merge --disable-color")
+            maps = AddrMap.probe_maps(command + " --quiet --no-pager --no-merge --disable-color" + trace)
             maps = [entry for entry in maps if entry.is_userland()]
             if maps:
                 return maps
@@ -97107,7 +97151,7 @@ class KernelCurrentCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -100979,26 +101023,40 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
             dump_size, target = ret
 
         self.quiet_info("Wait for memory scan")
-        self.task_command = Kernel.task()
-        if not self.task_command.initialize():
-            for func, line in Kernel.export_meta(self, self.task_command.meta):
-                func(line)
-            self.quiet_err("Failed to initialize")
-            return
+        task = None
+        offset_pgd = GefUtil.offsetof("struct mm_struct", "pgd")
+        if is_kgdb() and offset_pgd is not None:
+            init_task = Symbol.resolve_address("init_task")
+            offsets = [GefUtil.offsetof("struct task_struct", member) for member in ("tasks", "pid", "comm", "mm")]
+            if init_task is not None and None not in offsets:
+                offset_tasks, offset_pid, offset_comm, offset_mm = offsets
+                tasks = KernelListHead(init_task + offset_tasks, offset_tasks)
+                for entry in tasks.iter_entries(include_head=True):
+                    if read_int32_from_memory(entry + offset_pid, safe=True) == args.pid:
+                        task = entry
+                        break
 
-        task = self.task_command.get_task_by_pid(args.pid, safe=True)
         if task is None:
-            err("No task matched pid {:d}".format(args.pid))
-            return
-        label = "{:s}[{:d}]".format(read_cstring_from_memory(task + self.task_command.offset_comm) or "???", args.pid)
-        mm = read_int_from_memory(task + self.task_command.offset_mm)
+            self.task_command = Kernel.task()
+            if not self.task_command.initialize():
+                for func, line in Kernel.export_meta(self, self.task_command.meta):
+                    func(line)
+                self.quiet_err("Failed to initialize")
+                return
+            task = self.task_command.get_task_by_pid(args.pid, safe=True)
+            if task is None:
+                err("No task matched pid {:d}".format(args.pid))
+                return
+            offset_comm = self.task_command.offset_comm
+            offset_mm = self.task_command.offset_mm
+        label = "{:s}[{:d}]".format(read_cstring_from_memory(task + offset_comm) or "???", args.pid)
+        mm = read_int_from_memory(task + offset_mm)
         if mm == 0:
             err("{:s} is a kernel thread, which has no user-land memory".format(label))
             return
 
         # pgd detection without DWARF validates a candidate by walking it to the task's own VMAs
-        vmas = ()
-        if GefUtil.offsetof("mm_struct", "pgd") is None:
+        if offset_pgd is None:
             self.kmm = Kernel.mm()
             task_addrs = KernelTask.get_task_list(self.task_command.init_task, self.task_command.offset_tasks)
             if not self.kmm.initialize(task_addrs, self.task_command.offset_mm):
@@ -101009,7 +101067,7 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
             vmas = tuple((area.start, area.end) for area in self.kmm.get_task_maps(task))
             for message in self.kmm.pop_warnings():
                 self.quiet_warn(message)
-        offset_pgd = Kernel.mm().get_offset_pgd((mm, vmas))
+            offset_pgd = Kernel.mm().get_offset_pgd((mm, vmas))
         if offset_pgd is None:
             err("Could not find mm_struct->pgd")
             return
@@ -101021,8 +101079,14 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(mm_struct, pgd): {:#x}".format(offset_pgd))
         self.quiet_info("{:s} task: {:#x}, mm: {:#x}, pgd: {:#x} (phys: {:#x})".format(label, task, mm, pgd, pgd_phys))
 
+        addresses = ()
+        if is_kgdb() and (is_x86_64() or is_arm64()):
+            page_size = get_pagesize()
+            start = target & ~(page_size - 1)
+            if 0 < target + dump_size - start <= 64 * page_size:
+                addresses = range(start, target + dump_size, page_size)
         try:
-            self.maps = KernelMM.get_user_maps(pgd_phys)
+            self.maps = KernelMM.get_user_maps(pgd_phys, addresses)
         except (gdb.error, gdb.MemoryError, OverflowError):
             self.maps = []
         if not self.maps:
@@ -102632,7 +102696,7 @@ class KernelBlockDevicesCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -103989,7 +104053,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -110074,7 +110138,7 @@ class KernelPciDeviceCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -160376,10 +160440,13 @@ class KernelSlub(KernelSlabAllocator):
     def walk_caches(
         self, target_names, cpus, *, names_only=False, reverse_walk=False, simple=False,
         skip_page2virt=False, quiet=True, slub_debug_y=False, active=True, partial=True,
-        node=True, cpu_sheaves=True
+        node=True, cpu_sheaves=True, target_cache=None,
     ):
         self.swap = self.byte_swap
-        current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False, reverse_walk=reverse_walk)
+        if target_cache is not None:
+            current_kmem_cache = target_cache
+        else:
+            current_kmem_cache = self.get_next_kmem_cache(self.slab_caches, point_to_base=False, reverse_walk=reverse_walk)
         parsed_caches = [{"name": "slab_caches", "next": current_kmem_cache}]
 
         # first, parse kmem_cache
@@ -160416,6 +160483,8 @@ class KernelSlub(KernelSlabAllocator):
                     current_kmem_cache + self.kmem_cache_offset_freed_slabs_min, self.page_offset_next,
                 )
             parsed_caches.append(kmem_cache)
+            if target_cache is not None:
+                break
 
             # goto next
             current_kmem_cache = kmem_cache["next"]
@@ -163928,9 +163997,16 @@ class KernelSlabContains:
         return Kernel.virt2page(vaddr)
 
     @staticmethod
-    def is_freed(object_base, slab_cache_name):
+    def is_freed(object_base, slab_cache_name, cache_addr=None):
         """Return True if `object_base` is in a freelist of the cache, or None if the cache cannot be parsed."""
-        allocator, kmem_caches = Kernel.get_slab_caches([slab_cache_name])
+        if is_kgdb() and cache_addr is not None and Kernel.get_slab_type() == "SLUB":
+            allocator = "SLUB"
+            resolver = Kernel.slub()
+            if not resolver.initialize():
+                return None
+            kmem_caches = resolver.walk_caches([], list(range(resolver.ncpus)), target_cache=cache_addr)[1:]
+        else:
+            allocator, kmem_caches = Kernel.get_slab_caches([slab_cache_name])
         if not kmem_caches:
             return None
         kmem_cache = kmem_caches[0]
@@ -164149,7 +164225,7 @@ class SlabContainsCommand(GenericCommand):
             return
 
         # resolve freelist and print chunk status (in-use or freed)
-        freed = self.kslab_contains.is_freed(obj["object_base"], obj["name"])
+        freed = self.kslab_contains.is_freed(obj["object_base"], obj["name"], obj.get("kmem_cache"))
         if freed:
             self.quiet_print("status: {:s} (found object base in freelist)".format(
                 Color.colorify("freed", Config.get("theme.heap_chunk_address_freed")),
@@ -164393,7 +164469,7 @@ class KobjCommand(GenericCommand):
             result["offset"] = -1
             result["padding"] = True
         elif not obj["error"]:
-            freed = resolver.is_freed(obj["object_base"], obj["name"])
+            freed = resolver.is_freed(obj["object_base"], obj["name"], obj.get("kmem_cache"))
             if freed:
                 result["state"] = "freed"
             elif freed is not None:
@@ -164425,9 +164501,8 @@ class KobjCommand(GenericCommand):
         candidate, confidence = self.type_candidate(slab["name"], aligned, slab["object_size"])
 
         # If the physical cache has merged aliases, the reported name is only the owner: the
-        # object may belong to any merged cache. Verify for high-confidence (dedicated) names,
-        # and always when -v, then downgrade and list the alternatives.
-        if confidence == "high" or self.args.verbose:
+        # object may belong to any merged cache. In KGDB, reserve the full alias lookup for -v.
+        if self.args.verbose or (confidence == "high" and not is_kgdb()):
             aliases = self.get_merged_aliases(slab["name"])
         else:
             aliases = None
@@ -167907,7 +167982,7 @@ class KernelBpfCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -169524,7 +169599,7 @@ class KernelNetDeviceCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -197104,6 +197179,47 @@ class AddrMap:
         return satp >> 31 == 0
 
     @staticmethod
+    @Cache.cache_until_next(per_cpu=True)
+    def get_kgdb_kernel_mappings():
+        """Return the kernel image and linear map bounds from the loaded symbols."""
+        if not is_kgdb() or not is_in_kernel():
+            return []
+        if is_x86_64():
+            offset_addr = Symbol.resolve_address("page_offset_base")
+            phys_base_addr = Symbol.resolve_address("phys_base")
+            if offset_addr is None or phys_base_addr is None:
+                return []
+            page_offset = read_int_from_memory(offset_addr, safe=True)
+            phys_base = read_int_from_memory(phys_base_addr, safe=True)
+            if phys_base is None:
+                return []
+            # Linux x86_64 __pa_symbol() uses the fixed __START_KERNEL_map with the live phys_base.
+            image_offset = KernelConstsX86.START_KERNEL_MAP - phys_base
+            linear_offset = page_offset
+        elif is_arm64():
+            image_offset_addr = Symbol.resolve_address("kimage_voffset")
+            if image_offset_addr is None:
+                return []
+            image_offset = read_int_from_memory(image_offset_addr, safe=True)
+            page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
+            linear_offset = KernelAddressHeuristicFinder.consts().physmap_base
+        else:
+            return []
+
+        mappings = []
+        high_memory_addr = Symbol.resolve_address("high_memory")
+        if high_memory_addr is not None and page_offset is not None and linear_offset is not None:
+            high_memory = read_int_from_memory(high_memory_addr, safe=True)
+            if high_memory is not None and linear_offset <= page_offset < high_memory:
+                mappings.append(AddrMap.Entry(page_offset, high_memory, page_offset - linear_offset,
+                                              high_memory - linear_offset, flags="KGDB linear map"))
+        text = Symbol.resolve_address("_text")
+        end = Symbol.resolve_address("_end")
+        if text is not None and end is not None and image_offset is not None and image_offset <= text < end:
+            mappings.append(AddrMap.Entry(text, end, text - image_offset, end - image_offset, flags="KGDB kernel image"))
+        return mappings
+
+    @staticmethod
     def v2p(address, force_secure=None, maps=None):
         """Translate a virtual address to a physical address."""
 
@@ -197111,6 +197227,12 @@ class AddrMap:
             if 0 <= address < (1 << (current_arch.ptrsize * 8)):
                 return address
             return None
+
+        if maps is None and force_secure is None and is_kgdb() and (is_x86_64() or is_arm64()):
+            entry = AddrMap.find_virtual(address, maps=AddrMap.get_kgdb_kernel_mappings())
+            if entry is not None and is_valid_addr(address):
+                return entry.v2p(address)
+            maps = AddrMap.probe_maps("pagewalk --quiet --no-pager --no-merge --disable-color --trace {:#x}".format(address))
 
         # QEMU can translate the active address space without a full page-table walk.
         # On RISC-V, the monitor CPU can differ from the selected GDB thread.
@@ -197135,13 +197257,13 @@ class AddrMap:
 
     @staticmethod
     def p2v(address, force_secure=None, maps=None):
-        """Return every virtual address mapped to a physical address."""
+        """Return the virtual aliases found for a physical address."""
 
         return [result[0] for result in AddrMap.p2v_mappings( address, force_secure=force_secure, maps=maps, )]
 
     @staticmethod
     def p2v_mappings(address, force_secure=None, maps=None, verbose=False):
-        """Return every virtual address and mapping associated with a physical address."""
+        """Return virtual aliases and their mappings; in KGDB, verbose mode walks the full tables."""
 
         def p2v_from_map():
             results = []
@@ -197204,6 +197326,12 @@ class AddrMap:
                     maps = [AddrMap.Entry(0, size, 0, size)]
                     return p2v_from_map()
 
+        if maps is None and force_secure is None and is_kgdb() and not verbose:
+            maps = AddrMap.get_kgdb_kernel_mappings()
+            results = [(vaddr, entry) for vaddr, entry in p2v_from_map() if is_valid_addr(vaddr)]
+            if results:
+                return results
+            maps = None
         if maps is None:
             maps = AddrMap.get_maps(force_secure=force_secure, verbose=verbose)
         if not maps:
@@ -197268,7 +197396,7 @@ class Phys2VirtCommand(GenericCommand):
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the address of data to translate.")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="verbose output (for arm64 secure memory).")
+                        help="verbose output and a full alias walk in KGDB.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -197293,6 +197421,8 @@ class Phys2VirtCommand(GenericCommand):
             for result in mappings:
                 info("p2v: {:#x} -> {:#x}".format(args.address, result[0]))
 
+        if mappings and mappings[0][1].flags.startswith("KGDB "):
+            info("KGDB: showing the kernel image and linear-map aliases")
         if args.verbose:
             loop_max = len(mappings)
         else:
@@ -197303,7 +197433,10 @@ class Phys2VirtCommand(GenericCommand):
         else:
             for i in range(loop_max):
                 vaddr, entry = mappings[i]
-                gef_print("Phys: {:#x} -> Virt: {:#x} [{!s}]".format(args.address, vaddr, entry.permission))
+                permission = entry.permission
+                if entry.flags.startswith("KGDB "):
+                    permission = "???"
+                gef_print("Phys: {:#x} -> Virt: {:#x} [{!s}]".format(args.address, vaddr, permission))
             gef_print("Total {:d} results are found".format(len(mappings)))
         return
 
@@ -197538,6 +197671,7 @@ class PageTable(BufferingOutput):
         # __enter__ and __exit__ must operate on the same context manager object.
         self.physical_mode_context = None
         self.physical = False
+        self.trace_only = False
         cached = PageTable.mapping_cache.get(type(self), {})
         self.mapping_sources = cached.get("sources", {}).copy()
         for field in self.mapping_cache_fields:
@@ -197545,6 +197679,8 @@ class PageTable(BufferingOutput):
         return
 
     def save_mapping_cache(self):
+        if self.trace_only:
+            return
         PageTable.mapping_cache[type(self)] = {field: getattr(self, field) for field in self.mapping_cache_fields}
         PageTable.mapping_cache[type(self)]["sources"] = self.mapping_sources.copy()
         return
@@ -197577,6 +197713,7 @@ class PageTable(BufferingOutput):
 
     def prepare_pagewalk(self, args):
         self.args = args
+        self.trace_only = bool(args.trace and not args.vrange and is_kgdb() and (is_x86() or is_arm64()))
         if args.trace:
             self.vrange = args.vrange + args.trace
             args.print_each_level = True
@@ -197788,6 +197925,14 @@ class PageTable(BufferingOutput):
             lines = [entry.colorize(line) for entry, line in formatted]
         self.out.extend(lines)
         return
+
+    def read_table_entries(self, address, count, size, va_base, shift, reader):
+        if self.trace_only:
+            # The upper x86 address bits are sign-extended before testing the resulting range.
+            indices = sorted({((target - va_base) >> shift) & (count - 1) for target in self.args.trace})
+            unpack = GefUtil.get_unpack(size)
+            return indices, [unpack(reader(address + index * size, size)) for index in indices]
+        return range(count), slice_unpack(reader(address, count * size), size)
 
     def is_not_trace_target(self, va_start, va_end):
         if self.args.trace == []:
@@ -200210,10 +200355,11 @@ class PageTableX64(PageTable):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML5E", disable=self.args.quiet):
-            entries = self.read_memory(table_base, 2 ** self.bits["PML5T_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            indices, entries = self.read_table_entries(
+                table_base, 2 ** self.bits["PML5T_BITS"], self.bits["ENTRY_SIZE"], va_base, bit_shift, self.read_memory,
+            )
             COUNT += len(entries)
-            for i, entry in enumerate(entries):
+            for i, entry in zip(indices, entries):
                 # present flag
                 if not self.is_present_entry(entry):
                     continue
@@ -200225,6 +200371,9 @@ class PageTableX64(PageTable):
                     sign_ext = 0
                 new_va = va_base + (sign_ext | (i << bit_shift))
                 new_va_end = new_va + (1 << bit_shift)
+
+                if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                    continue
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -200287,13 +200436,14 @@ class PageTableX64(PageTable):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PML4E", disable=self.args.quiet):
-            entries = self.read_memory(table_base, 2 ** self.bits["PML4T_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
-            if self.is_aliased_table(va_base, entries, bit_shift):
+            indices, entries = self.read_table_entries(
+                table_base, 2 ** self.bits["PML4T_BITS"], self.bits["ENTRY_SIZE"], va_base, bit_shift, self.read_memory,
+            )
+            if not self.trace_only and self.is_aliased_table(va_base, entries, bit_shift):
                 SKIPPED += 1
                 continue
             COUNT += len(entries)
-            for i, entry in enumerate(entries):
+            for i, entry in zip(indices, entries):
                 # present flag
                 if not self.is_present_entry(entry):
                     continue
@@ -200309,6 +200459,9 @@ class PageTableX64(PageTable):
                         sign_ext = 0
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
+
+                if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                    continue
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -200376,13 +200529,14 @@ class PageTableX64(PageTable):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDPE", disable=self.args.quiet):
-            entries = self.read_memory(table_base, 2 ** self.bits["PDPT_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
-            if self.is_aliased_table(va_base, entries, bit_shift):
+            indices, entries = self.read_table_entries(
+                table_base, 2 ** self.bits["PDPT_BITS"], self.bits["ENTRY_SIZE"], va_base, bit_shift, self.read_memory,
+            )
+            if not self.trace_only and self.is_aliased_table(va_base, entries, bit_shift):
                 SKIPPED += 1
                 continue
             COUNT += len(entries)
-            for i, entry in enumerate(entries):
+            for i, entry in zip(indices, entries):
                 # present flag
                 if not self.is_present_entry(entry):
                     continue
@@ -200390,6 +200544,9 @@ class PageTableX64(PageTable):
                 # calc virtual address
                 new_va = va_base + (i << bit_shift)
                 new_va_end = new_va + (1 << bit_shift)
+
+                if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                    continue
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -200478,14 +200635,15 @@ class PageTableX64(PageTable):
             self.bits["OFFSET"],
         ])
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDE", disable=self.args.quiet):
-            entries = self.read_memory(table_base, 2 ** self.bits["PDT_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
-            if self.is_aliased_table(va_base, entries, bit_shift):
+            indices, entries = self.read_table_entries(
+                table_base, 2 ** self.bits["PDT_BITS"], self.bits["ENTRY_SIZE"], va_base, bit_shift, self.read_memory,
+            )
+            if not self.trace_only and self.is_aliased_table(va_base, entries, bit_shift):
                 SKIPPED += 1
                 continue
             COUNT += len(entries)
 
-            for i, entry in enumerate(entries):
+            for i, entry in zip(indices, entries):
                 # present flag
                 if not self.is_present_entry(entry):
                     continue
@@ -200493,6 +200651,9 @@ class PageTableX64(PageTable):
                 # calc virtual address
                 new_va = va_base + (i << bit_shift)
                 new_va_end = new_va + (1 << bit_shift)
+
+                if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                    continue
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -200583,14 +200744,15 @@ class PageTableX64(PageTable):
         flag_cache = {}
 
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PTE", disable=self.args.quiet):
-            entries = self.read_memory(table_base, 2 ** self.bits["PT_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
-            if self.is_aliased_table(va_base, entries, bit_shift):
+            indices, entries = self.read_table_entries(
+                table_base, 2 ** self.bits["PT_BITS"], self.bits["ENTRY_SIZE"], va_base, bit_shift, self.read_memory,
+            )
+            if not self.trace_only and self.is_aliased_table(va_base, entries, bit_shift):
                 SKIPPED += 1
                 continue
             COUNT += len(entries)
 
-            for i, entry in enumerate(entries):
+            for i, entry in zip(indices, entries):
                 # present flag
                 if not self.is_present_entry(entry):
                     continue
@@ -200598,6 +200760,9 @@ class PageTableX64(PageTable):
                 # calc virtual address
                 virt_addr = va_base + (i << bit_shift)
                 virt_addr_end = virt_addr + (1 << bit_shift)
+
+                if self.trace_only and self.is_not_trace_target(virt_addr, virt_addr_end):
+                    continue
 
                 # calc flags
                 flags = parent_flags.copy()
@@ -202587,10 +202752,12 @@ class PageTableArm64(PageTable):
             LEVELM1 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(TABLE_BASE, desc="LEVEL -1", disable=self.args.quiet):
-                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
-                entries = slice_unpack(entries, 8)
+                indices, entries = self.read_table_entries(
+                    table_base, entries_per_table, 8, va_base, self.LEVELM1_BIT_RANGE[0],
+                    functools.partial(read_table, parent_flags=parent_flags),
+                )
                 COUNT += len(entries)
-                for i, entry in enumerate(entries):
+                for i, entry in zip(indices, entries):
                     # present flag
                     if entry & 1 == 0:
                         continue
@@ -202598,6 +202765,9 @@ class PageTableArm64(PageTable):
                     # calc virtual address
                     new_va = va_base + (i << self.LEVELM1_BIT_RANGE[0])
                     new_va_end = new_va + (1 << self.LEVELM1_BIT_RANGE[0])
+
+                    if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                        continue
 
                     # calc flags
                     flags = parent_flags.copy()
@@ -202676,10 +202846,12 @@ class PageTableArm64(PageTable):
             GB512 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(LEVELM1, desc="LEVEL 0", disable=self.args.quiet):
-                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
-                entries = slice_unpack(entries, 8)
+                indices, entries = self.read_table_entries(
+                    table_base, entries_per_table, 8, va_base, self.LEVEL0_BIT_RANGE[0],
+                    functools.partial(read_table, parent_flags=parent_flags),
+                )
                 COUNT += len(entries)
-                for i, entry in enumerate(entries):
+                for i, entry in zip(indices, entries):
                     # present flag
                     if entry & 1 == 0:
                         continue
@@ -202687,6 +202859,9 @@ class PageTableArm64(PageTable):
                     # calc virtual address
                     new_va = va_base + (i << self.LEVEL0_BIT_RANGE[0])
                     new_va_end = new_va + (1 << self.LEVEL0_BIT_RANGE[0])
+
+                    if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                        continue
 
                     # calc flags
                     flags = parent_flags.copy()
@@ -202843,10 +203018,12 @@ class PageTableArm64(PageTable):
             GB64 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(LEVEL0, desc="LEVEL 1", disable=self.args.quiet):
-                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
-                entries = slice_unpack(entries, 8)
+                indices, entries = self.read_table_entries(
+                    table_base, entries_per_table, 8, va_base, self.LEVEL1_BIT_RANGE[0],
+                    functools.partial(read_table, parent_flags=parent_flags),
+                )
                 COUNT += len(entries)
-                for i, entry in enumerate(entries):
+                for i, entry in zip(indices, entries):
                     # present flag
                     if entry & 1 == 0:
                         continue
@@ -202854,6 +203031,9 @@ class PageTableArm64(PageTable):
                     # calc virtual address
                     new_va = va_base + (i << self.LEVEL1_BIT_RANGE[0])
                     new_va_end = new_va + (1 << self.LEVEL1_BIT_RANGE[0])
+
+                    if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                        continue
 
                     # calc flags
                     flags = parent_flags.copy()
@@ -203021,10 +203201,12 @@ class PageTableArm64(PageTable):
             MB512 = []
             COUNT = 0
             for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
-                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
-                entries = slice_unpack(entries, 8)
+                indices, entries = self.read_table_entries(
+                    table_base, entries_per_table, 8, va_base, self.LEVEL2_BIT_RANGE[0],
+                    functools.partial(read_table, parent_flags=parent_flags),
+                )
                 COUNT += len(entries)
-                for i, entry in enumerate(entries):
+                for i, entry in zip(indices, entries):
                     # present flag
                     if entry & 1 == 0:
                         continue
@@ -203032,6 +203214,9 @@ class PageTableArm64(PageTable):
                     # calc virtual address
                     new_va = va_base + (i << self.LEVEL2_BIT_RANGE[0])
                     new_va_end = new_va + (1 << self.LEVEL2_BIT_RANGE[0])
+
+                    if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
+                        continue
 
                     # calc flags
                     flags = parent_flags.copy()
@@ -203200,10 +203385,12 @@ class PageTableArm64(PageTable):
             flag_cache = {}
 
             for va_base, table_base, parent_flags in ProgressBar(LEVEL2, desc="LEVEL 3", disable=self.args.quiet):
-                entries = read_table(table_base, 8 * entries_per_table, parent_flags)
-                entries = slice_unpack(entries, 8)
+                indices, entries = self.read_table_entries(
+                    table_base, entries_per_table, 8, va_base, self.LEVEL3_BIT_RANGE[0],
+                    functools.partial(read_table, parent_flags=parent_flags),
+                )
                 COUNT += len(entries)
-                for i, entry in enumerate(entries):
+                for i, entry in zip(indices, entries):
                     # present flag
                     if entry & 1 == 0:
                         continue
@@ -203211,6 +203398,9 @@ class PageTableArm64(PageTable):
                     # calc virtual address
                     virt_addr = va_base + (i << self.LEVEL3_BIT_RANGE[0])
                     virt_addr_end = virt_addr + (1 << self.LEVEL3_BIT_RANGE[0])
+
+                    if self.trace_only and self.is_not_trace_target(virt_addr, virt_addr_end):
+                        continue
 
                     # calc flags
                     flags = parent_flags.copy()
@@ -206717,6 +206907,7 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
 
     _note_ = "\n".join([
         "One page may correspond to multiple virtual addresses.",
+        "In x86_64/AArch64 KGDB, known linear-map and kernel-image aliases are preferred. Use p2v -v for a full walk.",
     ])
 
     def __init__(self):
@@ -210147,7 +210338,7 @@ class KernelAllocTracer:
         obj = Kernel.get_slab_object(addr)
         if not obj:
             return None
-        freed = KernelSlabContains.is_freed(obj["object_base"], obj["name"])
+        freed = KernelSlabContains.is_freed(obj["object_base"], obj["name"], obj.get("kmem_cache"))
         if freed:
             state = "freed"
         elif freed is None:
@@ -222260,10 +222451,16 @@ class KernelLocks(KernelLayoutReader):
     def __init__(self):
         self.layouts = {}
         self.held = None
-        self.config = Kernel.config().get_configs() or {}
-        names = ("mutex_rt_init_generic", "mutex_rt_init_lockdep", "__mutex_rt_init")
-        self.rt = self.config.get("CONFIG_PREEMPT_RT") == "y" or any(Ksym.get_addr(name) for name in names)
         return
+
+    @functools.cached_property
+    def config(self):
+        return Kernel.config().get_configs() or {}
+
+    @functools.cached_property
+    def rt(self):
+        names = ("mutex_rt_init_generic", "mutex_rt_init_lockdep", "__mutex_rt_init")
+        return any(Ksym.get_addr(name) for name in names) or self.config.get("CONFIG_PREEMPT_RT") == "y"
 
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -222451,8 +222648,10 @@ class KernelLocks(KernelLayoutReader):
         return task, state, flags
 
     def lockdep_enabled(self):
+        if is_kgdb() and GefUtil.sizeof("task_struct") is not None:
+            return GefUtil.offsetof("struct task_struct", "held_locks") is not None
         names = ("lockdep_init_task", "lockdep_print_held_locks", "debug_show_held_locks")
-        return self.config.get("CONFIG_LOCKDEP") == "y" or any(Ksym.get_addrs(name, match="split") for name in names)
+        return any(Ksym.get_addrs(name, match="split") for name in names) or self.config.get("CONFIG_LOCKDEP") == "y"
 
     def dep_map_offset(self, kind):
         type_name = {"mutex": "mutex", "rwsem": "rw_semaphore"}[kind]
@@ -222853,9 +223052,10 @@ class KernelLocksCommand(GenericCommand, BufferingOutput):
         width = max(11, AddressUtil.get_format_address_width())
         self.fmt = "{:>3s} {:%ds} {:5s} {:7s} {:14s} {:7s} {:12s} {:24s} {:s}" % width
         self.quiet_info("Wait for memory scan")
-        if Kernel.version() is None:
-            err("Could not find Linux kernel")
-            return
+        if not (is_kgdb() and GefUtil.sizeof("task_struct") is not None):
+            if Kernel.version() is None:
+                err("Could not find Linux kernel")
+                return
         self.out = []
         self.dump_tasks()
         self.print_output(check_terminal_size=True)
@@ -228564,6 +228764,16 @@ class GefUtil:
     @Cache.cache_until_next
     def get_kernel_cache_node_count(resolver, offset, step):
         # SLUB truncates kmem_cache's trailing node array to nr_node_ids, even with a larger DWARF array.
+        if is_kgdb():
+            address = Symbol.resolve_address("kmem_cache")
+            if address is not None:
+                cache = read_int_from_memory(address, safe=True)
+                if cache and resolver.get_name(cache) == "kmem_cache":
+                    size = read_int32_from_memory(cache + resolver.kmem_cache_offset_object_size, safe=True)
+                    if size is not None:
+                        count, remainder = divmod(size - offset, step)
+                        if count > 0 and remainder == 0:
+                            return count
         for entry in resolver.parse_kmem_caches_for_initialize():
             cache = entry - resolver.kmem_cache_offset_list
             if resolver.get_name(cache) != "kmem_cache":
