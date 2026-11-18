@@ -5859,6 +5859,60 @@ freq-analysis $rax 0x1000 -a            # use ascii compatible result
 freq-analysis $rax 0x1000 -e 00 -e 01   # exclude some characters
 ```
 
+## `lsix`
+
+Show images from memory or files in the terminal using imagemagick.
+
+
+### Syntax
+
+```text
+usage: lsix [-h] {memory,file} ...
+
+options:
+  -h, --help     show this help message and exit
+
+command:
+  {memory,file}
+```
+
+## `lsix file`
+
+Show an image file in the terminal using imagemagick.
+
+
+### Syntax
+
+```text
+usage: lsix file [-h] [-b] FILE
+
+positional arguments:
+  FILE                  the image file path.
+
+options:
+  -h, --help            show this help message and exit
+  -b, --decode-barcode  decode barcode if found.
+```
+
+## `lsix memory`
+
+Show an image from memory in the terminal using imagemagick.
+
+
+### Syntax
+
+```text
+usage: lsix memory [-h] [-b] LOCATION [SIZE]
+
+positional arguments:
+  LOCATION              start address of the image.
+  SIZE                  the size of the image.
+
+options:
+  -h, --help            show this help message and exit
+  -b, --decode-barcode  decode barcode if found.
+```
+
 ## `peek-pageflags`
 
 Read the local host's page flags of a page frame (needs root).
@@ -5932,25 +5986,6 @@ Reads the local host's /proc/PID/pagemap; qemu-user is not supported.
 Range flags: P=present, S=swapped, F=file/shared-anon, D=soft-dirty, E=exclusive, U=uffd-wp.
 Unknown or unavailable flags are shown as '?' (or 'unknown' for a single address).
 On Linux 3.11-4.1, bits 55-60 are decoded only when the entry identifies the format.
-```
-
-## `sixel-memory`
-
-Show image (png, jpg, bmp, etc.) to terminal by imagemagick.
-
-
-### Syntax
-
-```text
-usage: sixel-memory [-h] [-b] LOCATION [SIZE]
-
-positional arguments:
-  LOCATION              start address of the image.
-  SIZE                  the size of the image.
-
-options:
-  -h, --help            show this help message and exit
-  -b, --decode-barcode  decode barcode if found.
 ```
 
 ## `stack-recover`
@@ -15765,13 +15800,13 @@ options:
 
 ## `gef avail-comm-list`
 
-Display a list of commands available for the current architecture and gdb execution mode.
+List command availability, with the reasons and requirements for unavailable commands.
 
 
 ### Syntax
 
 ```text
-usage: gef avail-comm-list [-h] [-s] [-a] [-u] [-n]
+usage: gef avail-comm-list [-h] [-s] [-a] [-u] [-v] [-n]
 
 options:
   -h, --help            show this help message and exit
@@ -15779,6 +15814,7 @@ options:
   -a, --only-available  show only available commands.
   -u, --only-unavailable
                         show only unavailable commands.
+  -v, --verbose         show full reasons and deferred checks.
   -n, --no-pager        do not use the pager.
 ```
 

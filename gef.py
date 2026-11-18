@@ -14736,26 +14736,24 @@ class Decorator:
         return wrapper
 
     @staticmethod
+    def in_kernel_or_kpti_disabled():
+        if is_in_kernel():
+            return True
+
+        try:
+            addr = KernelAddressHeuristicFinder.get_saved_command_line()
+        except gdb.MemoryError:
+            return False
+        # A readable kernel .data address from userland indicates that KPTI is disabled.
+        return bool(addr and is_valid_addr(addr))
+
+    @staticmethod
     def only_if_in_kernel_or_kpti_disabled(f):
         """Decorator wrapper to check if context is in kernel or kpti disabled."""
 
         @functools.wraps(f)
         def wrapper(*args, **kwargs):
-
-            def is_kpti_enabled():
-                try:
-                    s = KernelAddressHeuristicFinder.get_saved_command_line()
-                except gdb.MemoryError:
-                    return True
-                if s and is_valid_addr(s):
-                    # You can access the kernel's .data area while in userland.
-                    # This means KPTI is disabled.
-                    return False
-                return True
-
-            if is_in_kernel():
-                return f(*args, **kwargs)
-            elif not is_kpti_enabled():
+            if Decorator.in_kernel_or_kpti_disabled():
                 return f(*args, **kwargs)
             else:
                 warn("Run in kernel context, or disable KPTI")
@@ -168234,7 +168232,7 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb", "core"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -204157,7 +204155,7 @@ class PagewalkRiscvCommand(PagewalkCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
     @Decorator.only_if_specific_arch(arch=("RISCV32", "RISCV64"))
     def do_invoke(self, args):
         self.page_table = PageTableRiscv()
@@ -207571,7 +207569,7 @@ class HighMemDumpCommand(GenericCommand, BufferingOutput):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
     @Decorator.only_if_specific_arch(arch=("x86_32", "ARM32"))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
@@ -226502,7 +226500,7 @@ class GefPyObjListCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
-    """Display a list of commands available for the current architecture and gdb execution mode."""
+    """List command availability, with the reasons and requirements for unavailable commands."""
 
     _cmdline_ = "gef avail-comm-list"
     _category_ = "99. GEF Maintenance Command"
@@ -226511,6 +226509,7 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-s", "--sort", action="store_true", help="sort by command name.")
     parser.add_argument("-a", "--only-available", action="store_true", help="show only available commands.")
     parser.add_argument("-u", "--only-unavailable", action="store_true", help="show only unavailable commands.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="show full reasons and deferred checks.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -226550,11 +226549,8 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     def check_checkers(names, checkers):
         for name in names:
             checker = checkers.get(name)
-            try:
-                if checker is not None and checker():
-                    return True
-            except Exception:
-                pass
+            if checker is not None and checker():
+                return True
         return False
 
     @staticmethod
@@ -226573,60 +226569,101 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
                 del sys.modules["readline"]
         return True
 
-    def get_unavailable_reason(self, decorators):
+    def get_availability(self, decorators, checks):
         packages = {
-            "ModuleLoader.load_capstone": "capstone",
-            "ModuleLoader.load_unicorn": "unicorn",
-            "ModuleLoader.load_keystone": "keystone-engine",
-            "ModuleLoader.load_ropper": "ropper",
-            "ModuleLoader.load_binwalk": "binwalk",
-            "ModuleLoader.load_angr": "angr",
+            "ModuleLoader.load_capstone": ("capstone", "capstone"),
+            "ModuleLoader.load_unicorn": ("unicorn", "unicorn"),
+            "ModuleLoader.load_keystone": ("keystone", "keystone-engine"),
+            "ModuleLoader.load_ropper": ("ropper", "ropper"),
+            "ModuleLoader.load_binwalk": ("binwalk", "binwalk"),
+            "ModuleLoader.load_angr": ("angr", "angr"),
         }
         conditions = {
-            "Decorator.only_if_gdb_running": (is_alive, True, "No debugging session active"),
-            "Decorator.only_if_gdb_target_local": (is_remote_debug, False, "Unsupported remote session"),
-            "Decorator.only_if_in_kernel": (is_in_kernel, True, "Run in kernel context"),
-            "Decorator.only_if_kvm_disabled": (is_kvm_enabled, False, "Disable KVM"),
-            "Decorator.only_if_smp_disabled": (is_smp_enabled, False, "Disable SMP"),
+            "Decorator.only_if_gdb_running": (
+                is_alive, True, "No debugging session active", "start/attach/connect to target",
+            ),
+            "Decorator.only_if_gdb_target_local": (
+                is_remote_debug, False, "Remote target", "use local GDB",
+            ),
+            "Decorator.require_arch_set": (
+                lambda: current_arch is not None, True, "GEF architecture is unset",
+                "load target or use `gef set-arch ARCH`",
+            ),
+            "Decorator.only_if_in_kernel": (
+                is_in_kernel, True, "Outside kernel context", "stop in kernel",
+            ),
+            "Decorator.only_if_in_kernel_or_kpti_disabled": (
+                Decorator.in_kernel_or_kpti_disabled, True, "Kernel memory access could not be verified from this context",
+                "stop in kernel or disable KPTI",
+            ),
+            "Decorator.only_if_kvm_disabled": (
+                is_kvm_enabled, False, "KVM enabled", "use QEMU `-accel tcg`",
+            ),
+            "Decorator.only_if_smp_disabled": (
+                is_smp_enabled, False, "SMP enabled", "use QEMU `-smp 1`",
+            ),
         }
+        selectors = {
+            "Decorator.only_if_specific_arch": (ARCH_CHECKERS, True, "architecture"),
+            "Decorator.exclude_specific_arch": (ARCH_CHECKERS, False, "architecture"),
+            "Decorator.only_if_specific_gdb_mode": (GDB_MODE_CHECKERS, True, "GDB mode"),
+            "Decorator.exclude_specific_gdb_mode": (GDB_MODE_CHECKERS, False, "GDB mode"),
+        }
+        reasons = []
+        unchecked = []
         for name, args in decorators:
             if name in conditions:
-                checker, expected, reason = conditions[name]
-                try:
-                    if bool(checker()) != expected:
-                        return reason
-                except Exception:
-                    return "Could not evaluate {:s}".format(name)
-                continue
-            if name == "Decorator.require_arch_set" and current_arch is None:
-                return "current_arch is None"
-            if name == "Decorator.only_if_specific_arch" and not self.check_checkers(args, ARCH_CHECKERS):
-                return "Unsupported arch"
-            if name == "Decorator.exclude_specific_arch" and self.check_checkers(args, ARCH_CHECKERS):
-                return "Unsupported arch"
-            if name == "Decorator.only_if_specific_gdb_mode" and not self.check_checkers(args, GDB_MODE_CHECKERS):
-                return "Unsupported gdb mode"
-            if name == "Decorator.exclude_specific_gdb_mode" and self.check_checkers(args, GDB_MODE_CHECKERS):
-                return "Unsupported gdb mode"
-            if name == "Decorator.only_if_events_supported":
-                if not args or not hasattr(gdb.events, args[0]):
-                    return "Unsupported GDB event"
-                continue
-            if name.startswith(("Decorator.only_if_", "Decorator.require_", "Decorator.exclude_")):
-                if name not in (
-                    "Decorator.require_arch_set", "Decorator.only_if_specific_arch",
-                    "Decorator.exclude_specific_arch", "Decorator.only_if_specific_gdb_mode",
-                    "Decorator.exclude_specific_gdb_mode"
-                ):
-                    return "Not evaluated: {:s}".format(name)
-            if name in packages:
-                if packages[name] == "keystone-engine":
-                    import_name = "keystone"
+                checker, expected, reason, requirement = conditions[name]
+                if name == "Decorator.only_if_in_kernel_or_kpti_disabled" and (reasons or unchecked):
+                    # The KPTI probe may scan kernel memory.
+                    unchecked.append("Kernel memory check deferred ({:s})".format(requirement))
+                    continue
+            elif name in selectors and args:
+                checkers, expected, subject = selectors[name]
+                checker = functools.partial(self.check_checkers, args, checkers)
+                reason = "Unsupported {:s}".format(subject)
+                if expected:
+                    requirement = "use {:s}".format("/".join(args))
                 else:
-                    import_name = packages[name]
-                if not self.check_load_package(import_name):
-                    return "{:s} package is unavailable".format(packages[name])
-        return None
+                    requirement = "avoid {:s}".format("/".join(args))
+            elif name == "Decorator.only_if_events_supported" and args:
+                checker = functools.partial(hasattr, gdb.events, args[0])
+                expected = True
+                reason = "GDB event `{:s}` unavailable".format(args[0])
+                requirement = "need `gdb.events.{:s}`".format(args[0])
+            elif name in packages:
+                import_name, package = packages[name]
+                checker = functools.partial(self.check_load_package, import_name)
+                expected = True
+                reason = "Cannot import `{:s}`".format(import_name)
+                requirement = "install `{:s}` for GDB's Python".format(package)
+            elif name.startswith(("Decorator.only_if_", "Decorator.require_", "Decorator.exclude_", "ModuleLoader.load_")):
+                unchecked.append("Could not evaluate {:s}".format(name))
+                continue
+            else:
+                continue
+
+            key = (name, args)
+            if key not in checks:
+                try:
+                    checks[key] = bool(checker()) == expected
+                except Exception:
+                    checks[key] = None
+            if checks[key] is False:
+                if self.args.verbose:
+                    reasons.append("{:s} ({:s})".format(reason, requirement))
+                else:
+                    reasons.append(requirement)
+            elif checks[key] is None:
+                unchecked.append("Could not evaluate {:s} ({:s})".format(name, requirement))
+
+        if reasons:
+            if self.args.verbose:
+                return False, ". ".join(reasons + unchecked)
+            return False, ", ".join(reasons)
+        if unchecked:
+            return None, ". ".join(unchecked)
+        return True, ""
 
     def add_out(self, cmdline, avail, msg=""):
         if self.args.only_available and avail is not True:
@@ -226648,16 +226685,13 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
         return
 
     def listup_avail_comms(self):
+        checks = {}
         for cmdline, instance in __gef_command_instances__.items():
-            reason = self.get_unavailable_reason(self.get_decorators(instance.do_invoke))
-            available = reason is None
-            if reason and reason.startswith(("Not evaluated:", "Could not evaluate ")):
-                available = None
-            self.add_out(cmdline, available, reason or "")
+            available, reason = self.get_availability(self.get_decorators(instance.do_invoke), checks)
+            self.add_out(cmdline, available, reason)
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.out = []
         self.listup_avail_comms()
