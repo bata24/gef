@@ -280,7 +280,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 ### Linux Advanced
 
 <details>
-<summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kpagecache</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>kuffd</code>, <code>krefs</code>, <code>kkeyring</code>, <code>kcfi-hash</code>, <code>kprocfs</code>, <code>kcgroup</code>, <code>kbinder</code>, <code>klocks</code></summary>
+<summary><code>kconfig</code>, <code>ksyscalls</code>, <code>ksysctl</code>, <code>kmod</code>, <code>kops</code>, <code>kcdev</code>, <code>kbdev</code>, <code>kfilesystems</code>, <code>kmount</code>, <code>kclock-source</code>, <code>kdmesg</code>, <code>kpipe</code>, <code>kpagecache</code>, <code>kbpf</code>, <code>ktimer</code>, <code>kpcidev</code>, <code>kipcs</code>, <code>kdevio</code>, <code>kdmabuf</code>, <code>kirq</code>, <code>knetdev</code>, <code>kworkqueue</code>, <code>kwalk</code>, <code>kpath</code>, <code>kvfs</code>, <code>ksock</code>, <code>kskb</code>, <code>kpacket</code>, <code>klsm</code>, <code>knft</code>, <code>kio-uring</code>, <code>kuffd</code>, <code>krefs</code>, <code>kkeyring</code>, <code>kcfi-hash</code>, <code>kprocfs</code>, <code>kcgroup</code>, <code>kbinder</code>, <code>klocks</code></summary>
 
 - `kconfig`: dumps the kernel config if available.
     - ![](images/kconfig.png)
@@ -341,6 +341,8 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `ksock`: walks from a file descriptor (or a raw struct sock) through socket, sock and its skb queues.
 - `kskb`: parses a single sk_buff and shows its buffer layout, refcount and fragment information.
     - ![](images/ksock-kskb.png)
+- `kpacket`: displays the rings (pg_vec) of AF_PACKET sockets and the AF_NETLINK sockets.
+    - ![](images/kpacket.png)
 - `klsm`: dumps the registered Linux Security Module hooks.
     - ![](images/klsm.png)
 - `knft`: dumps the nftables (netfilter) object graph.

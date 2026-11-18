@@ -12468,6 +12468,89 @@ Supported structure:
   ucsi_operations, vm_operations_struct,
 ```
 
+## `kpacket`
+
+Display the rings (pg_vec) of AF_PACKET sockets and the AF_NETLINK sockets.
+
+
+### Syntax
+
+```text
+usage: kpacket [-h] [-hh] [-p PID] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -p, --pid PID       select the sockets of this pid.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kpacket -q
+kpacket --pid 1337
+```
+
+### Notes
+
+```text
+This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
+
+Simplified AF_PACKET structure:
+
++-packet_sock--------+     +-pgv[]--+     +-block (2^pg_vec_order pages)-+
+| sk                 |  +->| buffer |---->| frame (frame_size)           |
+| ...                |  |  | buffer |--+  | frame                        |
+| rx_ring            |  |  | ...    |  |  | ...                          |
+|   pg_vec           |--+  +--------+  |  +------------------------------+
+|   head             |                 +->+-block------------------------+
+|   frames_per_block |                    | ...                          |
+|   frame_size       |                    +------------------------------+
+|   frame_max        |
+|   pg_vec_order     |
+|   pg_vec_pages     |
+|   pg_vec_len       |
+|   ...              |
+| tx_ring            |
+|   ...              |
+| ...                |
+| tp_version         |
+| ...                |
+| prot_hook          |
+|   func             |--->packet_rcv, tpacket_rcv (while rx_ring is set up) or packet_rcv_spkt
+|   af_packet_priv   |--->packet_sock
+|   ...              |
++--------------------+
+
+pg_vec is the kmalloc()ed array of struct pgv, and the blocks are from __get_free_pages() or vzalloc().
+TPACKET_V3 uses the blocks of rx_ring instead of the frames.
+
+Simplified AF_NETLINK structure:
+
++-netlink_sock----+
+| sk              |
+|   ...           |
+|   sk_protocol   |
+|   ...           |
+| flags (v6.6~)   |
+| portid          |
+| dst_portid      |
+| dst_group       |
+| ...             |
+| ngroups         |
+| groups          |--->unsigned long[] (the bitmap of the subscribed groups)
+| ...             |
+| wait            |
+| ...             |
++-----------------+
+
+Only AF_PACKET and AF_NETLINK sockets are shown. Use `ksock` for the others such as TCP and UDP,
+e.g., `ksock -d --fd 3` hexdumps the skbs queued in the socket of fd 3.
+```
+
 ## `kpagecache`
 
 Dump the cached contents of a file from its inode.

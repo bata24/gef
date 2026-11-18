@@ -80478,6 +80478,11 @@ class Kernel:
         return KernelSkbuff.get_instance()
 
     @staticmethod
+    def packet():
+        """Return the AF_PACKET and netlink socket resolver."""
+        return KernelPacket.get_instance()
+
+    @staticmethod
     def netdev():
         """Return the net_device resolver."""
         return KernelNetDevice.get_instance()
@@ -223058,6 +223063,676 @@ class KernelLocksCommand(GenericCommand, BufferingOutput):
                 return
         self.out = []
         self.dump_tasks()
+        self.print_output(check_terminal_size=True)
+        return
+
+
+class KernelPacket(KernelLayoutReader):
+    """Resolve the rings (pg_vec) of packet_sock and the members of netlink_sock from the socket fds (with the debug
+    information or the invariants of the objects)."""
+
+    AF_NETLINK = 16
+    AF_PACKET = 17
+    MAX_ITEMS = 0x1000
+    TPACKET_VERSIONS = {0: "TPACKET_V1", 1: "TPACKET_V2", 2: "TPACKET_V3"}
+    # tp_hdrlen that packet_set_ring() sets for each tp_version
+    TPACKET_HDRLENS = {0: 0x34, 1: 0x34, 2: 0x44}
+    # prot_hook.func, where tpacket_rcv is used only while rx_ring is set up
+    RECEIVERS = ["packet_rcv", "tpacket_rcv", "packet_rcv_spkt"]
+    NETLINK_PROTOCOLS = {
+        0: "NETLINK_ROUTE", 2: "NETLINK_USERSOCK", 3: "NETLINK_FIREWALL", 4: "NETLINK_SOCK_DIAG", 5: "NETLINK_NFLOG",
+        6: "NETLINK_XFRM", 7: "NETLINK_SELINUX", 8: "NETLINK_ISCSI", 9: "NETLINK_AUDIT", 10: "NETLINK_FIB_LOOKUP",
+        11: "NETLINK_CONNECTOR", 12: "NETLINK_NETFILTER", 13: "NETLINK_IP6_FW", 14: "NETLINK_DNRTMSG",
+        15: "NETLINK_KOBJECT_UEVENT", 16: "NETLINK_GENERIC", 18: "NETLINK_SCSITRANSPORT", 19: "NETLINK_ECRYPTFS",
+        20: "NETLINK_RDMA", 21: "NETLINK_CRYPTO", 22: "NETLINK_SMC",
+    }
+    # the u32 members that follow pg_vec in packet_ring_buffer, which are the same in all versions
+    RING_MEMBERS = ["head", "frames_per_block", "frame_size", "frame_max", "pg_vec_order", "pg_vec_pages", "pg_vec_len"]
+    # the members of netlink_sock before wait, where 0 means the pointer size
+    NETLINK_LAYOUTS = {
+        "v3.0": [
+            ("portid", 4), ("dst_portid", 4), ("dst_group", 4), ("flags", 4), ("subscriptions", 4), ("ngroups", 4),
+            ("groups", 0), ("state", 0),
+        ],
+        # max_recvmsg_len is added
+        "v3.15": [
+            ("portid", 4), ("dst_portid", 4), ("dst_group", 4), ("flags", 4), ("subscriptions", 4), ("ngroups", 4),
+            ("groups", 0), ("state", 0), ("max_recvmsg_len", 0),
+        ],
+        # flags becomes the first unsigned long (also v6.1.55~)
+        "v6.6": [
+            ("flags", 0), ("portid", 4), ("dst_portid", 4), ("dst_group", 4), ("subscriptions", 4), ("ngroups", 4),
+            ("groups", 0), ("state", 0), ("max_recvmsg_len", 0),
+        ],
+    }
+    # the keys of the layout: (key, struct, members), where the first member found in the debug information is used
+    PACKET_MEMBERS = [
+        ("rx_ring", "packet_sock", ["rx_ring"]),
+        ("tx_ring", "packet_sock", ["tx_ring"]),
+        ("tp_version", "packet_sock", ["tp_version"]),
+        ("af_packet_priv", "packet_sock", ["prot_hook.af_packet_priv"]),
+    ]
+    NETLINK_MEMBERS = [
+        ("portid", "netlink_sock", ["portid", "pid"]),
+        ("dst_portid", "netlink_sock", ["dst_portid", "dst_pid"]),
+        ("dst_group", "netlink_sock", ["dst_group"]),
+        ("ngroups", "netlink_sock", ["ngroups"]),
+        ("groups", "netlink_sock", ["groups"]),
+        ("wait", "netlink_sock", ["wait.head", "wait.task_list"]),
+    ]
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    def resolve_layout_by_debug_info(self, members):
+        """Return the layout from the debug information, or None."""
+        layout = {}
+        for key, type_name, names in members:
+            for name in names:
+                layout[key] = GefUtil.offsetof(type_name, name)
+                if layout[key] is not None:
+                    break
+            if layout[key] is None:
+                return None
+        return layout
+
+    def read_ring(self, address):
+        """Return the members of packet_ring_buffer at `address`, or None if it is not readable."""
+        pg_vec = read_int_from_memory(address, safe=True)
+        data = read_memory(address + current_arch.ptrsize, 4 * len(self.RING_MEMBERS), safe=True)
+        if pg_vec is None or data is None:
+            return None
+        ring = dict(zip(self.RING_MEMBERS, slice_unpack(data, 4)))
+        ring["pg_vec"] = pg_vec
+        return ring
+
+    def read_blocks(self, ring):
+        """Return pg_vec[].buffer of the first MAX_ITEMS blocks, or None if it is not readable."""
+        ptrsize = current_arch.ptrsize
+        count = min(ring["pg_vec_len"], self.MAX_ITEMS)
+        data = read_memory(ring["pg_vec"], count * ptrsize, safe=True)
+        if data is None:
+            return None
+        return slice_unpack(data, ptrsize)
+
+    def is_ring(self, ring):
+        """Return True if `ring` is set up by packet_set_ring(). The blocks of tp_block_size (a multiple of PAGE_SIZE)
+        are allocated with get_order(tp_block_size), and filled with the frames of tp_frame_size (a multiple of
+        TPACKET_ALIGNMENT). tp_frame_nr is frames_per_block * tp_block_nr."""
+        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        if ring is None:
+            return False
+        if ring["pg_vec"] % current_arch.ptrsize:
+            return False
+        if not KernelAddressHeuristicFinderUtil.is_kernel_space(ring["pg_vec"]):
+            return False
+        order, pages = ring["pg_vec_order"], ring["pg_vec_pages"]
+        if order >= 0x20 or not pages:
+            return False
+        if pages > 1 << order:
+            return False
+        if order and pages <= 1 << (order - 1):
+            return False
+        if not ring["frame_size"] or ring["frame_size"] % 16:
+            return False
+        if ring["frames_per_block"] != pages * PAGE_SIZE // ring["frame_size"]:
+            return False
+        if ring["frame_max"] + 1 != ring["frames_per_block"] * ring["pg_vec_len"]:
+            return False
+        if ring["head"] > ring["frame_max"]:
+            return False
+        # each block is a page-aligned buffer of __get_free_pages() or vzalloc()
+        blocks = self.read_blocks(ring)
+        if blocks is None:
+            return False
+        for block in blocks:
+            if not block or block % PAGE_SIZE:
+                return False
+        return True
+
+    def find_packet_rings(self, sk, receivers):
+        """Return the offsets of (prot_hook.af_packet_priv, rx_ring, tx_ring, tp_version) of packet_sock `sk`, or None.
+        af_packet_priv points back to the sock, and follows prot_hook.func in a few slots. The rings are before
+        prot_hook, and only the ones set up are found. tp_version and tp_hdrlen follow them."""
+        ptrsize = current_arch.ptrsize
+        words = self.read_words(sk, 0x1000)
+        if words is None:
+            return None
+        func = None
+        for index in range(8, len(words) - 6):
+            if words[index] not in receivers:
+                continue
+            if sk in words[index + 1:index + 6]:
+                func = index
+                break
+        if func is None:
+            return None
+        priv = words.index(sk, func) * ptrsize
+
+        # a ring is found only when it is set up, i.e. pg_vec is not NULL
+        rings = []
+        for index in range(8, func):
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(words[index]):
+                continue
+            if self.is_ring(self.read_ring(sk + index * ptrsize)):
+                rings.append(index * ptrsize)
+        if not rings:
+            return priv, None, None, None
+        # rx_ring is followed by tx_ring
+        rx_ring, tx_ring = None, rings[-1]
+        if receivers[words[func]] == "tpacket_rcv":
+            rx_ring = rings[0]
+            if len(rings) == 1:
+                tx_ring = None
+
+        # tp_hdrlen is set by packet_set_ring(), so it is found only from the sockets with a ring
+        start = rings[-1] + ptrsize + 4 * len(self.RING_MEMBERS)
+        data = read_memory(sk + start, func * ptrsize - start, safe=True)
+        if data is None:
+            return priv, rx_ring, tx_ring, None
+        values = slice_unpack(data, 4)
+        for index in range(len(values) - 1):
+            if self.TPACKET_HDRLENS.get(values[index]) == values[index + 1]:
+                return priv, rx_ring, tx_ring, start + index * 4
+        return priv, rx_ring, tx_ring, None
+
+    def resolve_packet_layout(self, socks):
+        """Return the layout of packet_sock from the debug information, or from the rings of the sockets."""
+        layout = self.resolve_layout_by_debug_info(self.PACKET_MEMBERS)
+        if layout is not None:
+            # e.g., the debug information of another build
+            if all(read_int_from_memory(sk + layout["af_packet_priv"], safe=True) == sk for sk in socks):
+                layout["source"] = "DWARF"
+                return layout
+            self.meta.append(("warn", "The debug information does not match packet_sock"))
+
+        # kallsyms has no symbol of af_packet with CONFIG_PACKET=m, unless the symbols of the module are loaded
+        receivers = {}
+        for name in self.RECEIVERS:
+            address = Ksym.get_addr(name)
+            if address is not None:
+                receivers[address] = name
+        if not receivers:
+            self.meta.append(("err", "Could not find packet_rcv (CONFIG_PACKET=m needs the symbols of af_packet)"))
+            return None
+        votes = {key: collections.Counter() for key, _, _ in self.PACKET_MEMBERS}
+        for sk in socks:
+            ret = self.find_packet_rings(sk, receivers)
+            if ret is None:
+                continue
+            priv, rx_ring, tx_ring, version = ret
+            for key, offset in [("af_packet_priv", priv), ("rx_ring", rx_ring), ("tx_ring", tx_ring), ("tp_version", version)]:
+                if offset is not None:
+                    votes[key][offset] += 1
+        if not votes["af_packet_priv"]:
+            self.meta.append(("err", "Could not find packet_sock (CONFIG_RANDSTRUCT=y needs the debug information)"))
+            return None
+        layout = {"source": "heuristic"}
+        for key, counter in votes.items():
+            layout[key] = None
+            if counter:
+                layout[key], _ = counter.most_common(1)[0]
+        return layout
+
+    def find_netlink_wait(self, socks):
+        """Return the offsets of (sk_destruct, wait, wait.head) of netlink_sock, or None. wait.head is the first empty
+        list_head after sk_destruct, since struct sock has none after it. The spinlock_t of wait has SPINLOCK_MAGIC
+        after the raw lock (CONFIG_DEBUG_SPINLOCK=y), or is 4 bytes (0 bytes with CONFIG_SMP=n)."""
+        ptrsize = current_arch.ptrsize
+        votes = collections.Counter()
+        for sk, info, _ in socks:
+            destruct = None
+            for label, _, _, offset, _ in info["callbacks"]:
+                if label == "sk_destruct":
+                    destruct = offset
+            if destruct is None:
+                continue
+            words = self.read_words(sk + destruct, 0x200) or []
+            for index in range(1, len(words) - 1):
+                address = sk + destruct + index * ptrsize
+                # only netlink_attachskb() waits on it, so it is empty in most sockets
+                if words[index] == address and words[index + 1] == address:
+                    votes[(destruct, destruct + index * ptrsize)] += 1
+                    break
+        if not votes:
+            return None
+        (destruct, head), _ = votes.most_common(1)[0]
+        sk, _, _ = socks[0]
+        for offset in range(head - 4, destruct, -4):
+            if read_int32_from_memory(sk + offset, safe=True) == 0xdead4ead:
+                return destruct, offset - 4, head
+        if Kernel.per_cpu().is_up:
+            return destruct, head, head
+        return destruct, head - ptrsize, head
+
+    def is_netlink(self, sk, layout):
+        """Return True if the members of netlink_sock `sk` fit the invariants."""
+        groups = read_int_from_memory(sk + layout["groups"], safe=True)
+        ngroups = read_int32_from_memory(sk + layout["ngroups"], safe=True)
+        state = read_int_from_memory(sk + layout["state"], safe=True)
+        dst_group = read_int32_from_memory(sk + layout["dst_group"], safe=True)
+        if None in [groups, ngroups, state, dst_group]:
+            return False
+        # groups is allocated for the groups of nl_table, which are 32 at least
+        if bool(groups) != bool(ngroups):
+            return False
+        if groups:
+            if ngroups < 32 or groups % current_arch.ptrsize:
+                return False
+        # state has only NETLINK_S_CONGESTED, and dst_group is ffs(nl_groups) of connect()
+        if state > 1 or dst_group > 32:
+            return False
+        if "max_recvmsg_len" in layout:
+            # it is SKB_WITH_OVERHEAD(32768) at most
+            if (read_int_from_memory(sk + layout["max_recvmsg_len"], safe=True) or 0) > 32768:
+                return False
+        return True
+
+    def resolve_netlink_layout(self, socks):
+        """Return the layout of netlink_sock from the debug information, or the layout of the members before wait that
+        fits the invariants of the most sockets (portid is often the tgid of the owner)."""
+        ptrsize = current_arch.ptrsize
+        layout = self.resolve_layout_by_debug_info(self.NETLINK_MEMBERS)
+        if layout is not None:
+            # wait is initialized as an empty list
+            if any(read_int_from_memory(sk + layout["wait"], safe=True) == sk + layout["wait"] for sk, _, _ in socks):
+                layout["source"] = "DWARF"
+                return layout
+            self.meta.append(("warn", "The debug information does not match netlink_sock"))
+        if Kernel.locks().rt:
+            self.meta.append(("err", "Could not resolve netlink_sock (PREEMPT_RT needs the debug information)"))
+            return None
+        ret = self.find_netlink_wait(socks)
+        if ret is None:
+            self.meta.append(("err", "Could not find netlink_sock->wait"))
+            return None
+        destruct, wait, head = ret
+
+        kversion = Kernel.version()
+        names = ["v3.15", "v6.6", "v3.0"]
+        if kversion < "3.15":
+            names = ["v3.0", "v3.15", "v6.6"]
+        elif kversion >= "6.6":
+            names = ["v6.6", "v3.15", "v3.0"]
+        best, best_score = None, None
+        for name in names:
+            candidate = {"source": "heuristic"}
+            offset = 0
+            for member, size in self.NETLINK_LAYOUTS[name]:
+                size = size or ptrsize
+                offset = align(offset, size)
+                candidate[member] = offset
+                offset += size
+            start = wait - align_to_ptrsize(offset)
+            # netlink_sock follows struct sock
+            if start <= destruct:
+                continue
+            for member, _ in self.NETLINK_LAYOUTS[name]:
+                candidate[member] += start
+            candidate["wait"] = head
+
+            valid, owned = 0, 0
+            for sk, _, tgids in socks:
+                if not self.is_netlink(sk, candidate):
+                    continue
+                valid += 1
+                # autobind and bind(getpid()) use the tgid, which tells the layout apart from the zeros around it
+                if read_int32_from_memory(sk + candidate["portid"], safe=True) in tgids:
+                    owned += 1
+            if best_score is None or (valid, owned) > best_score:
+                best, best_score = candidate, (valid, owned)
+        if best is None:
+            self.meta.append(("err", "Could not resolve netlink_sock"))
+            return None
+        valid, _ = best_score
+        if valid < len(socks):
+            self.meta.append(("warn", "The layout of netlink_sock does not fit {:d} sockets".format(len(socks) - valid)))
+        return best
+
+    def resolve_protocol(self, socks):
+        """Return (offset, size, source) of sock->sk_protocol, or None. It is the 8 bits before u16 sk_type (~v5.5),
+        the u16 after sk_type (v5.6~v6.17) or the u16 before it (v6.18~). sk_type is socket->type of each socket."""
+        bitfield = GefUtil.member_bitfield("struct sock", "sk_protocol")
+        if bitfield is not None:
+            position, bits = bitfield
+            if bits == 8:
+                return position // 8, 1, "DWARF"
+            return position // 8, 2, "DWARF"
+        kversion = Kernel.version()
+        # (sizeof(sk_protocol), the offset from sk_type)
+        patterns = [(1, -1), (2, 2), (2, -2)]
+        if kversion >= "6.18":
+            patterns = [(2, -2), (2, 2), (1, -1)]
+        elif kversion >= "5.6":
+            patterns = [(2, 2), (2, -2), (1, -1)]
+        images = []
+        for sk, info, _ in socks:
+            data = read_memory(sk, 0x400, safe=True)
+            if data is not None:
+                images.append((data, info))
+        if not images:
+            return None
+        for size, delta in patterns:
+            for offset in range(2, 0x3fc, 2):
+                # the bit-field of sk_protocol and sk_type is a 4-byte aligned word
+                if size == 1 and offset % 4 != 2:
+                    continue
+                matched = True
+                for data, info in images:
+                    if u16(data[offset:offset + 2]) != info["type"]:
+                        matched = False
+                        break
+                    protocol = data[offset + delta]
+                    if size == 2:
+                        protocol = u16(data[offset + delta:offset + delta + 2])
+                    # sk_pacing_shift (set to 10 by sock_init_data(), ~v6.8) or sk_shutdown (v6.9~) is before sk_type
+                    if delta == 2 and data[offset - 1] not in [0, 1, 2, 3, 10]:
+                        matched = False
+                        break
+                    # MAX_LINKS of netlink is 32, and AF_PACKET does not set sk_protocol
+                    if protocol >= 32:
+                        matched = False
+                        break
+                    if info["family"] == self.AF_PACKET and protocol:
+                        matched = False
+                        break
+                if matched:
+                    return offset + delta, size, "heuristic"
+        return None
+
+    def initialize(self):
+        self.meta = []
+        if Kernel.version() is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        ksocket = Kernel.socket()
+        ksocket.initialize()
+        # the socket fds of the user processes, so the kernel netlink sockets are not included
+        files = ksocket.collect_socket_files()
+        if files is None:
+            self.meta.extend(ksocket.meta)
+            return None
+
+        # the fds of the packet and netlink sockets, where a sock can be shared by the fds
+        self.packets, self.netlinks = [], []
+        socks = {}
+        for entry in files:
+            info = ksocket.get_socket(file=entry["file"])
+            if info["socket"] is None:
+                continue
+            if info["family"] == self.AF_PACKET:
+                self.packets.append(dict(entry, sock=info["sock"]))
+            elif info["family"] == self.AF_NETLINK:
+                self.netlinks.append(dict(entry, sock=info["sock"]))
+            else:
+                continue
+            _, tgids = socks.setdefault(info["sock"], (info, set()))
+            tgids.add(entry["pid"])
+        self.meta.extend(ksocket.meta)
+        self.meta.append(("info", "Number of AF_PACKET fds: {:d}".format(len(self.packets))))
+        self.meta.append(("info", "Number of AF_NETLINK fds: {:d}".format(len(self.netlinks))))
+
+        packet_socks, netlink_socks = [], []
+        for sk, (info, tgids) in socks.items():
+            if info["family"] == self.AF_PACKET:
+                packet_socks.append(sk)
+            else:
+                netlink_socks.append((sk, info, tgids))
+        self.packet_layout = None
+        if packet_socks:
+            self.packet_layout = self.resolve_packet_layout(packet_socks)
+        self.netlink_layout = None
+        if netlink_socks:
+            self.netlink_layout = self.resolve_netlink_layout(netlink_socks)
+        if self.netlink_layout is not None:
+            # the sockets of all families have sk_type, and the packet sockets have no sk_protocol
+            all_socks = [(sk, info, tgids) for sk, (info, tgids) in socks.items()]
+            self.netlink_layout["protocol"] = self.resolve_protocol(all_socks)
+
+        layouts = [
+            ("packet_sock", self.packet_layout, self.PACKET_MEMBERS),
+            ("netlink_sock", self.netlink_layout, self.NETLINK_MEMBERS),
+        ]
+        for name, layout, members in layouts:
+            if layout is None:
+                continue
+            self.meta.append(("info", "layout of {:s}: {:s}".format(name, layout["source"])))
+            for key, type_name, names in members:
+                if layout[key] is None:
+                    value_text = "unknown (no socket has it)"
+                else:
+                    value_text = "{:#x}".format(layout[key])
+                self.meta.append(("info", "offsetof({:s}, {:s}): {:s}".format(type_name, names[0], value_text)))
+        if self.netlink_layout is not None:
+            if self.netlink_layout["protocol"] is None:
+                self.meta.append(("warn", "Could not find sock->sk_protocol"))
+            else:
+                offset, size, source = self.netlink_layout["protocol"]
+                self.meta.append(("info", "offsetof(sock, sk_protocol): {:#x} ({:d} bytes, {:s})".format(offset, size, source)))
+        return True
+
+    def read_packet(self, sk):
+        """Return the tp_version and the rings of packet_sock `sk`."""
+        layout = self.packet_layout
+        info = {"version": None, "rings": []}
+        if layout["tp_version"] is not None:
+            info["version"] = read_int32_from_memory(sk + layout["tp_version"], safe=True)
+        for name in ["rx_ring", "tx_ring"]:
+            ring = None
+            if layout[name] is not None:
+                ring = self.read_ring(sk + layout[name])
+            if ring is not None:
+                ring["blocks"] = None
+                if ring["pg_vec"]:
+                    ring["blocks"] = self.read_blocks(ring)
+            info["rings"].append((name, ring))
+        return info
+
+    def read_netlink(self, sk):
+        """Return the protocol, portid, dst_portid, dst_group, ngroups and groups of netlink_sock `sk`."""
+        ptrsize = current_arch.ptrsize
+        layout = self.netlink_layout
+        info = {"protocol": None, "groups": None}
+        for key in ["portid", "dst_portid", "dst_group", "ngroups"]:
+            info[key] = read_int32_from_memory(sk + layout[key], safe=True)
+        if layout["protocol"] is not None:
+            offset, size, _ = layout["protocol"]
+            if size == 1:
+                info["protocol"] = read_int8_from_memory(sk + offset, safe=True)
+            else:
+                info["protocol"] = read_int16_from_memory(sk + offset, safe=True)
+        groups = read_int_from_memory(sk + layout["groups"], safe=True)
+        if groups and info["ngroups"]:
+            count = min((info["ngroups"] + ptrsize * 8 - 1) // (ptrsize * 8), 0x40)
+            info["groups"] = self.read_words(groups, count * ptrsize)
+        return info
+
+
+@register_command
+class KernelPacketCommand(GenericCommand, BufferingOutput):
+    """Display the rings (pg_vec) of AF_PACKET sockets and the AF_NETLINK sockets."""
+
+    _cmdline_ = "kpacket"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-p", "--pid", type=int, help="select the sockets of this pid.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} -q",
+        "{0:s} --pid 1337",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
+        "",
+        "Simplified AF_PACKET structure:",
+        "",
+        "+-packet_sock--------+     +-pgv[]--+     +-block (2^pg_vec_order pages)-+",
+        "| sk                 |  +->| buffer |---->| frame (frame_size)           |",
+        "| ...                |  |  | buffer |--+  | frame                        |",
+        "| rx_ring            |  |  | ...    |  |  | ...                          |",
+        "|   pg_vec           |--+  +--------+  |  +------------------------------+",
+        "|   head             |                 +->+-block------------------------+",
+        "|   frames_per_block |                    | ...                          |",
+        "|   frame_size       |                    +------------------------------+",
+        "|   frame_max        |",
+        "|   pg_vec_order     |",
+        "|   pg_vec_pages     |",
+        "|   pg_vec_len       |",
+        "|   ...              |",
+        "| tx_ring            |",
+        "|   ...              |",
+        "| ...                |",
+        "| tp_version         |",
+        "| ...                |",
+        "| prot_hook          |",
+        "|   func             |--->packet_rcv, tpacket_rcv (while rx_ring is set up) or packet_rcv_spkt",
+        "|   af_packet_priv   |--->packet_sock",
+        "|   ...              |",
+        "+--------------------+",
+        "",
+        "pg_vec is the kmalloc()ed array of struct pgv, and the blocks are from __get_free_pages() or vzalloc().",
+        "TPACKET_V3 uses the blocks of rx_ring instead of the frames.",
+        "",
+        "Simplified AF_NETLINK structure:",
+        "",
+        "+-netlink_sock----+",
+        "| sk              |",
+        "|   ...           |",
+        "|   sk_protocol   |",
+        "|   ...           |",
+        "| flags (v6.6~)   |",
+        "| portid          |",
+        "| dst_portid      |",
+        "| dst_group       |",
+        "| ...             |",
+        "| ngroups         |",
+        "| groups          |--->unsigned long[] (the bitmap of the subscribed groups)",
+        "| ...             |",
+        "| wait            |",
+        "| ...             |",
+        "+-----------------+",
+        "",
+        "Only AF_PACKET and AF_NETLINK sockets are shown. Use `ksock` for the others such as TCP and UDP,",
+        "e.g., `ksock -d --fd 3` hexdumps the skbs queued in the socket of fd 3.",
+    ])
+
+    def dump_packet(self, entry):
+        info = self.kpacket.read_packet(entry["sock"])
+        title = "packet_sock {:#x}: pid {:d} ({:s}) fd {:d}".format(
+            entry["sock"], entry["pid"] or 0, entry["comm"] or "?", entry["fd"],
+        )
+        if info["version"] is not None:
+            title += ", {:s}".format(self.kpacket.TPACKET_VERSIONS.get(info["version"], str(info["version"])))
+        self.out.append(titlify(title, color="bold", msg_color="bold"))
+
+        PAGE_SIZE = KernelAddressHeuristicFinder.consts().PAGE_SIZE
+        fmt = "{:7s} {:18s} {:>6s} {:>10s} {:>5s} {:>10s} {:>8s} {:>9s} {:>8s}"
+        if not self.args.quiet:
+            legend = ["ring", "pg_vec", "blocks", "block size", "order", "frame size", "frames", "per block", "head"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for name, ring in info["rings"]:
+            if ring is None or not ring["pg_vec"]:
+                self.out.append("{:7s} none".format(name))
+                continue
+            self.out.append(fmt.format(
+                name, "{:#018x}".format(ring["pg_vec"]), str(ring["pg_vec_len"]),
+                "{:#x}".format(ring["pg_vec_pages"] * PAGE_SIZE), str(ring["pg_vec_order"]),
+                "{:#x}".format(ring["frame_size"]), str(ring["frame_max"] + 1), str(ring["frames_per_block"]),
+                str(ring["head"]),
+            ))
+
+        for name, ring in info["rings"]:
+            if ring is None or not ring["pg_vec"]:
+                continue
+            self.out.append(titlify("{:s} blocks".format(name)))
+            if ring["blocks"] is None:
+                self.out.append("??? (pg_vec is not readable)")
+                continue
+            fmt = "{:>6s} {:18s} {:18s}"
+            if not self.args.quiet:
+                self.out.append(GefUtil.make_legend(fmt.format("index", "&pg_vec[index]", "buffer")))
+            for index, block in enumerate(ring["blocks"]):
+                slot = ring["pg_vec"] + index * current_arch.ptrsize
+                self.out.append(fmt.format(str(index), "{:#018x}".format(slot), "{:#018x}".format(block)))
+            if ring["pg_vec_len"] > len(ring["blocks"]):
+                self.out.append("... ({:d} blocks in total)".format(ring["pg_vec_len"]))
+        return
+
+    def dump_netlinks(self, entries):
+        self.out.append(titlify("netlink_sock", color="bold", msg_color="bold"))
+        fmt = "{:18s} {:>7s} {:>4s} {:16s} {:22s} {:>10s} {:>10s} {:>9s} {:s}"
+        if not self.args.quiet:
+            legend = ["netlink_sock", "pid", "fd", "comm", "protocol", "portid", "dst_portid", "dst_group", "groups (ngroups)"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        for entry in entries:
+            info = self.kpacket.read_netlink(entry["sock"])
+            protocol = "?"
+            if info["protocol"] is not None:
+                protocol = self.kpacket.NETLINK_PROTOCOLS.get(info["protocol"], str(info["protocol"]))
+            groups = "-"
+            if info["groups"] is not None:
+                groups = "{:s} ({:d})".format(",".join("{:#x}".format(x) for x in info["groups"]), info["ngroups"])
+            self.out.append(fmt.format(
+                "{:#018x}".format(entry["sock"]), str(entry["pid"] or 0), str(entry["fd"]), entry["comm"] or "?",
+                protocol, str(info["portid"]), str(info["dst_portid"]), str(info["dst_group"]), groups,
+            ))
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        self.quiet_info("Wait for memory scan")
+        self.kpacket = Kernel.packet()
+        ret = self.kpacket.initialize()
+        if args.meta or not ret:
+            for func, line in Kernel.export_meta(self, self.kpacket.meta):
+                func(line)
+        if not ret or args.meta:
+            return
+
+        self.out = []
+        packets = []
+        for entry in self.kpacket.packets:
+            if args.pid is not None and entry["pid"] != args.pid:
+                continue
+            packets.append(entry)
+        netlinks = []
+        for entry in self.kpacket.netlinks:
+            if args.pid is not None and entry["pid"] != args.pid:
+                continue
+            netlinks.append(entry)
+        if not packets and not netlinks:
+            self.quiet_info("Nothing to dump")
+            return
+
+        if packets:
+            if self.kpacket.packet_layout is None:
+                self.err_add_out("Could not resolve the layout of packet_sock")
+            else:
+                for entry in packets:
+                    self.dump_packet(entry)
+        if netlinks:
+            if self.kpacket.netlink_layout is None:
+                self.err_add_out("Could not resolve the layout of netlink_sock")
+            else:
+                self.dump_netlinks(netlinks)
         self.print_output(check_terminal_size=True)
         return
 
