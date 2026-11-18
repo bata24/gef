@@ -211,7 +211,6 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `page`: displays the transformation between a `struct page` and its virtual/physical address.
     - ![](images/page.png)
     - There are shortcuts: `virt2page`, `page2virt`, `phys2page` and `page2phys`.
-    - On RISC-V 32/64, it infers the page array from live slab pages without a symbolized `vmlinux`.
 - `slab-virtual`: displays the transformation between slab-meta and its slab-data/`struct page` address (for `CONFIG_SLAB_VIRTUAL=y`).
     - ![](images/slab-virtual.png)
 - `pageinfo`: dumps `struct page->{flags,page_type}`.
@@ -373,7 +372,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 <summary><code>slub-dump</code>, <code>slab-dump</code>, <code>slob-dump</code>, <code>slub-tiny-dump</code>, <code>slab-contains</code>, <code>kmem-cache-alias</code>, <code>buddy-dump</code>, <code>buddy-contains</code>, <code>vmalloc-dump</code>, <code>kobj</code></summary>
 
 - `slub-dump`: dumps slub free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLUB` + no-symbol + kASLR, and RISC-V 64/32 + `SLUB` + no-symbol.
+    - Supported on x64/x86/ARM64/ARM/RISC-V64/32 + `SLUB` + no-symbol + kASLR.
     - Supported regardless of whether `CONFIG_SLAB_FREELIST_HARDENED` is `y` or `n`.
     - Supported regardless of whether `CONFIG_SLAB_VIRTUAL` is `y` or `n` (x64 only).
     - It supports dumping partial pages (`-v`) and NUMA node pages (`-vv`).
@@ -382,18 +381,17 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - It supports `sheaf/barn` mechanism for linux 6.18~.
     - ![](images/slub-dump-sheaves.png)
 - `slab-dump`: dumps slab free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLAB` + no-symbol + kASLR, and RISC-V 64/32 + `SLAB` + no-symbol.
+    - Supported on x64/x86/ARM64/ARM/RISC-V64/32 + `SLAB` + no-symbol + kASLR.
     - ![](images/slab-dump.png)
 - `slob-dump`: dumps slob free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLOB` + no-symbol + kASLR, and RISC-V 64/32 + `SLOB` + no-symbol.
+    - Supported on x64/x86/ARM64/ARM/RISC-V64/32 + `SLOB` + no-symbol + kASLR.
     - ![](images/slob-dump.png)
 - `slub-tiny-dump`: dumps slub-tiny free-list.
-    - Supported on x64/x86/ARM64/ARM + `SLUB-TINY` + no-symbol + kASLR, and RISC-V 64/32 + `SLUB-TINY` + no-symbol.
+    - Supported on x64/x86/ARM64/ARM/RISC-V64/32 + `SLUB-TINY` + no-symbol + kASLR.
     - ![](images/slub-tiny-dump.png)
 - `slab-contains`: resolves the slab cache (`kmem_cache`) that a certain address (object) belongs to (for `SLUB`/`SLUB-TINY`/`SLAB`).
-    - Supports RISC-V 32/64 without a symbolized `vmlinux`.
     - ![](images/slab-contains.png)
-    - For `SLUB`/`SLUB-TINY`, if all chunks belonging to a certain `page` are in use, they will not be displayed by `slub-dump`/`slub-tiny-dump` command.
+    - For `SLUB`/`SLUB-TINY`, if all chunks belonging to a certain `page` are in use, they will not be displayed by `slub-dump`/`slub-tiny-dump`.
     - Even with such an address (object), this command may be able to resolve `kmem_cache`.
 - `kmem-cache-alias`: dumps `kmem_cache` alias name.
     - ![](images/kmem-cache-alias.png)
@@ -843,7 +841,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Breakpoint
 
 <details>
-<summary><code>break-rva</code>, <code>command-break</code>, <code>main-break</code>, <code>load-break</code>, <code>regdump-break</code>, <code>multi-break</code>, <code>break-if-taken</code>, <code>break-if-not-taken</code></summary>
+<summary><code>break-rva</code>, <code>command-break</code>, <code>main-break</code>, <code>entry-break</code>, <code>load-break</code>, <code>regdump-break</code>, <code>multi-break</code>, <code>break-if-taken</code>, <code>break-if-not-taken</code></summary>
 
 - `break-rva`: sets a breakpoint at relative offset from codebase.
     - ![](images/break-rva.png)
@@ -851,6 +849,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - ![](images/command-break.png)
 - `main-break`: sets a breakpoint at `main` with or without symbols, then continue.
     - This is useful when you just want to run to `main` using `qemu-user` or `pin`, or debugging no-symbol ELF.
+- `entry-break`: finds a suitable entry point and sets a temporary breakpoint there.
 - `load-break`: breaks if something is loaded.
 - `regdump-break`: sets a breakpoint which dumps specified registers if hit.
 - `multi-break`: sets multiple breakpoints easily.
@@ -895,13 +894,15 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Assemble
 
 <details>
-<summary><code>ii</code>, <code>dasm</code>, <code>asm-list</code></summary>
+<summary><code>ii</code>, <code>asm</code>, <code>dasm</code>, <code>capstone-disassemble</code>, <code>asm-list</code></summary>
 
 - `ii`: is a shortcut for `x/50i $pc` with opcode bytes.
     - It prints the value if it is memory access operation.
     - ![](images/ii.png)
+- `asm`: assembles instructions using Keystone.
 - `dasm`: disassembles the code by capstone.
     - ![](images/dasm.png)
+- `capstone-disassemble`: disassembles instructions at the current PC or a specified address using Capstone.
 - `asm-list`: lists instructions. (x64/x86 only)
     - ![](images/asm-list.png)
     - This command uses x86data.js from https://github.com/asmjit/asmdb
@@ -911,10 +912,12 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Context Extension
 
 <details>
-<summary><code>extra</code>, <code>comment</code>, <code>smart-cpp-function-name</code></summary>
+<summary><code>extra</code>, <code>comment</code>, <code>highlight</code>, <code>memory</code>, <code>smart-cpp-function-name</code></summary>
 
 - `extra`: manages user specified command to execute when each step.
 - `comment`: manages user specified temporary comment.
+- `highlight`: highlights matching text in GEF output.
+- `memory`: manages memory ranges displayed in the context.
 - `smart-cpp-function-name`: toggles `context.smart_cpp_function_name` setting.
 
 </details>
@@ -984,7 +987,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### General
 
 <details>
-<summary><code>proc-info</code>, <code>elf-info</code>, <code>fds</code>, <code>proc-dump</code></summary>
+<summary><code>proc-info</code>, <code>elf-info</code>, <code>fds</code>, <code>proc-dump</code>, <code>ps</code></summary>
 
 - `proc-info` *(improved)*
     - It displays some additional information.
@@ -997,6 +1000,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `fds`: shows opened file descriptors.
 - `proc-dump`: dumps each file under `/proc/PID/`.
     - ![](images/proc-dump.png)
+- `ps`: lists processes and can filter the results.
 
 </details>
 
@@ -1017,7 +1021,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Memory/Section
 
 <details>
-<summary><code>vmmap</code>, <code>xinfo</code></summary>
+<summary><code>vmmap</code>, <code>xinfo</code>, <code>xfiles</code></summary>
 
 - `vmmap` *(improved)*
     - It displays the memory map information even when connecting to gdb stub of `qemu-user`.
@@ -1033,13 +1037,14 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - It shows more information.
         - ![](images/xinfo.png)
     - It also supports kernel debugging.
+- `xfiles`: lists loaded files and the address ranges of their sections.
 
 </details>
 
 ### Trivial Information
 
 <details>
-<summary><code>pid</code>, <code>tid</code>, <code>filename</code>, <code>auxv</code>, <code>argv</code>, <code>envp</code>, <code>dumpargs</code>, <code>vdso</code>, <code>vvar</code>, <code>errno</code></summary>
+<summary><code>pid</code>, <code>tid</code>, <code>filename</code>, <code>auxv</code>, <code>argv</code>, <code>envp</code>, <code>dumpargs</code>, <code>vdso</code>, <code>vvar</code>, <code>errno</code>, <code>stack-frame</code></summary>
 
 - `pid`/`tid`: prints pid and tid.
 - `filename`: prints filename.
@@ -1058,6 +1063,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - ![](images/vvar.png)
 - `errno`: displays errno list or specified errno.
     - ![](images/errno.png)
+- `stack-frame`: displays the stack contents of the selected frame.
 
 </details>
 
@@ -1101,7 +1107,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Security
 
 <details>
-<summary><code>checksec</code>, <code>canary</code>, <code>capability</code>, <code>ptr-mangle</code>, <code>ptr-demangle</code>, <code>search-mangled-ptr</code>, <code>mte-tags</code>, <code>sighands</code></summary>
+<summary><code>checksec</code>, <code>aslr</code>, <code>exploitable</code>, <code>canary</code>, <code>capability</code>, <code>ptr-mangle</code>, <code>ptr-demangle</code>, <code>search-mangled-ptr</code>, <code>mte-tags</code>, <code>sighands</code></summary>
 
 - `checksec` *(improved)*
     - It shows additional information.
@@ -1115,6 +1121,8 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
         - System-ASLR, GDB ASLR setting
     - It supports parsing remote binary (if download feature is available).
     - ![](images/checksec.png)
+- `aslr`: shows or changes GDB's ASLR setting.
+- `exploitable`: classifies the current crash using heuristics for x86/x64 user-space debugging.
 - `canary` *(improved)*
     - It displays all canary positions in memory.
         - ![](images/canary.png)
@@ -1174,13 +1182,14 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Search
 
 <details>
-<summary><code>search-pattern</code>, <code>strings</code>, <code>search-cfi-gadgets</code>, <code>find-syscall</code></summary>
+<summary><code>search-pattern</code>, <code>scan-section</code>, <code>strings</code>, <code>search-cfi-gadgets</code>, <code>find-syscall</code></summary>
 
 - `search-pattern` *(improved)*
     - It is supported under qemu-system (in short, it works without `/proc/self/maps`)
     - It supports some new options: `--hex`, `--hex-regex`, `--aligned`, `--perm`, `--interval`, `--limit`, `--max-region-size`, `--phys`.
     - It also searches for UTF-16 string if target string is ASCII.
     - ![](images/search-pattern.png)
+- `scan-section`: searches a memory region for pointers into another region.
 - `strings`: searches for ASCII string from specific location.
     - ![](images/strings.png)
 - `search-cfi-gadgets`: searches for CFI-valid (for CET IBT) and controllable generally gadgets in the executable area.
@@ -1230,13 +1239,14 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Patch
 
 <details>
-<summary><code>patch</code>, <code>memset</code>, <code>memcpy</code>, <code>memswap</code>, <code>meminsert</code></summary>
+<summary><code>patch</code>, <code>stub</code>, <code>memset</code>, <code>memcpy</code>, <code>memswap</code>, <code>meminsert</code></summary>
 
 - `patch` *(improved)*
     - It supports physical memory if under qemu-system.
     - Added some new modes: `patch hex`, `patch pattern`, `patch nop`, `patch inf`, `patch trap`, `patch ret`, `patch syscall`, `patch history`, `patch revert`, `patch range-replace`, `patch undo`, `patch redo`.
     - `nop` command has been integrated into `patch` as sub-command.
     - ![](images/patch.png)
+- `stub`: skips a function and supplies a return value during debugging.
 - `memset`: sets the value to the memory range, whether virtual or physical.
 - `memcpy`: copies the contents from the address A to B, whether virtual or physical.
 - `memswap`: swaps the contents of the address A and B, whether virtual or physical.
@@ -1248,12 +1258,13 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Calculation
 
 <details>
-<summary><code>hash</code>, <code>crc</code>, <code>base-n-decode</code>, <code>base-n-encode</code>, <code>morse-decode</code>, <code>morse-encode</code>, <code>strlen</code>, <code>is-mem-zero</code>, <code>seq-length</code></summary>
+<summary><code>hash</code>, <code>crc</code>, <code>xor-memory</code>, <code>base-n-decode</code>, <code>base-n-encode</code>, <code>morse-decode</code>, <code>morse-encode</code>, <code>strlen</code>, <code>is-mem-zero</code>, <code>seq-length</code></summary>
 
 - `hash`: calculates various (450+) hashes, or show known-collisions.
     - ![](images/hash.png)
 - `crc`: calculates various CRCs.
     - ![](images/crc.png)
+- `xor-memory`: displays or modifies a block of memory by applying XOR.
 - `base-n-decode`/`base-n-encode`: decodes/encodes various baseN.
     - ![](images/base-n-decode.png)
 - `morse-decode`/`morse-encode`: decodes/encodes morse code.
@@ -1382,6 +1393,16 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 
 </details>
 
+### Generation
+
+<details>
+<summary><code>print-format</code>, <code>pattern</code></summary>
+
+- `print-format`: formats memory as hexadecimal or as data literals for Python, C, JavaScript, or assembly.
+- `pattern`: generates de Bruijn sequences and finds offsets within them.
+
+</details>
+
 ### Calculation
 
 <details>
@@ -1417,7 +1438,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ## GEF Maintenance
 
 <details>
-<summary><code>theme</code>, <code>reset-cache</code>, <code>tmux-setup</code>, <code>gef version</code>, <code>gef status</code>, <code>gef reset-breakpoint</code>, <code>gef arch-list</code>, <code>gef pyobj-list</code>, <code>gef avail-comm-list</code>, <code>gef set-arch</code>, <code>gef check-update</code>, <code>gef dump-commands</code>, <code>history</code></summary>
+<summary><code>theme</code>, <code>reset-cache</code>, <code>tmux-setup</code>, <code>gef version</code>, <code>gef status</code>, <code>gef reset-breakpoint</code>, <code>gef arch-list</code>, <code>gef pyobj-list</code>, <code>gef avail-comm-list</code>, <code>gef set-arch</code>, <code>gef check-update</code>, <code>gef dump-commands</code>, <code>aliases</code>, <code>history</code></summary>
 
 - `theme` *(improved)*
     - Supports many colors.
@@ -1446,6 +1467,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `gef set-arch`: sets a specific architecture to GEF.
 - `gef check-update`: checks for GEF updates.
 - `gef dump-commands`: dumps GEF command documentation as Markdown.
+- `aliases`: manages GEF command aliases.
 - `history`: shows gdb command history easily.
     - ![](images/history.png)
 
