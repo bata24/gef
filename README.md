@@ -57,9 +57,6 @@ __The installer has been refactored. I recommend re-installing.__ (2026-10-17)
     - Notes
         - By default, `gef.py` is installed to `$HOME/.gef/gef.py`.
         - The required Python packages are installed to `$HOME/.gef/venv-gef`.
-        - The installer selects CPython matching GDB's Python major and minor version.
-        - GEF queries the environment at startup; activation is not required.
-        - An existing environment with a different Python version must be recreated before installation.
         - GEF's installation directory is registered in `$HOME/.gdbinit`.
         - For more installation options and non-`root` user's limitations, see [docs/FAQ.md](docs/FAQ.md).
 
