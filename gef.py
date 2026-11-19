@@ -157931,6 +157931,120 @@ class TimeCommand(GenericCommand):
 
 
 @register_command
+class TimeoutCommand(GenericCommand):
+    """Abort the GDB command if it does not finish within the specified seconds."""
+
+    _cmdline_ = "timeout"
+    _category_ = "01-c. Debugging Support - Basic Command Extension"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("seconds", metavar="SECONDS", type=float, help="the seconds to wait before aborting.")
+    parser.add_argument("cmd", metavar="GDB_CMD", help="gdb command.")
+    parser.add_argument("arg", metavar="ARG", nargs="*", help="arguments of gdb command.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} 3 continue           # interrupt the inferior after 3 seconds",
+        "{0:s} 0.5 exec-until call  # abort the command after 0.5 seconds",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "If the command finishes earlier, nothing happens.",
+        "While the inferior is running, it is stopped by `interrupt`; otherwise, KeyboardInterrupt is raised.",
+        "Only when qemu-user or pin, SIGTRAP is sent instead of `interrupt`, as with `continue-for-qemu-user`.",
+    ])
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_COMMAND)
+        return
+
+    # GDB runs posted events only while waiting for the inferior (e.g., continue, each stepi of exec-until).
+    # GDB API is not thread-safe, so this is run in the main thread.
+    def interrupt(self, pid, stopped, handled):
+        if stopped.is_set():
+            return
+        if not is_alive():
+            return
+        if not gdb.selected_thread().is_running():
+            return
+        handled.set()
+        if pid:
+            os.kill(pid, signal.SIGTRAP)
+            return
+        # exec-until and strings-continue also stop, since the interrupted stepi is reported as SIGINT
+        gdb.execute("interrupt")
+        return
+
+    def watch(self, seconds, pid, stopped, handled):
+        import _thread
+
+        if stopped.wait(seconds):
+            return
+        # The inferior may have stopped but GDB has not processed it yet. Interrupting it now leaves the signal
+        # pending, which stops the next continue. So post it again to let GDB process such stop first.
+        interrupt = functools.partial(self.interrupt, pid, stopped, handled)
+        gdb.post_event(functools.partial(gdb.post_event, interrupt))
+        if handled.wait(0.1):
+            return
+        if stopped.is_set():
+            return
+        # The main thread is running Python code without waiting for the inferior (e.g., a loop in gef command).
+        # Use KeyboardInterrupt only in this case. While waiting, gef's hooks on continue/stop events consume it.
+        _thread.interrupt_main()
+        return
+
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
+    def do_invoke(self, argv):
+        if not argv or argv in (["-h"], ["--help"]):
+            self.usage()
+            return
+        if len(argv) < 2:
+            self.usage()
+            return
+
+        try:
+            seconds = float(argv[0])
+        except ValueError:
+            err("Invalid seconds")
+            return
+        if not math.isfinite(seconds):
+            err("Invalid seconds")
+            return
+        if seconds <= 0:
+            err("Invalid seconds")
+            return
+
+        if len(argv) == 2:
+            cmd = argv[1].strip()
+        else:
+            _, cmd = self.command_args.strip().split(maxsplit=1)
+        if not cmd:
+            self.usage()
+            return
+
+        import threading
+
+        # `interrupt` (= Ctrl+C) does not work for qemu-user or pin
+        pid = None
+        if is_qemu_user() or is_pin():
+            pid = Pid.get_pid()
+
+        # Not kept in self, since a late posted event may run while the next invocation is waiting
+        stopped = threading.Event()
+        handled = threading.Event()
+        thread = threading.Thread(target=self.watch, args=(seconds, pid, stopped, handled), daemon=True)
+        thread.start()
+        try:
+            gdb.execute(cmd)
+        except gdb.error as e:
+            gef_print(e)
+        finally:
+            stopped.set()
+            thread.join()
+        return
+
+
+@register_command
 class SaveOutputCommand(GenericCommand):
     """Save the command outputs."""
 

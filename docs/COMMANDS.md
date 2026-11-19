@@ -718,6 +718,40 @@ options:
   -h, --help  show this help message and exit
 ```
 
+## `timeout`
+
+Abort the GDB command if it does not finish within the specified seconds.
+
+
+### Syntax
+
+```text
+usage: timeout [-h] SECONDS GDB_CMD [ARG ...]
+
+positional arguments:
+  SECONDS     the seconds to wait before aborting.
+  GDB_CMD     gdb command.
+  ARG         arguments of gdb command.
+
+options:
+  -h, --help  show this help message and exit
+```
+
+### Examples
+
+```gdb
+timeout 3 continue           # interrupt the inferior after 3 seconds
+timeout 0.5 exec-until call  # abort the command after 0.5 seconds
+```
+
+### Notes
+
+```text
+If the command finishes earlier, nothing happens.
+While the inferior is running, it is stopped by `interrupt`; otherwise, KeyboardInterrupt is raised.
+Only when qemu-user or pin, SIGTRAP is sent instead of `interrupt`, as with `continue-for-qemu-user`.
+```
+
 ## `up`
 
 `up` wrapper.

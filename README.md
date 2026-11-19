@@ -860,12 +860,13 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Basic Command Extension
 
 <details>
-<summary><code>up</code>, <code>down</code>, <code>time</code>, <code>multi-line</code>, <code>stepi-for-kgdb</code></summary>
+<summary><code>up</code>, <code>down</code>, <code>time</code>, <code>timeout</code>, <code>multi-line</code>, <code>stepi-for-kgdb</code></summary>
 
 - `up`/`down`: are wrappers for native `up`/`down`.
     - It shows also backtrace.
 - `time`: measures the time of the GDB command.
     - ![](images/time.png)
+- `timeout`: aborts the GDB command if it does not finish within the specified seconds.
 - `multi-line`: executes multiple GDB commands in sequence.
     - ![](images/multi-line.png)
 - `stepi-for-kgdb`: is wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers.
