@@ -24399,6 +24399,393 @@ class SearchPatternCommand(GenericCommand):
 
 
 @register_command
+class ValueScanCommand(GenericCommand):
+    """The base command to narrow down the addresses by the value."""
+
+    _cmdline_ = "value-scan"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    if (sys.version_info.major, sys.version_info.minor) >= (3, 7):
+        subparsers = parser.add_subparsers(title="command", dest="command", required=True)
+    else:
+        subparsers = parser.add_subparsers(title="command")
+    subparsers.add_parser("new")
+    subparsers.add_parser("next")
+    subparsers.add_parser("undo")
+    subparsers.add_parser("list")
+    subparsers.add_parser("reset")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} new 100          # search writable memory for the dword value 100",
+        "{0:s} next 99          # keep only the candidates that became 99",
+        "{0:s} next changed     # keep only the candidates changed since the last scan",
+        "{0:s} next increased   # keep only the candidates that increased since the last scan",
+        "{0:s} undo             # cancel the last `next`",
+        "{0:s} list             # show the remaining candidates",
+        "{0:s} reset            # discard the candidates",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "The candidates are discarded when the process exits or is restarted.",
+    ])
+
+    scan_context = None
+    scan_format = None
+    scan_history = [] # [(addrs, values) of `new`, (addrs, values) of the 1st `next`, ...]
+
+    def __init__(self, *args, **kwargs):
+        prefix = kwargs.get("prefix", True)
+        super().__init__(prefix=prefix)
+        return
+
+    @staticmethod
+    def get_history():
+        # do not use the candidates of another process
+        if ValueScanCommand.scan_context != PatchCommand.history_context():
+            ValueScanCommand.scan_history = []
+        return ValueScanCommand.scan_history
+
+    @staticmethod
+    def pack_value(fmt, value):
+        try:
+            if fmt[1] in "fd":
+                return struct.pack(fmt, float(value))
+            value = AddressUtil.parse_address(value)
+            bits = struct.calcsize(fmt) * 8
+            if not (-(1 << (bits - 1)) <= value < (1 << bits)):
+                raise ValueError
+            return struct.pack(fmt.upper(), value & ((1 << bits) - 1))
+        except (gdb.error, ValueError, OverflowError):
+            err("Invalid value")
+            return None
+
+    @staticmethod
+    def iter_values(addrs, size):
+        """Yield the index and the current value of each readable address. `addrs` must be sorted."""
+        step = 0x400 * get_pagesize()
+        for section in ProcessMap.get_process_maps():
+            if not section.is_readable():
+                continue
+            i = bisect.bisect_left(addrs, section.page_start)
+            end = bisect.bisect_left(addrs, section.page_end - size + 1)
+            # read the values within a step at once
+            while i < end:
+                start = addrs[i]
+                j = bisect.bisect_left(addrs, start + step, i, end)
+                mem = read_memory(start, addrs[j - 1] + size - start, safe=True)
+                for k in range(i, j):
+                    if mem is None:
+                        data = read_memory(addrs[k], size, safe=True)
+                        if data is None:
+                            continue
+                    else:
+                        data = mem[addrs[k] - start:addrs[k] - start + size]
+                    yield k, data
+                i = j
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    def do_invoke(self, args):
+        self.usage()
+        return
+
+
+@register_command
+class ValueScanNewCommand(ValueScanCommand):
+    """Search writable memory for the value to start a new scan."""
+
+    _cmdline_ = "value-scan new"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-t", "--type", choices=["byte", "word", "dword", "qword", "float", "double"], default="dword",
+                        help="the type of the value. (default: %(default)s)")
+    parser.add_argument("--signed", action="store_true",
+                        help="treat the integer as signed for increased, decreased and display.")
+    parser.add_argument("-a", "--aligned", type=AddressUtil.parse_address,
+                        help="alignment unit. (default: the size of the type)")
+    parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
+                        help="maximum search region size. (default: %(default)#x; 0: infinity)")
+    parser.add_argument("value", metavar="VALUE", help="the value to search for.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} 100              # search for the dword value 100",
+        "{0:s} -t byte -1       # search for the byte value 0xff",
+        "{0:s} -t float 1.5     # search for the float value 1.5",
+        "{0:s} -a 1 0x1234      # search for the dword value 0x1234 at any alignment",
+    ]).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
+    def do_invoke(self, args):
+        codes = {"byte": "B", "word": "H", "dword": "I", "qword": "Q", "float": "f", "double": "d"}
+        code = codes[args.type]
+        if args.signed:
+            if args.type in ("float", "double"):
+                err("--signed is only valid for integer types")
+                return
+            code = code.lower()
+        fmt = Endian.arrow_str() + code
+        size = struct.calcsize(fmt)
+
+        if args.aligned is None:
+            aligned = size
+        else:
+            aligned = args.aligned
+        if aligned <= 0:
+            err("Invalid alignment")
+            return
+
+        target = ValueScanCommand.pack_value(fmt, args.value)
+        if target is None:
+            return
+
+        import array
+
+        addrs = array.array("Q")
+        step = 0x400 * get_pagesize()
+        reader = functools.partial(read_memory, safe=True)
+        for section in ProcessMap.get_process_maps_exclude_special_regions():
+            if not section.is_readable():
+                continue
+            if not section.is_writable():
+                continue
+
+            # too big
+            if args.max_region_size != 0:
+                if section.size > args.max_region_size:
+                    info("{:#x}-{:#x} is skipped due to size ({:#x}) > MAX_REGION_SIZE ({:#x})".format(
+                        section.page_start, section.page_end,
+                        section.size, args.max_region_size,
+                    ))
+                    continue
+
+            tail = b""
+            for chunk_addr, mem in GefUtil.iter_readable_chunks(section.page_start, section.page_end, step, reader):
+                if mem is None:
+                    tail = b""
+                    continue
+                # a value not aligned to its size can cross the chunk boundary
+                mem = tail + mem
+                base = chunk_addr - len(tail)
+                pos = mem.find(target)
+                while pos >= 0:
+                    misaligned = (base + pos) % aligned
+                    if misaligned:
+                        pos = mem.find(target, pos + aligned - misaligned)
+                        continue
+                    addrs.append(base + pos)
+                    pos = mem.find(target, pos + aligned)
+                tail = mem[len(mem) - size + 1:]
+
+        ValueScanCommand.scan_context = PatchCommand.history_context()
+        ValueScanCommand.scan_format = fmt
+        ValueScanCommand.scan_history = [(addrs, target * len(addrs))]
+        info("Found {:d} candidates".format(len(addrs)))
+        return
+
+
+@register_command
+class ValueScanNextCommand(ValueScanCommand):
+    """Narrow down the candidates by the current value."""
+
+    _cmdline_ = "value-scan next"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("condition", metavar="CONDITION",
+                        help='the value to keep, or "changed", "unchanged", "increased" or "decreased".')
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} 99           # keep only the candidates that became 99",
+        "{0:s} changed      # keep only the candidates changed since the last scan",
+        "{0:s} unchanged    # keep only the candidates not changed since the last scan",
+        "{0:s} increased    # keep only the candidates that increased since the last scan",
+        "{0:s} decreased    # keep only the candidates that decreased since the last scan",
+    ]).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
+    def do_invoke(self, args):
+        history = ValueScanCommand.get_history()
+        if not history:
+            err("No candidates; run `value-scan new` first")
+            return
+        old_addrs, old_values = history[-1]
+        if not old_addrs:
+            err("No candidates remain")
+            return
+
+        fmt = ValueScanCommand.scan_format
+        target = None
+        if args.condition not in ("changed", "unchanged", "increased", "decreased"):
+            target = ValueScanCommand.pack_value(fmt, args.condition)
+            if target is None:
+                return
+
+        import array
+
+        size = struct.calcsize(fmt)
+        addrs = array.array("Q")
+        values = bytearray()
+        for i, cur in ValueScanCommand.iter_values(old_addrs, size):
+            old = old_values[i * size:(i + 1) * size]
+            if target is not None:
+                matched = cur == target
+            elif args.condition == "changed":
+                matched = cur != old
+            elif args.condition == "unchanged":
+                matched = cur == old
+            elif args.condition == "increased":
+                matched = struct.unpack(fmt, cur)[0] > struct.unpack(fmt, old)[0]
+            else:
+                matched = struct.unpack(fmt, cur)[0] < struct.unpack(fmt, old)[0]
+            if matched:
+                addrs.append(old_addrs[i])
+                values += cur
+
+        history.append((addrs, values))
+        info("{:d} candidates remain".format(len(addrs)))
+        return
+
+
+@register_command
+class ValueScanUndoCommand(ValueScanCommand):
+    """Undo the last `value-scan next`."""
+
+    _cmdline_ = "value-scan undo"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        history = ValueScanCommand.get_history()
+        if not history:
+            err("No candidates; run `value-scan new` first")
+            return
+        if len(history) == 1:
+            err("Nothing to undo")
+            return
+        history.pop()
+        addrs, _ = history[-1]
+        info("Restored {:d} candidates".format(len(addrs)))
+        return
+
+
+@register_command
+class ValueScanListCommand(ValueScanCommand, BufferingOutput):
+    """Display the remaining candidates."""
+
+    _cmdline_ = "value-scan list"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-l", "--limit", type=AddressUtil.parse_address, default=0x40,
+                        help="the limit of the displayed candidates. (default: %(default)#x; 0: infinity)")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}         # show the first 0x40 candidates",
+        "{0:s} -l 0    # show all candidates",
+    ]).format(_cmdline_)
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.require_arch_set
+    def do_invoke(self, args):
+        if args.limit < 0:
+            err("Invalid limit value")
+            return
+
+        history = ValueScanCommand.get_history()
+        if not history:
+            err("No candidates; run `value-scan new` first")
+            return
+        addrs, _ = history[-1]
+        if args.limit == 0:
+            shown = addrs
+        else:
+            shown = addrs[:args.limit]
+
+        fmt = ValueScanCommand.scan_format
+        size = struct.calcsize(fmt)
+        current = dict(ValueScanCommand.iter_values(shown, size))
+        if fmt[1] in "fd":
+            spec = "{!s}"
+        else:
+            spec = "{:#x}"
+
+        self.out = []
+        self.info_add_out("{:d} candidates".format(len(addrs)))
+        for i, addr in enumerate(shown):
+            if i in current:
+                cur = spec.format(struct.unpack(fmt, current[i])[0])
+            else:
+                cur = "unreadable"
+            # the values recorded by `new` and each `next`
+            records = []
+            for level_addrs, level_values in history:
+                j = bisect.bisect_left(level_addrs, addr)
+                records.append(spec.format(struct.unpack(fmt, level_values[j * size:(j + 1) * size])[0]))
+            line = "{:s}: {:s} (history: {:s})".format(Symbol.format(addr, show_address=True), cur, " -> ".join(records))
+            self.out.append(line)
+        if len(shown) < len(addrs):
+            self.out.append("...")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+@register_command
+class ValueScanResetCommand(ValueScanCommand):
+    """Discard the candidates."""
+
+    _cmdline_ = "value-scan reset"
+    _category_ = "03-a. Memory - Search"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    _syntax_ = parser.format_help()
+
+    def __init__(self):
+        super().__init__(prefix=False)
+        return
+
+    @Decorator.parse_args
+    def do_invoke(self, args):
+        ValueScanCommand.scan_history = []
+        ok("Value scan candidates cleared")
+        return
+
+
+@register_command
 class PtrDemangleCommand(GenericCommand):
     """Demangle a mangled value by PTR_MANGLE."""
 

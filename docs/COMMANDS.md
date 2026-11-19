@@ -3888,6 +3888,206 @@ strings -d 1 0x00007ffffffde000 0x00007ffffffff000        # if an address is fou
 strings -f "GLIBC" 0x00007ffffffde000 0x00007ffffffff000  # filter by keywords (-f, -e). need double-escape
 ```
 
+## `value-scan`
+
+The base command to narrow down the addresses by the value.
+
+
+### Syntax
+
+```text
+usage: value-scan [-h] {new,next,undo,list,reset} ...
+
+options:
+  -h, --help            show this help message and exit
+
+command:
+  {new,next,undo,list,reset}
+```
+
+### Examples
+
+```gdb
+value-scan new 100          # search writable memory for the dword value 100
+value-scan next 99          # keep only the candidates that became 99
+value-scan next changed     # keep only the candidates changed since the last scan
+value-scan next increased   # keep only the candidates that increased since the last scan
+value-scan undo             # cancel the last `next`
+value-scan list             # show the remaining candidates
+value-scan reset            # discard the candidates
+```
+
+### Notes
+
+```text
+The candidates are discarded when the process exits or is restarted.
+```
+
+## `value-scan list`
+
+Display the remaining candidates.
+
+
+### Syntax
+
+```text
+usage: value-scan list [-h] [-l LIMIT] [-n]
+
+options:
+  -h, --help         show this help message and exit
+  -l, --limit LIMIT  the limit of the displayed candidates. (default: 0x40; 0: infinity)
+  -n, --no-pager     do not use the pager.
+```
+
+### Examples
+
+```gdb
+value-scan list         # show the first 0x40 candidates
+value-scan list -l 0    # show all candidates
+```
+
+### Notes
+
+```text
+The candidates are discarded when the process exits or is restarted.
+```
+
+## `value-scan new`
+
+Search writable memory for the value to start a new scan.
+
+
+### Syntax
+
+```text
+usage: value-scan new [-h] [-t {byte,word,dword,qword,float,double}] [--signed] [-a ALIGNED] [-s MAX_REGION_SIZE] VALUE
+
+positional arguments:
+  VALUE                 the value to search for.
+
+options:
+  -h, --help            show this help message and exit
+  -t, --type {byte,word,dword,qword,float,double}
+                        the type of the value. (default: dword)
+  --signed              treat the integer as signed for increased, decreased and display.
+  -a, --aligned ALIGNED
+                        alignment unit. (default: the size of the type)
+  -s, --max-region-size MAX_REGION_SIZE
+                        maximum search region size. (default: 0x10000000; 0: infinity)
+```
+
+### Examples
+
+```gdb
+value-scan new 100              # search for the dword value 100
+value-scan new -t byte -1       # search for the byte value 0xff
+value-scan new -t float 1.5     # search for the float value 1.5
+value-scan new -a 1 0x1234      # search for the dword value 0x1234 at any alignment
+```
+
+### Notes
+
+```text
+The candidates are discarded when the process exits or is restarted.
+```
+
+## `value-scan next`
+
+Narrow down the candidates by the current value.
+
+
+### Syntax
+
+```text
+usage: value-scan next [-h] CONDITION
+
+positional arguments:
+  CONDITION   the value to keep, or "changed", "unchanged", "increased" or "decreased".
+
+options:
+  -h, --help  show this help message and exit
+```
+
+### Examples
+
+```gdb
+value-scan next 99           # keep only the candidates that became 99
+value-scan next changed      # keep only the candidates changed since the last scan
+value-scan next unchanged    # keep only the candidates not changed since the last scan
+value-scan next increased    # keep only the candidates that increased since the last scan
+value-scan next decreased    # keep only the candidates that decreased since the last scan
+```
+
+### Notes
+
+```text
+The candidates are discarded when the process exits or is restarted.
+```
+
+## `value-scan reset`
+
+Discard the candidates.
+
+
+### Syntax
+
+```text
+usage: value-scan reset [-h]
+
+options:
+  -h, --help  show this help message and exit
+```
+
+### Examples
+
+```gdb
+value-scan new 100          # search writable memory for the dword value 100
+value-scan next 99          # keep only the candidates that became 99
+value-scan next changed     # keep only the candidates changed since the last scan
+value-scan next increased   # keep only the candidates that increased since the last scan
+value-scan undo             # cancel the last `next`
+value-scan list             # show the remaining candidates
+value-scan reset            # discard the candidates
+```
+
+### Notes
+
+```text
+The candidates are discarded when the process exits or is restarted.
+```
+
+## `value-scan undo`
+
+Undo the last `value-scan next`.
+
+
+### Syntax
+
+```text
+usage: value-scan undo [-h]
+
+options:
+  -h, --help  show this help message and exit
+```
+
+### Examples
+
+```gdb
+value-scan new 100          # search writable memory for the dword value 100
+value-scan next 99          # keep only the candidates that became 99
+value-scan next changed     # keep only the candidates changed since the last scan
+value-scan next increased   # keep only the candidates that increased since the last scan
+value-scan undo             # cancel the last `next`
+value-scan list             # show the remaining candidates
+value-scan reset            # discard the candidates
+```
+
+### Notes
+
+```text
+The candidates are discarded when the process exits or is restarted.
+```
+
 ## `xref-telescope`
 
 Recursively search for cross-references to a pattern in memory.

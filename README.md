@@ -1183,7 +1183,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Search
 
 <details>
-<summary><code>search-pattern</code>, <code>scan-section</code>, <code>strings</code>, <code>search-cfi-gadgets</code>, <code>find-syscall</code></summary>
+<summary><code>search-pattern</code>, <code>scan-section</code>, <code>strings</code>, <code>search-cfi-gadgets</code>, <code>find-syscall</code>, <code>value-scan</code></summary>
 
 - `search-pattern` *(improved)*
     - It is supported under qemu-system (in short, it works without `/proc/self/maps`)
@@ -1197,6 +1197,8 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - ![](images/search-cfi-gadgets.png)
 - `find-syscall`: searches the syscall gadget.
     - ![](images/find-syscall.png)
+- `value-scan`: narrows down the addresses by the value changes, like Cheat Engine.
+    - ![](images/value-scan.png)
 
 </details>
 
