@@ -47741,7 +47741,9 @@ class DereferenceCommand(GenericCommand):
     parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
                         help="display with tags.")
     parser.add_argument("-T", "--tag-offset", type=AddressUtil.parse_address, default=0,
-                        help="the slide offset of all tag positions.")
+                        help="the index offset for manual tags.")
+    parser.add_argument("-v", "--variables", action="store_true",
+                        help="tag the addresses of arguments and local variables in the selected frame.")
     parser.add_argument("-r", "--reverse", action="store_true",
                         help="display in reverse order line by line.")
     parser.add_argument("-f", "--frame-split", action="store_true",
@@ -47778,6 +47780,7 @@ class DereferenceCommand(GenericCommand):
         "{0:s} --is-addr $sp 20        # display elements which is valid address",
         "{0:s} --slab-contains $sp 20  # with slab-contains result (available under qemu-system)",
         "{0:s} --tag 0 next $sp 20     # with tags",
+        "{0:s} -v $sp 20               # with variable tags",
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
@@ -47932,6 +47935,44 @@ class DereferenceCommand(GenericCommand):
             line += Color.colorify(extra_str, registers_color)
         return line
 
+    def check_variables(self, start_address, from_idx, to_idx, step):
+        try:
+            frame = gdb.selected_frame()
+            block = frame.block()
+        except (gdb.error, RuntimeError):
+            return
+
+        indices = range(from_idx, to_idx, step)
+        while block is not None and not block.is_static and not block.is_global:
+            for symbol in block:
+                if not (symbol.is_argument or symbol.is_variable) or not symbol.name:
+                    continue
+                try:
+                    address = frame.read_var(symbol).address
+                    if address is None:
+                        continue
+                    offset = int(address) - start_address
+                except (gdb.error, RuntimeError):
+                    continue
+                idx, offset_in_row = divmod(offset, current_arch.ptrsize)
+                if idx not in indices:
+                    continue
+                tag = Color.boldify(symbol.name)
+                variable_type = symbol.type
+                if variable_type is not None:
+                    type_name = re.sub(r"\bunsigned ", "u", str(variable_type))
+                    tag = "{:s} {:s}".format(type_name, tag)
+                if offset_in_row:
+                    tag = "+{:#x} {:s}".format(offset_in_row, tag)
+                if idx in self.tags_dict:
+                    tag = "{:s}, {:s}".format(self.tags_dict[idx], tag)
+                self.tags_dict[idx] = tag
+                self.max_tag_width = max(self.max_tag_width, len(Color.remove_color(tag)))
+            if block.function is not None:
+                break
+            block = block.superblock
+        return
+
     def check_list_head(self, start_address, from_idx, to_idx, step):
         for idx in range(from_idx, to_idx, step):
             current_address = start_address + idx * current_arch.ptrsize
@@ -47972,16 +48013,16 @@ class DereferenceCommand(GenericCommand):
         return
 
     def dereference_line_by_line(self, start_address, from_idx, to_idx, step):
+        if self.args.variables:
+            self.check_variables(start_address, from_idx, to_idx, step)
+
         if self.args.list_head:
             self.check_list_head(start_address, from_idx, to_idx, step)
 
         if self.args.slab_contains or self.args.slab_contains_unaligned:
             self.check_slab_contains(start_address, from_idx, to_idx, step)
 
-        has_tag = bool(self.args.tag)
-        has_tag |= bool(self.args.list_head)
-        has_tag |= bool(self.args.slab_contains)
-        has_tag |= bool(self.args.slab_contains_unaligned)
+        has_tag = bool(self.tags_dict)
 
         out = []
         seen = set()
@@ -48129,12 +48170,13 @@ class DereferenceCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        if args.slab_contains or args.slab_contains_unaligned or args.phys:
+        slab_contains = args.slab_contains or args.slab_contains_unaligned
+        if slab_contains or args.phys:
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
                 err("Unsupported gdb mode")
                 return
 
-        if (args.slab_contains or args.slab_contains_unaligned) and args.phys:
+        if args.phys and (slab_contains or args.variables):
             err("Unsupported option pairs")
             return
 

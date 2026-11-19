@@ -833,8 +833,19 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - It displays if there are canaries and return addresses in the target area.
         - ![](images/telescope.png)
     - It supports blacklist address features (to avoid dying when touching the address mapped to the serial device).
-    - It also shows the symbol if available.
-    - It supports some new options: `--is-addr`, `--is-not-addr`, `--perm`, `--is-zero`, `--is-not-zero`, `--mask-hits`, `--no-mask-hits`, `--tag`, `--frame-split`, `--uniq`, `--interval`, `--depth`, `--phys`, `--list-head`, `--slab-contains`, `--slab-contains-unaligned`.
+    - It supports some new options:
+        - `--is-addr`, `--is-not-addr`
+        - `--perm`
+        - `--is-zero`, `--is-not-zero`
+        - `--mask-hits`, `--no-mask-hits`
+        - `--tag`, `--tag-offset`
+        - `--variables`
+        - `--frame-split`
+        - `--uniq`
+        - `--interval`
+        - `--depth`, `--depth-nb-lines`
+        - `--phys`
+        - `--list-head`, `--slab-contains`, `--slab-contains-unaligned`
 
 </details>
 

@@ -279,7 +279,7 @@ Dereference recursively from an address and display information.
 ### Syntax
 
 ```text
-usage: dereference [-h] [-a] [-A] [-P PERM] [-z] [-Z] [-m MASK [VALUE ...]] [-M MASK [VALUE ...]] [-t IDX TAG] [-T TAG_OFFSET] [-r] [-f] [-u] [-i INTERVAL] [-d DEPTH] [-D DEPTH_NB_LINES] [-p] [-l] [-s] [-S] [-q] [-Q] [-n] [LOCATION] [NB_LINES]
+usage: dereference [-h] [-a] [-A] [-P PERM] [-z] [-Z] [-m MASK [VALUE ...]] [-M MASK [VALUE ...]] [-t IDX TAG] [-T TAG_OFFSET] [-v] [-r] [-f] [-u] [-i INTERVAL] [-d DEPTH] [-D DEPTH_NB_LINES] [-p] [-l] [-s] [-S] [-q] [-Q] [-n] [LOCATION] [NB_LINES]
 
 positional arguments:
   LOCATION              the memory address to dump. (default: current_arch.sp)
@@ -298,7 +298,8 @@ options:
                         display only mask non-hits.
   -t, --tag IDX TAG     display with tags.
   -T, --tag-offset TAG_OFFSET
-                        the slide offset of all tag positions.
+                        the index offset for manual tags.
+  -v, --variables       tag the addresses of arguments and local variables in the selected frame.
   -r, --reverse         display in reverse order line by line.
   -f, --frame-split     display with frame split lines (heuristics).
   -u, --uniq            display with uniq.
@@ -328,6 +329,7 @@ dereference --depth 2 $sp 20        # display recursively if valid aligned addre
 dereference --is-addr $sp 20        # display elements which is valid address
 dereference --slab-contains $sp 20  # with slab-contains result (available under qemu-system)
 dereference --tag 0 next $sp 20     # with tags
+dereference -v $sp 20               # with variable tags
 ```
 
 ### Notes
