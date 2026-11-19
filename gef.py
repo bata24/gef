@@ -209100,6 +209100,45 @@ class InterruptAfterCommand(GenericCommand):
         "Only when qemu-user or pin, SIGTRAP is sent instead of `interrupt`, as with `continue-for-qemu-user`.",
     ])
 
+    # GDB API is not thread-safe, so the countdown thread posts the following to the main thread.
+    # They do nothing once the inferior has stopped by itself.
+    def show(self, msg, stopped):
+        if stopped.is_set():
+            return
+        # the leading `\r` overwrites `^C` echoed by the terminal, and the trailing one lets GDB overwrite the countdown
+        gef_print("\r" + msg + "\r", end="")
+        gdb.flush()
+        return
+
+    def interrupt(self, pid, stopped):
+        if stopped.is_set():
+            return
+        if pid:
+            os.kill(pid, signal.SIGTRAP)
+            return
+        gdb.execute("interrupt")
+        return
+
+    def countdown(self, args, fmt, pid, stopped):
+        width = len(fmt.format(args.seconds))
+        end_time = time.monotonic() + args.seconds
+        while True:
+            remain = end_time - time.monotonic()
+            if remain <= 0:
+                break
+            if not args.quiet:
+                gdb.post_event(functools.partial(self.show, fmt.format(remain).ljust(width), stopped))
+            if stopped.wait(min(remain, 0.1)):
+                return
+        # erase the countdown
+        if not args.quiet:
+            gdb.post_event(functools.partial(self.show, " " * width, stopped))
+        # The inferior may have stopped but GDB has not processed it yet. Interrupting it now leaves the signal
+        # pending, which stops the next continue. So post it again to let GDB process such stop first.
+        interrupt = functools.partial(self.interrupt, pid, stopped)
+        gdb.post_event(functools.partial(gdb.post_event, interrupt))
+        return
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
@@ -209118,44 +209157,9 @@ class InterruptAfterCommand(GenericCommand):
             pid = Pid.get_pid()
 
         fmt = "{:s} Interrupting in {{:.1f}} seconds".format(Color.colorify("[+]", "bold blue"))
-        width = len(fmt.format(args.seconds))
-        end_time = time.monotonic() + args.seconds
+        # Not kept in self, since a late posted event may run while the next invocation is waiting
         stopped = threading.Event()
-
-        # GDB API is not thread-safe, so the countdown thread posts the following to the main thread.
-        # They do nothing once the inferior has stopped by itself.
-        def show(remain):
-            if stopped.is_set():
-                return
-            # the leading `\r` overwrites `^C` echoed by the terminal, and the trailing one lets GDB overwrite the countdown
-            gef_print("\r" + fmt.format(remain).ljust(width) + "\r", end="")
-            gdb.flush()
-            return
-
-        def interrupt():
-            if stopped.is_set():
-                return
-            if not args.quiet:
-                gef_print("\r" + " " * width + "\r", end="")
-            if pid:
-                os.kill(pid, signal.SIGTRAP)
-                return
-            gdb.execute("interrupt")
-            return
-
-        def countdown():
-            while True:
-                remain = end_time - time.monotonic()
-                if remain <= 0:
-                    break
-                if not args.quiet:
-                    gdb.post_event(functools.partial(show, remain))
-                if stopped.wait(min(remain, 0.1)):
-                    return
-            gdb.post_event(interrupt)
-            return
-
-        thread = threading.Thread(target=countdown, daemon=True)
+        thread = threading.Thread(target=self.countdown, args=(args, fmt, pid, stopped), daemon=True)
         thread.start()
         try:
             gdb.execute("c") # use c wrapper
@@ -209189,16 +209193,7 @@ class ContinueAfterCommand(GenericCommand):
         "Waiting can be canceled with Ctrl+C.",
     ])
 
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    def do_invoke(self, args):
-        if not math.isfinite(args.seconds):
-            err("Invalid seconds")
-            return
-        if args.seconds <= 0:
-            err("Invalid seconds")
-            return
-
+    def countdown(self, args):
         fmt = "{:s} Continuing in {{:.1f}} seconds (Ctrl+C to cancel)".format(Color.colorify("[+]", "bold blue"))
         width = len(fmt.format(args.seconds))
         end_time = time.monotonic() + args.seconds
@@ -209215,10 +209210,24 @@ class ContinueAfterCommand(GenericCommand):
             # also erase `^C` echoed by the terminal
             gef_print("\r" + " " * width + "\r", end="")
             info("Canceled")
-            return
+            return False
 
         if not args.quiet:
             gef_print("\r" + " " * width + "\r", end="")
+        return True
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    def do_invoke(self, args):
+        if not math.isfinite(args.seconds):
+            err("Invalid seconds")
+            return
+        if args.seconds <= 0:
+            err("Invalid seconds")
+            return
+
+        if not self.countdown(args):
+            return
         try:
             gdb.execute("c") # use c wrapper
         except gdb.error as e:
