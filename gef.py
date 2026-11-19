@@ -198621,6 +198621,10 @@ class PageTableRiscv(PageTable):
 
     def pagewalk_L5(self):
         self.quiet_add_out(titlify("Level 5 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         L5E = []
         PTE = []
         COUNT = 0
@@ -198631,9 +198635,11 @@ class PageTableRiscv(PageTable):
             self.bits["L1_BITS"],
             self.bits["OFFSET"],
         ])
+        entry_size = self.bits["ENTRY_SIZE"]
+        ppn_unit = get_pagesize()
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_memory(table_base, 2 ** self.bits["L5_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L5_BITS"] * entry_size)
+            entries = slice_unpack(entries, entry_size)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # valid flag
@@ -198648,7 +198654,7 @@ class PageTableRiscv(PageTable):
                 new_va = va_base + (sign_ext | (i << bit_shift))
                 new_va_end = new_va + (1 << bit_shift)
 
-                if self.is_invalid_entry(entry, 5, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                if self.is_invalid_entry(entry, 5, table_base + i * entry_size, new_va, bit_shift):
                     continue
 
                 # calc ppn
@@ -198656,30 +198662,30 @@ class PageTableRiscv(PageTable):
 
                 # calc flags
                 flags = parent_flags.copy()
-                if ((entry >> 1) & 1) == 1:
+                if is_bit_set(entry, 1):
                     flags.append("R")
-                if ((entry >> 2) & 1) == 1:
+                if is_bit_set(entry, 2):
                     flags.append("W")
-                if ((entry >> 3) & 1) == 1:
+                if is_bit_set(entry, 3):
                     flags.append("X")
-                if ((entry >> 4) & 1) == 1:
+                if is_bit_set(entry, 4):
                     flags.append("U")
-                if ((entry >> 5) & 1) == 1:
+                if is_bit_set(entry, 5):
                     flags.append("G")
-                if ((entry >> 6) & 1) == 1:
+                if is_bit_set(entry, 6):
                     flags.append("A")
-                if ((entry >> 7) & 1) == 1:
+                if is_bit_set(entry, 7):
                     flags.append("D")
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * get_pagesize()
+                    next_level_entry = ppn * ppn_unit
                     L5E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * get_pagesize()
+                    phys_addr = ppn * ppn_unit
                     page_size = 256 * 1024 * 1024 * 1024 * 1024
                     page_count = 1
                     PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
@@ -198689,7 +198695,7 @@ class PageTableRiscv(PageTable):
                 if self.args.print_each_level:
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
-                    addr = table_base + i * self.bits["ENTRY_SIZE"]
+                    addr = table_base + i * entry_size
                     fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
@@ -198708,6 +198714,10 @@ class PageTableRiscv(PageTable):
 
     def pagewalk_L4(self):
         self.quiet_add_out(titlify("Level 4 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         L4E = []
         PTE = []
         COUNT = 0
@@ -198717,9 +198727,11 @@ class PageTableRiscv(PageTable):
             self.bits["L1_BITS"],
             self.bits["OFFSET"],
         ])
+        entry_size = self.bits["ENTRY_SIZE"]
+        ppn_unit = get_pagesize()
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_memory(table_base, 2 ** self.bits["L4_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L4_BITS"] * entry_size)
+            entries = slice_unpack(entries, entry_size)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # valid flag
@@ -198738,7 +198750,7 @@ class PageTableRiscv(PageTable):
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
 
-                if self.is_invalid_entry(entry, 4, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                if self.is_invalid_entry(entry, 4, table_base + i * entry_size, new_va, bit_shift):
                     continue
 
                 # calc ppn
@@ -198746,30 +198758,30 @@ class PageTableRiscv(PageTable):
 
                 # calc flags
                 flags = parent_flags.copy()
-                if ((entry >> 1) & 1) == 1:
+                if is_bit_set(entry, 1):
                     flags.append("R")
-                if ((entry >> 2) & 1) == 1:
+                if is_bit_set(entry, 2):
                     flags.append("W")
-                if ((entry >> 3) & 1) == 1:
+                if is_bit_set(entry, 3):
                     flags.append("X")
-                if ((entry >> 4) & 1) == 1:
+                if is_bit_set(entry, 4):
                     flags.append("U")
-                if ((entry >> 5) & 1) == 1:
+                if is_bit_set(entry, 5):
                     flags.append("G")
-                if ((entry >> 6) & 1) == 1:
+                if is_bit_set(entry, 6):
                     flags.append("A")
-                if ((entry >> 7) & 1) == 1:
+                if is_bit_set(entry, 7):
                     flags.append("D")
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * get_pagesize()
+                    next_level_entry = ppn * ppn_unit
                     L4E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * get_pagesize()
+                    phys_addr = ppn * ppn_unit
                     page_size = 512 * 1024 * 1024 * 1024
                     page_count = 1
                     PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
@@ -198779,7 +198791,7 @@ class PageTableRiscv(PageTable):
                 if self.args.print_each_level:
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
-                    addr = table_base + i * self.bits["ENTRY_SIZE"]
+                    addr = table_base + i * entry_size
                     fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
@@ -198798,6 +198810,10 @@ class PageTableRiscv(PageTable):
 
     def pagewalk_L3(self):
         self.quiet_add_out(titlify("Level 3 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         L3E = []
         PTE = []
         COUNT = 0
@@ -198806,9 +198822,11 @@ class PageTableRiscv(PageTable):
             self.bits["L1_BITS"],
             self.bits["OFFSET"],
         ])
+        entry_size = self.bits["ENTRY_SIZE"]
+        ppn_unit = get_pagesize()
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_memory(table_base, 2 ** self.bits["L3_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L3_BITS"] * entry_size)
+            entries = slice_unpack(entries, entry_size)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # valid flag
@@ -198827,7 +198845,7 @@ class PageTableRiscv(PageTable):
                     new_va = va_base + (sign_ext | (i << bit_shift))
                     new_va_end = new_va + (1 << bit_shift)
 
-                if self.is_invalid_entry(entry, 3, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                if self.is_invalid_entry(entry, 3, table_base + i * entry_size, new_va, bit_shift):
                     continue
 
                 # calc ppn
@@ -198835,30 +198853,30 @@ class PageTableRiscv(PageTable):
 
                 # calc flags
                 flags = parent_flags.copy()
-                if ((entry >> 1) & 1) == 1:
+                if is_bit_set(entry, 1):
                     flags.append("R")
-                if ((entry >> 2) & 1) == 1:
+                if is_bit_set(entry, 2):
                     flags.append("W")
-                if ((entry >> 3) & 1) == 1:
+                if is_bit_set(entry, 3):
                     flags.append("X")
-                if ((entry >> 4) & 1) == 1:
+                if is_bit_set(entry, 4):
                     flags.append("U")
-                if ((entry >> 5) & 1) == 1:
+                if is_bit_set(entry, 5):
                     flags.append("G")
-                if ((entry >> 6) & 1) == 1:
+                if is_bit_set(entry, 6):
                     flags.append("A")
-                if ((entry >> 7) & 1) == 1:
+                if is_bit_set(entry, 7):
                     flags.append("D")
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * get_pagesize()
+                    next_level_entry = ppn * ppn_unit
                     L3E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * get_pagesize()
+                    phys_addr = ppn * ppn_unit
                     page_size = 1 * 1024 * 1024 * 1024
                     page_count = 1
                     PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
@@ -198868,7 +198886,7 @@ class PageTableRiscv(PageTable):
                 if self.args.print_each_level:
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
-                    addr = table_base + i * self.bits["ENTRY_SIZE"]
+                    addr = table_base + i * entry_size
                     fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
@@ -198887,6 +198905,10 @@ class PageTableRiscv(PageTable):
 
     def pagewalk_L2(self):
         self.quiet_add_out(titlify("Level 2 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         L2E = []
         PTE = []
         COUNT = 0
@@ -198894,9 +198916,15 @@ class PageTableRiscv(PageTable):
             self.bits["L1_BITS"],
             self.bits["OFFSET"],
         ])
+        entry_size = self.bits["ENTRY_SIZE"]
+        ppn_unit = get_pagesize()
+        if is_riscv64():
+            ppn_mask = 0xfff_ffff_ffff # 44 bit
+        else:
+            ppn_mask = 0x3f_ffff # 22 bit
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_memory(table_base, 2 ** self.bits["L2_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L2_BITS"] * entry_size)
+            entries = slice_unpack(entries, entry_size)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # valid flag
@@ -198907,41 +198935,38 @@ class PageTableRiscv(PageTable):
                 new_va = va_base + (i << bit_shift)
                 new_va_end = new_va + (1 << bit_shift)
 
-                if self.is_invalid_entry(entry, 2, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                if self.is_invalid_entry(entry, 2, table_base + i * entry_size, new_va, bit_shift):
                     continue
 
                 # calc ppn
-                if is_riscv64():
-                    ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
-                else:
-                    ppn = (entry >> 10) & 0x3f_ffff # 22 bit
+                ppn = (entry >> 10) & ppn_mask
 
                 # calc flags
                 flags = parent_flags.copy()
-                if ((entry >> 1) & 1) == 1:
+                if is_bit_set(entry, 1):
                     flags.append("R")
-                if ((entry >> 2) & 1) == 1:
+                if is_bit_set(entry, 2):
                     flags.append("W")
-                if ((entry >> 3) & 1) == 1:
+                if is_bit_set(entry, 3):
                     flags.append("X")
-                if ((entry >> 4) & 1) == 1:
+                if is_bit_set(entry, 4):
                     flags.append("U")
-                if ((entry >> 5) & 1) == 1:
+                if is_bit_set(entry, 5):
                     flags.append("G")
-                if ((entry >> 6) & 1) == 1:
+                if is_bit_set(entry, 6):
                     flags.append("A")
-                if ((entry >> 7) & 1) == 1:
+                if is_bit_set(entry, 7):
                     flags.append("D")
 
                 if ((entry >> 1) & 0b111) == 0:
                     # calc next table
-                    next_level_entry = ppn * get_pagesize()
+                    next_level_entry = ppn * ppn_unit
                     L2E.append([new_va, next_level_entry, flags])
                     entry_type = "TABLE"
                 else:
                     # make entry
                     virt_addr = new_va
-                    phys_addr = ppn * get_pagesize()
+                    phys_addr = ppn * ppn_unit
                     page_size = 1 << bit_shift # 2MB (Sv39/48/57) or 4MB (Sv32)
                     page_count = 1
                     PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
@@ -198951,7 +198976,7 @@ class PageTableRiscv(PageTable):
                 if self.args.print_each_level:
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
-                    addr = table_base + i * self.bits["ENTRY_SIZE"]
+                    addr = table_base + i * entry_size
                     fmt = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}"
                     line = fmt.format(addr, entry, new_va, new_va_end, entry_type, " ".join(flags))
                     if self.is_not_filter_target(line):
@@ -198970,12 +198995,22 @@ class PageTableRiscv(PageTable):
 
     def pagewalk_L1(self):
         self.quiet_add_out(titlify("Level 1 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         PTE = []
         COUNT = 0
         bit_shift = self.bits["OFFSET"]
+        entry_size = self.bits["ENTRY_SIZE"]
+        ppn_unit = get_pagesize()
+        if is_riscv64():
+            ppn_mask = 0xfff_ffff_ffff # 44 bit
+        else:
+            ppn_mask = 0x3f_ffff # 22 bit
         for va_base, table_base, parent_flags in self.TABLES:
-            entries = self.read_memory(table_base, 2 ** self.bits["L1_BITS"] * self.bits["ENTRY_SIZE"])
-            entries = slice_unpack(entries, self.bits["ENTRY_SIZE"])
+            entries = self.read_memory(table_base, 2 ** self.bits["L1_BITS"] * entry_size)
+            entries = slice_unpack(entries, entry_size)
             COUNT += len(entries)
             for i, entry in enumerate(entries):
                 # valid flag
@@ -198986,35 +199021,32 @@ class PageTableRiscv(PageTable):
                 new_va = va_base + (i << bit_shift)
                 new_va_end = new_va + (1 << bit_shift)
 
-                if self.is_invalid_entry(entry, 1, table_base + i * self.bits["ENTRY_SIZE"], new_va, bit_shift):
+                if self.is_invalid_entry(entry, 1, table_base + i * entry_size, new_va, bit_shift):
                     continue
 
                 # calc ppn
-                if is_riscv64():
-                    ppn = (entry >> 10) & 0xfff_ffff_ffff # 44 bit
-                else:
-                    ppn = (entry >> 10) & 0x3f_ffff # 22 bit
+                ppn = (entry >> 10) & ppn_mask
 
                 # calc flags
                 flags = parent_flags.copy()
-                if ((entry >> 1) & 1) == 1:
+                if is_bit_set(entry, 1):
                     flags.append("R")
-                if ((entry >> 2) & 1) == 1:
+                if is_bit_set(entry, 2):
                     flags.append("W")
-                if ((entry >> 3) & 1) == 1:
+                if is_bit_set(entry, 3):
                     flags.append("X")
-                if ((entry >> 4) & 1) == 1:
+                if is_bit_set(entry, 4):
                     flags.append("U")
-                if ((entry >> 5) & 1) == 1:
+                if is_bit_set(entry, 5):
                     flags.append("G")
-                if ((entry >> 6) & 1) == 1:
+                if is_bit_set(entry, 6):
                     flags.append("A")
-                if ((entry >> 7) & 1) == 1:
+                if is_bit_set(entry, 7):
                     flags.append("D")
 
                 # make entry
                 virt_addr = new_va
-                phys_addr = ppn * get_pagesize()
+                phys_addr = ppn * ppn_unit
                 page_size = 4 * 1024
                 page_count = 1
                 PTE.append(PageTable.Entry(virt_addr, phys_addr, page_size, page_count, self.format_flags(flags)))
@@ -199024,7 +199056,7 @@ class PageTableRiscv(PageTable):
                 if self.args.print_each_level:
                     if self.is_not_trace_target(new_va, new_va_end):
                         continue
-                    addr = table_base + i * self.bits["ENTRY_SIZE"]
+                    addr = table_base + i * entry_size
                     line = "{:#018x}: {:#018x} (virt:{:#018x}-{:#018x},type:{:s}) {:s}".format(
                         addr, entry, new_va, new_va_end, entry_type, " ".join(flags),
                     )
@@ -200847,30 +200879,30 @@ class PageTableX64(PageTable):
             perm += ["R", "-"]["NO_R" in flag_info]
             perm += ["W", "-"]["NO_W" in flag_info]
             perm += ["X", "-"]["NO_X" in flag_info]
-            flags += [perm]
+            flags.append(perm)
         else:
             if "NO_RW" in flag_info:
                 if "XD" in flag_info:
-                    flags += ["R--"]
+                    flags.append("R--")
                 else:
-                    flags += ["R-X"]
+                    flags.append("R-X")
             else:
                 if "XD" in flag_info:
-                    flags += ["RW-"]
+                    flags.append("RW-")
                 else:
-                    flags += ["RWX"]
+                    flags.append("RWX")
             if "NO_US" in flag_info:
-                flags += ["KERN"]
+                flags.append("KERN")
             else:
-                flags += ["USER"]
+                flags.append("USER")
 
         if not self.args.simple:
             if "A" in flag_info:
-                flags += ["ACCESSED"]
+                flags.append("ACCESSED")
             if "D" in flag_info:
-                flags += ["DIRTY"]
+                flags.append("DIRTY")
             if "G" in flag_info:
-                flags += ["GLOBAL"]
+                flags.append("GLOBAL")
 
         flag_string = " ".join(flags)
         self.flags_strings_cache[flag_info_key] = flag_string
@@ -200903,6 +200935,10 @@ class PageTableX64(PageTable):
 
     def pagewalk_PML5T(self):
         self.quiet_add_out(titlify("PML5E: Page Map Level 5 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         PML5E = []
         COUNT = 0
         bit_shift = sum([
@@ -200936,22 +200972,22 @@ class PageTableX64(PageTable):
                 # calc flags
                 flags = parent_flags.copy()
                 if self.args.ept:
-                    if ((entry >> 0) & 1) == 0:
+                    if not is_bit_set(entry, 0):
                         flags.append("NO_R")
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_W")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_X")
-                    if ((entry >> 8) & 1) == 1:
+                    if is_bit_set(entry, 8):
                         flags.append("A")
                 else:
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_RW")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_US")
-                    if ((entry >> 5) & 1) == 1:
+                    if is_bit_set(entry, 5):
                         flags.append("A")
-                    if ((entry >> 63) & 1) == 1:
+                    if is_bit_set(entry, 63):
                         flags.append("XD")
 
                 # calc next table (drop the flag bits)
@@ -200984,6 +201020,10 @@ class PageTableX64(PageTable):
 
     def pagewalk_PML4T(self):
         self.quiet_add_out(titlify("PML4E: Page Map Level 4 Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         PML4E = []
         COUNT = 0
         SKIPPED = 0
@@ -201024,22 +201064,22 @@ class PageTableX64(PageTable):
                 # calc flags
                 flags = parent_flags.copy()
                 if self.args.ept:
-                    if ((entry >> 0) & 1) == 0:
+                    if not is_bit_set(entry, 0):
                         flags.append("NO_R")
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_W")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_X")
-                    if ((entry >> 8) & 1) == 1:
+                    if is_bit_set(entry, 8):
                         flags.append("A")
                 else:
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_RW")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_US")
-                    if ((entry >> 5) & 1) == 1:
+                    if is_bit_set(entry, 5):
                         flags.append("A")
-                    if ((entry >> 63) & 1) == 1:
+                    if is_bit_set(entry, 63):
                         flags.append("XD")
 
                 # calc next table (drop the flag bits)
@@ -201074,8 +201114,8 @@ class PageTableX64(PageTable):
     def pagewalk_PDPT(self):
         self.quiet_add_out(titlify("PDPE: Page Directory Pointer Entry"))
 
-        def is_set_PS(entry):
-            return ((entry >> 7) & 1) == 1
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
 
         PDPTE = []
         PTE = []
@@ -201086,6 +201126,7 @@ class PageTableX64(PageTable):
             self.bits["PT_BITS"],
             self.bits["OFFSET"],
         ])
+        is_64bit = self.args.ept or is_x86_64() # not 32bit PAE
         for va_base, table_base, parent_flags in ProgressBar(self.TABLES, desc="PDPE", disable=self.args.quiet):
             indices, entries = self.read_table_entries(
                 table_base, 2 ** self.bits["PDPT_BITS"], self.bits["ENTRY_SIZE"], va_base, bit_shift, self.read_memory,
@@ -201106,44 +201147,47 @@ class PageTableX64(PageTable):
                 if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
                     continue
 
+                # PS flag (the entry maps a page)
+                PS = is_bit_set(entry, 7)
+
                 # calc flags
                 flags = parent_flags.copy()
-                if self.args.ept or is_x86_64():
+                if is_64bit:
                     if self.args.ept:
-                        if ((entry >> 0) & 1) == 0:
+                        if not is_bit_set(entry, 0):
                             flags.append("NO_R")
-                        if ((entry >> 1) & 1) == 0:
+                        if not is_bit_set(entry, 1):
                             flags.append("NO_W")
-                        if ((entry >> 2) & 1) == 0:
+                        if not is_bit_set(entry, 2):
                             flags.append("NO_X")
-                        if ((entry >> 8) & 1) == 1:
+                        if is_bit_set(entry, 8):
                             flags.append("A")
-                        if is_set_PS(entry) and ((entry >> 9) & 1) == 1:
+                        if PS and is_bit_set(entry, 9):
                             flags.append("D")
                     else:
-                        if ((entry >> 1) & 1) == 0:
+                        if not is_bit_set(entry, 1):
                             flags.append("NO_RW")
-                        if ((entry >> 2) & 1) == 0:
+                        if not is_bit_set(entry, 2):
                             flags.append("NO_US")
-                        if ((entry >> 5) & 1) == 1:
+                        if is_bit_set(entry, 5):
                             flags.append("A")
-                        if is_set_PS(entry) and ((entry >> 6) & 1) == 1:
+                        if PS and is_bit_set(entry, 6):
                             flags.append("D")
-                        if is_set_PS(entry) and ((entry >> 8) & 1) == 1:
+                        if PS and is_bit_set(entry, 8):
                             flags.append("G")
-                        if ((entry >> 63) & 1) == 1:
+                        if is_bit_set(entry, 63):
                             flags.append("XD")
                 else: # x86_32 and PAE
                     pass
 
                 # calc next table (drop the flag bits)
-                if (self.args.ept or is_x86_64()) and is_set_PS(entry):
+                if is_64bit and PS:
                     next_level_table = entry & 0x000f_ffff_ffff_e000
                 else:
                     next_level_table = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
-                if is_set_PS(entry):
+                if PS:
                     virt_addr = new_va
                     phys_addr = next_level_table
                     page_size = 1 * 1024 * 1024 * 1024
@@ -201181,8 +201225,8 @@ class PageTableX64(PageTable):
     def pagewalk_PDT(self):
         self.quiet_add_out(titlify("PDE: Page Directory Entry"))
 
-        def is_set_PS(entry):
-            return ((entry >> 7) & 1) == 1
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
 
         PDE = []
         PTE = []
@@ -201213,37 +201257,40 @@ class PageTableX64(PageTable):
                 if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
                     continue
 
+                # PS flag (the entry maps a page)
+                PS = is_bit_set(entry, 7)
+
                 # calc flags
                 flags = parent_flags.copy()
                 if self.args.ept:
-                    if ((entry >> 0) & 1) == 0:
+                    if not is_bit_set(entry, 0):
                         flags.append("NO_R")
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_W")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_X")
-                    if ((entry >> 8) & 1) == 1:
+                    if is_bit_set(entry, 8):
                         flags.append("A")
-                    if is_set_PS(entry) and ((entry >> 9) & 1) == 1:
+                    if PS and is_bit_set(entry, 9):
                         flags.append("D")
                 else:
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_RW")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_US")
-                    if ((entry >> 5) & 1) == 1:
+                    if is_bit_set(entry, 5):
                         flags.append("A")
-                    if is_set_PS(entry) and ((entry >> 6) & 1) == 1:
+                    if PS and is_bit_set(entry, 6):
                         flags.append("D")
-                    if is_set_PS(entry) and ((entry >> 8) & 1) == 1:
+                    if PS and is_bit_set(entry, 8):
                         flags.append("G")
-                    if self.PAE and ((entry >> 63) & 1) == 1:
+                    if self.PAE and is_bit_set(entry, 63):
                         flags.append("XD")
 
                 # calc next table (drop the flag bits)
-                if self.PAE and is_set_PS(entry):
+                if self.PAE and PS:
                     next_level_table = entry & 0x000f_ffff_ffff_e000
-                elif is_x86_32() and is_set_PS(entry):
+                elif PS and is_x86_32():
                     high = (entry >> 13) & 0xf
                     low = (entry >> 22) & 0x3ff
                     next_level_table = ((high << 10) | low) << 22
@@ -201251,7 +201298,7 @@ class PageTableX64(PageTable):
                     next_level_table = entry & 0x000f_ffff_ffff_f000
 
                 # make entry
-                if is_set_PS(entry):
+                if PS:
                     virt_addr = new_va
                     phys_addr = next_level_table
                     if self.PAE:
@@ -201295,6 +201342,10 @@ class PageTableX64(PageTable):
 
     def pagewalk_PT(self):
         self.quiet_add_out(titlify("PTE: Page Table Entry"))
+
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         PTE = []
         COUNT = 0
         SKIPPED = 0
@@ -201325,15 +201376,15 @@ class PageTableX64(PageTable):
                 # calc flags
                 flags = parent_flags.copy()
                 if self.args.ept:
-                    if ((entry >> 0) & 1) == 0:
+                    if not is_bit_set(entry, 0):
                         flags.append("NO_R")
-                    if ((entry >> 1) & 1) == 0:
+                    if not is_bit_set(entry, 1):
                         flags.append("NO_W")
-                    if ((entry >> 2) & 1) == 0:
+                    if not is_bit_set(entry, 2):
                         flags.append("NO_X")
-                    if ((entry >> 8) & 1) == 1:
+                    if is_bit_set(entry, 8):
                         flags.append("A")
-                    if ((entry >> 9) & 1) == 1:
+                    if is_bit_set(entry, 9):
                         flags.append("D")
                 else:
                     # This route passes many times, so make a memo
@@ -201343,17 +201394,17 @@ class PageTableX64(PageTable):
                         flags.extend(x)
                     else:
                         flags_tmp = []
-                        if ((entry >> 1) & 1) == 0:
+                        if not is_bit_set(entry, 1):
                             flags_tmp.append("NO_RW")
-                        if ((entry >> 2) & 1) == 0:
+                        if not is_bit_set(entry, 2):
                             flags_tmp.append("NO_US")
-                        if ((entry >> 5) & 1) == 1:
+                        if is_bit_set(entry, 5):
                             flags_tmp.append("A")
-                        if ((entry >> 6) & 1) == 1:
+                        if is_bit_set(entry, 6):
                             flags_tmp.append("D")
-                        if ((entry >> 8) & 1) == 1:
+                        if is_bit_set(entry, 8):
                             flags_tmp.append("G")
-                        if self.PAE and ((entry >> 63) & 1) == 1:
+                        if self.PAE and is_bit_set(entry, 63):
                             flags_tmp.append("XD")
                         flag_cache[entry_flags_key] = flags_tmp
                         flags.extend(flags_tmp)
@@ -202871,46 +202922,46 @@ class PageTableArm64(PageTable):
 
         if "S2AP=00" in flag_info:
             if "XN=00" in flag_info:
-                flags += ["EL0/---", "EL1/---"]
+                flags.extend(["EL0/---", "EL1/---"])
             elif "XN=01" in flag_info:
-                flags += ["EL0/---", "EL1/---"]
+                flags.extend(["EL0/---", "EL1/---"])
             elif "XN=10" in flag_info:
-                flags += ["EL0/---", "EL1/---"]
+                flags.extend(["EL0/---", "EL1/---"])
             elif "XN=11" in flag_info:
-                flags += ["EL0/---", "EL1/---"]
+                flags.extend(["EL0/---", "EL1/---"])
         elif "S2AP=01" in flag_info:
             if "XN=00" in flag_info:
-                flags += ["EL0/R-X", "EL1/R-X"]
+                flags.extend(["EL0/R-X", "EL1/R-X"])
             elif "XN=01" in flag_info:
-                flags += ["EL0/R-X", "EL1/R--"]
+                flags.extend(["EL0/R-X", "EL1/R--"])
             elif "XN=10" in flag_info:
-                flags += ["EL0/R--", "EL1/R--"]
+                flags.extend(["EL0/R--", "EL1/R--"])
             elif "XN=11" in flag_info:
-                flags += ["EL0/R--", "EL1/R-X"]
+                flags.extend(["EL0/R--", "EL1/R-X"])
         elif "S2AP=10" in flag_info:
             if "XN=00" in flag_info:
-                flags += ["EL0/-W-", "EL1/-W-"]
+                flags.extend(["EL0/-W-", "EL1/-W-"])
             elif "XN=01" in flag_info:
-                flags += ["EL0/-W-", "EL1/-W-"]
+                flags.extend(["EL0/-W-", "EL1/-W-"])
             elif "XN=10" in flag_info:
-                flags += ["EL0/-W-", "EL1/-W-"]
+                flags.extend(["EL0/-W-", "EL1/-W-"])
             elif "XN=11" in flag_info:
-                flags += ["EL0/-W-", "EL1/-W-"]
+                flags.extend(["EL0/-W-", "EL1/-W-"])
         elif "S2AP=11" in flag_info:
             if "XN=00" in flag_info:
-                flags += ["EL0/RWX", "EL1/RWX"]
+                flags.extend(["EL0/RWX", "EL1/RWX"])
             elif "XN=01" in flag_info:
-                flags += ["EL0/RWX", "EL1/RW-"]
+                flags.extend(["EL0/RWX", "EL1/RW-"])
             elif "XN=10" in flag_info:
-                flags += ["EL0/RW-", "EL1/RW-"]
+                flags.extend(["EL0/RW-", "EL1/RW-"])
             elif "XN=11" in flag_info:
-                flags += ["EL0/RW-", "EL1/RWX"]
+                flags.extend(["EL0/RW-", "EL1/RWX"])
 
         if not self.args.simple:
             if "AF" in flag_info:
-                flags += ["ACCESSED"]
+                flags.append("ACCESSED")
             if "DBM" in flag_info:
-                flags += ["DIRTY"]
+                flags.append("DIRTY")
             # stage2 has no `nG` bit
 
         flag_string = " ".join(flags)
@@ -203005,141 +203056,141 @@ class PageTableArm64(PageTable):
             if UXN is False and PXN is False:
                 if disable_write_access == 0 and enable_unpriv_access == 0:
                     if not EL1_WXN:
-                        flags += ["EL0/--X", "EL1/RWX"]
+                        flags.extend(["EL0/--X", "EL1/RWX"])
                     else:
-                        flags += ["EL0/--X", "EL1/RW-"]
+                        flags.extend(["EL0/--X", "EL1/RW-"])
                 elif disable_write_access == 0 and enable_unpriv_access == 1:
                     if not EL1_WXN:
-                        flags += ["EL0/RWX", "EL1/RW-"]
+                        flags.extend(["EL0/RWX", "EL1/RW-"])
                     else:
-                        flags += ["EL0/RW-", "EL1/RW-"]
+                        flags.extend(["EL0/RW-", "EL1/RW-"])
                 elif disable_write_access == 1 and enable_unpriv_access == 0:
-                    flags += ["EL0/--X", "EL1/R-X"]
+                    flags.extend(["EL0/--X", "EL1/R-X"])
                 elif disable_write_access == 1 and enable_unpriv_access == 1:
-                    flags += ["EL0/R-X", "EL1/R-X"]
+                    flags.extend(["EL0/R-X", "EL1/R-X"])
             elif UXN is False and PXN is True:
                 if disable_write_access == 0 and enable_unpriv_access == 0:
-                    flags += ["EL0/--X", "EL1/RW-"]
+                    flags.extend(["EL0/--X", "EL1/RW-"])
                 elif disable_write_access == 0 and enable_unpriv_access == 1:
                     if not EL1_WXN:
-                        flags += ["EL0/RWX", "EL1/RW-"]
+                        flags.extend(["EL0/RWX", "EL1/RW-"])
                     else:
-                        flags += ["EL0/RW-", "EL1/RW-"]
+                        flags.extend(["EL0/RW-", "EL1/RW-"])
                 elif disable_write_access == 1 and enable_unpriv_access == 0:
-                    flags += ["EL0/--X", "EL1/R--"]
+                    flags.extend(["EL0/--X", "EL1/R--"])
                 elif disable_write_access == 1 and enable_unpriv_access == 1:
-                    flags += ["EL0/R-X", "EL1/R--"]
+                    flags.extend(["EL0/R-X", "EL1/R--"])
             elif UXN is True and PXN is False:
                 if disable_write_access == 0 and enable_unpriv_access == 0:
                     if not EL1_WXN:
-                        flags += ["EL0/---", "EL1/RWX"]
+                        flags.extend(["EL0/---", "EL1/RWX"])
                     else:
-                        flags += ["EL0/---", "EL1/RW-"]
+                        flags.extend(["EL0/---", "EL1/RW-"])
                 elif disable_write_access == 0 and enable_unpriv_access == 1:
-                    flags += ["EL0/RW-", "EL1/RW-"]
+                    flags.extend(["EL0/RW-", "EL1/RW-"])
                 elif disable_write_access == 1 and enable_unpriv_access == 0:
-                    flags += ["EL0/---", "EL1/R-X"]
+                    flags.extend(["EL0/---", "EL1/R-X"])
                 elif disable_write_access == 1 and enable_unpriv_access == 1:
-                    flags += ["EL0/R--", "EL1/R-X"]
+                    flags.extend(["EL0/R--", "EL1/R-X"])
             elif UXN is True and PXN is True:
                 if disable_write_access == 0 and enable_unpriv_access == 0:
-                    flags += ["EL0/---", "EL1/RW-"]
+                    flags.extend(["EL0/---", "EL1/RW-"])
                 elif disable_write_access == 0 and enable_unpriv_access == 1:
-                    flags += ["EL0/RW-", "EL1/RW-"]
+                    flags.extend(["EL0/RW-", "EL1/RW-"])
                 elif disable_write_access == 1 and enable_unpriv_access == 0:
-                    flags += ["EL0/---", "EL1/R--"]
+                    flags.extend(["EL0/---", "EL1/R--"])
                 elif disable_write_access == 1 and enable_unpriv_access == 1:
-                    flags += ["EL0/R--", "EL1/R--"]
+                    flags.extend(["EL0/R--", "EL1/R--"])
         elif TargetEL == 2:
             if EL2_M20:
                 # support 2VA ranges if HCR_EL2.{TGE,E2H} == {1,1} # codespell:ignore
                 if UXN is False and PXN is False:
                     if disable_write_access == 0 and enable_unpriv_access == 0:
                         if not EL2_WXN:
-                            flags += ["EL0/--X", "EL2/RWX"]
+                            flags.extend(["EL0/--X", "EL2/RWX"])
                         else:
-                            flags += ["EL0/--X", "EL2/RW-"]
+                            flags.extend(["EL0/--X", "EL2/RW-"])
                     elif disable_write_access == 0 and enable_unpriv_access == 1:
                         if not EL2_WXN:
-                            flags += ["EL0/RWX", "EL2/RW-"]
+                            flags.extend(["EL0/RWX", "EL2/RW-"])
                         else:
-                            flags += ["EL0/RW-", "EL2/RW-"]
+                            flags.extend(["EL0/RW-", "EL2/RW-"])
                     elif disable_write_access == 1 and enable_unpriv_access == 0:
-                        flags += ["EL0/--X", "EL2/R-X"]
+                        flags.extend(["EL0/--X", "EL2/R-X"])
                     elif disable_write_access == 1 and enable_unpriv_access == 1:
-                        flags += ["EL0/R-X", "EL2/R-X"]
+                        flags.extend(["EL0/R-X", "EL2/R-X"])
                 elif UXN is False and PXN is True:
                     if disable_write_access == 0 and enable_unpriv_access == 0:
-                        flags += ["EL0/--X", "EL2/RW-"]
+                        flags.extend(["EL0/--X", "EL2/RW-"])
                     elif disable_write_access == 0 and enable_unpriv_access == 1:
                         if not EL2_WXN:
-                            flags += ["EL0/RWX", "EL2/RW-"]
+                            flags.extend(["EL0/RWX", "EL2/RW-"])
                         else:
-                            flags += ["EL0/RW-", "EL2/RW-"]
+                            flags.extend(["EL0/RW-", "EL2/RW-"])
                     elif disable_write_access == 1 and enable_unpriv_access == 0:
-                        flags += ["EL0/--X", "EL2/R--"]
+                        flags.extend(["EL0/--X", "EL2/R--"])
                     elif disable_write_access == 1 and enable_unpriv_access == 1:
-                        flags += ["EL0/R-X", "EL2/R--"]
+                        flags.extend(["EL0/R-X", "EL2/R--"])
                 elif UXN is True and PXN is False:
                     if disable_write_access == 0 and enable_unpriv_access == 0:
                         if not EL2_WXN:
-                            flags += ["EL0/---", "EL2/RWX"]
+                            flags.extend(["EL0/---", "EL2/RWX"])
                         else:
-                            flags += ["EL0/---", "EL2/RW-"]
+                            flags.extend(["EL0/---", "EL2/RW-"])
                     elif disable_write_access == 0 and enable_unpriv_access == 1:
-                        flags += ["EL0/RW-", "EL2/RW-"]
+                        flags.extend(["EL0/RW-", "EL2/RW-"])
                     elif disable_write_access == 1 and enable_unpriv_access == 0:
-                        flags += ["EL0/---", "EL2/R-X"]
+                        flags.extend(["EL0/---", "EL2/R-X"])
                     elif disable_write_access == 1 and enable_unpriv_access == 1:
-                        flags += ["EL0/R--", "EL2/R-X"]
+                        flags.extend(["EL0/R--", "EL2/R-X"])
                 elif UXN is True and PXN is True:
                     if disable_write_access == 0 and enable_unpriv_access == 0:
-                        flags += ["EL0/---", "EL2/RW-"]
+                        flags.extend(["EL0/---", "EL2/RW-"])
                     elif disable_write_access == 0 and enable_unpriv_access == 1:
-                        flags += ["EL0/RW-", "EL2/RW-"]
+                        flags.extend(["EL0/RW-", "EL2/RW-"])
                     elif disable_write_access == 1 and enable_unpriv_access == 0:
-                        flags += ["EL0/---", "EL2/R--"]
+                        flags.extend(["EL0/---", "EL2/R--"])
                     elif disable_write_access == 1 and enable_unpriv_access == 1:
-                        flags += ["EL0/R--", "EL2/R--"]
+                        flags.extend(["EL0/R--", "EL2/R--"])
             else:
                 # not support 2VA ranges if HCR_EL2.{TGE,E2H} != {1,1} # codespell:ignore
                 if XN is False:
                     if disable_write_access == 0:
                         if not EL2_WXN:
-                            flags += ["EL2/RWX"]
+                            flags.append("EL2/RWX")
                         else:
-                            flags += ["EL2/RW-"]
+                            flags.append("EL2/RW-")
                     elif disable_write_access == 1:
-                        flags += ["EL2/R-X"]
+                        flags.append("EL2/R-X")
                 elif XN is True:
                     if disable_write_access == 0:
-                        flags += ["EL2/RW-"]
+                        flags.append("EL2/RW-")
                     elif disable_write_access == 1:
-                        flags += ["EL2/R--"]
+                        flags.append("EL2/R--")
         elif TargetEL == 3:
             if XN is False:
                 if disable_write_access == 0:
                     if not EL3_WXN:
-                        flags += ["EL3/RWX"]
+                        flags.append("EL3/RWX")
                     else:
-                        flags += ["EL3/RW-"]
+                        flags.append("EL3/RW-")
                 elif disable_write_access == 1:
-                    flags += ["EL3/R-X"]
+                    flags.append("EL3/R-X")
             elif XN is True:
                 if disable_write_access == 0:
-                    flags += ["EL3/RW-"]
+                    flags.append("EL3/RW-")
                 elif disable_write_access == 1:
-                    flags += ["EL3/R--"]
+                    flags.append("EL3/R--")
         if NS:
-            flags += ["NS"]
+            flags.append("NS")
 
         if not self.args.simple:
             if "AF" in flag_info:
-                flags += ["ACCESSED"]
+                flags.append("ACCESSED")
             if "DBM" in flag_info:
-                flags += ["DIRTY"]
+                flags.append("DIRTY")
             if "nG" not in flag_info:
-                flags += ["GLOBAL"]
+                flags.append("GLOBAL")
 
         flag_string = " ".join(flags)
         self.flags_strings_cache[flag_info_key] = flag_string
@@ -203296,6 +203347,9 @@ class PageTableArm64(PageTable):
         def has_next_level(entry): # for Level0, 1, 2 but not Level3
             return (entry & 0b11) == 0b11
 
+        def is_bit_set(entry, bit):
+            return ((entry >> bit) & 1) == 1
+
         flags = []
         TABLE_BASE = [[va_start, table_base, flags]]
 
@@ -203309,9 +203363,10 @@ class PageTableArm64(PageTable):
             )
             LEVELM1 = []
             COUNT = 0
+            bit_shift = self.LEVELM1_BIT_RANGE[0]
             for va_base, table_base, parent_flags in ProgressBar(TABLE_BASE, desc="LEVEL -1", disable=self.args.quiet):
                 indices, entries = self.read_table_entries(
-                    table_base, entries_per_table, 8, va_base, self.LEVELM1_BIT_RANGE[0],
+                    table_base, entries_per_table, 8, va_base, bit_shift,
                     functools.partial(read_table, parent_flags=parent_flags),
                 )
                 COUNT += len(entries)
@@ -203321,37 +203376,39 @@ class PageTableArm64(PageTable):
                         continue
 
                     # calc virtual address
-                    new_va = va_base + (i << self.LEVELM1_BIT_RANGE[0])
-                    new_va_end = new_va + (1 << self.LEVELM1_BIT_RANGE[0])
+                    new_va = va_base + (i << bit_shift)
+                    new_va_end = new_va + (1 << bit_shift)
 
                     if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
                         continue
 
+                    is_table = has_next_level(entry)
+
                     # calc flags
                     flags = parent_flags.copy()
-                    if has_next_level(entry):
+                    if is_table:
                         if is_stage2:
                             pass
                         elif is_2VAranges:
-                            if ((entry >> 59) & 1) == 1:
+                            if is_bit_set(entry, 59):
                                 flags.append("PXNTable-1")
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("UXNTable-1")
                             flags.append("APTable-1={:02b}".format((entry >> 61) & 0b11))
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable-1")
                         else:
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("XNTable-1") # Use XNTable, not UXNTable # PXNTable is undefined
                             flags.append("APTable-1={:02b}".format((entry >> 61) & 0b11 & 0b10)) # APTable[0] must be 0
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable-1")
                     else:
                         # In ARMv8.7, level -1 has no block descriptors
                         raise ValueError("level -1 has no block descriptors")
 
                     # calc next table / output phys addr (drop the flag bits)
-                    if has_next_level(entry):
+                    if is_table:
                         # In aRMv8.7, level -1 must be 4k_granule
                         if self.TCR_ELx_DS:
                             next_level_table = (entry & 0x0003_ffff_ffff_f000) | (((entry >> 8) & 0b11) << 50)
@@ -203362,7 +203419,7 @@ class PageTableArm64(PageTable):
                         raise ValueError("level -1 has no block descriptors")
 
                     # make entry
-                    if has_next_level(entry):
+                    if is_table:
                         LEVELM1.append([new_va, next_level_table, flags])
                         entry_type = "TABLE"
                     else:
@@ -203403,9 +203460,10 @@ class PageTableArm64(PageTable):
             LEVEL0 = []
             GB512 = []
             COUNT = 0
+            bit_shift = self.LEVEL0_BIT_RANGE[0]
             for va_base, table_base, parent_flags in ProgressBar(LEVELM1, desc="LEVEL 0", disable=self.args.quiet):
                 indices, entries = self.read_table_entries(
-                    table_base, entries_per_table, 8, va_base, self.LEVEL0_BIT_RANGE[0],
+                    table_base, entries_per_table, 8, va_base, bit_shift,
                     functools.partial(read_table, parent_flags=parent_flags),
                 )
                 COUNT += len(entries)
@@ -203415,92 +203473,94 @@ class PageTableArm64(PageTable):
                         continue
 
                     # calc virtual address
-                    new_va = va_base + (i << self.LEVEL0_BIT_RANGE[0])
-                    new_va_end = new_va + (1 << self.LEVEL0_BIT_RANGE[0])
+                    new_va = va_base + (i << bit_shift)
+                    new_va_end = new_va + (1 << bit_shift)
 
                     if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
                         continue
 
+                    is_table = has_next_level(entry)
+
                     # calc flags
                     flags = parent_flags.copy()
-                    if has_next_level(entry):
+                    if is_table:
                         if is_stage2:
                             # There are no flags in the table for VTTBR0_EL2.
                             pass
                         elif is_2VAranges:
-                            if ((entry >> 59) & 1) == 1:
+                            if is_bit_set(entry, 59):
                                 flags.append("PXNTable0")
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("UXNTable0")
                             flags.append("APTable0={:02b}".format((entry >> 61) & 0b11))
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable0")
                         else:
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("XNTable0") # Use XNTable, not UXNTable # PXNTable is undefined
                             flags.append("APTable0={:02b}".format((entry >> 61) & 0b11 & 0b10)) # APTable[0] must be 0
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable0")
                     else:
                         if is_stage2:
                             flags.append("MemAttr={:#x}".format((entry >> 2) & 0b1111))
                             flags.append("S2AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
                             flags.append("XN={:02b}".format((entry >> 53) & 0b11)) # Use XN, not UXN
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         elif is_2VAranges:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 53) & 1) == 1:
+                            if is_bit_set(entry, 53):
                                 flags.append("PXN")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("UXN")
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         else:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11 & 0b10)) # AP[0] must be 0
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("XN") # Use XN, not UXN # PXN is undefined
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
 
                     # calc next table / output phys addr (drop the flag bits)
-                    if has_next_level(entry):
+                    if is_table:
                         if self.FEAT_LPA:
                             # In aRMv8.7, level 0 must be 4k_granule or 16k_granule
                             if self.TCR_ELx_DS:
@@ -203521,7 +203581,7 @@ class PageTableArm64(PageTable):
                             raise ValueError("level 0 has no block descriptors without FEAT_LPA")
 
                     # make entry
-                    if has_next_level(entry):
+                    if is_table:
                         LEVEL0.append([new_va, next_level_table, flags])
                         entry_type = "TABLE"
                     else:
@@ -203575,9 +203635,10 @@ class PageTableArm64(PageTable):
             TB4 = []
             GB64 = []
             COUNT = 0
+            bit_shift = self.LEVEL1_BIT_RANGE[0]
             for va_base, table_base, parent_flags in ProgressBar(LEVEL0, desc="LEVEL 1", disable=self.args.quiet):
                 indices, entries = self.read_table_entries(
-                    table_base, entries_per_table, 8, va_base, self.LEVEL1_BIT_RANGE[0],
+                    table_base, entries_per_table, 8, va_base, bit_shift,
                     functools.partial(read_table, parent_flags=parent_flags),
                 )
                 COUNT += len(entries)
@@ -203587,92 +203648,94 @@ class PageTableArm64(PageTable):
                         continue
 
                     # calc virtual address
-                    new_va = va_base + (i << self.LEVEL1_BIT_RANGE[0])
-                    new_va_end = new_va + (1 << self.LEVEL1_BIT_RANGE[0])
+                    new_va = va_base + (i << bit_shift)
+                    new_va_end = new_va + (1 << bit_shift)
 
                     if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
                         continue
 
+                    is_table = has_next_level(entry)
+
                     # calc flags
                     flags = parent_flags.copy()
-                    if has_next_level(entry):
+                    if is_table:
                         if is_stage2:
                             # There are no flags in the table for VTTBR0_EL2.
                             pass
                         elif is_2VAranges:
-                            if ((entry >> 59) & 1) == 1:
+                            if is_bit_set(entry, 59):
                                 flags.append("PXNTable1")
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("UXNTable1")
                             flags.append("APTable1={:02b}".format((entry >> 61) & 0b11))
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable1")
                         else:
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("XNTable1") # Use XNTable, not UXNTable # PXNTable is undefined
                             flags.append("APTable1={:02b}".format((entry >> 61) & 0b11 & 0b10)) # APTable[0] must be 0
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable1")
                     else:
                         if is_stage2:
                             flags.append("MemAttr={:#x}".format((entry >> 2) & 0b1111))
                             flags.append("S2AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
                             flags.append("XN={:02b}".format((entry >> 53) & 0b11)) # Use XN, not UXN
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         elif is_2VAranges:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 53) & 1) == 1:
+                            if is_bit_set(entry, 53):
                                 flags.append("PXN")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("UXN")
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         else:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11 & 0b10)) # AP[0] must be 0
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("XN") # Use XN, not UXN # PXN is undefined
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
 
                     # calc next table / output phys addr (drop the flag bits)
-                    if has_next_level(entry):
+                    if is_table:
                         if self.FEAT_LPA:
                             if is_64k_granule:
                                 next_level_table = (entry & 0x0000_ffff_ffff_0000) | (((entry >> 12) & 0b1111) << 48)
@@ -203696,7 +203759,7 @@ class PageTableArm64(PageTable):
                             phys_addr = entry & 0x0000_ffff_fffe_0000
 
                     # make entry
-                    if has_next_level(entry):
+                    if is_table:
                         LEVEL1.append([new_va, next_level_table, flags])
                         entry_type = "TABLE"
                     else:
@@ -203758,9 +203821,10 @@ class PageTableArm64(PageTable):
             MB32 = []
             MB512 = []
             COUNT = 0
+            bit_shift = self.LEVEL2_BIT_RANGE[0]
             for va_base, table_base, parent_flags in ProgressBar(LEVEL1, desc="LEVEL 2", disable=self.args.quiet):
                 indices, entries = self.read_table_entries(
-                    table_base, entries_per_table, 8, va_base, self.LEVEL2_BIT_RANGE[0],
+                    table_base, entries_per_table, 8, va_base, bit_shift,
                     functools.partial(read_table, parent_flags=parent_flags),
                 )
                 COUNT += len(entries)
@@ -203770,92 +203834,94 @@ class PageTableArm64(PageTable):
                         continue
 
                     # calc virtual address
-                    new_va = va_base + (i << self.LEVEL2_BIT_RANGE[0])
-                    new_va_end = new_va + (1 << self.LEVEL2_BIT_RANGE[0])
+                    new_va = va_base + (i << bit_shift)
+                    new_va_end = new_va + (1 << bit_shift)
 
                     if self.trace_only and self.is_not_trace_target(new_va, new_va_end):
                         continue
 
+                    is_table = has_next_level(entry)
+
                     # calc flags
                     flags = parent_flags.copy()
-                    if has_next_level(entry):
+                    if is_table:
                         if is_stage2:
                             # There are no flags in the table for VTTBR0_EL2.
                             pass
                         elif is_2VAranges:
-                            if ((entry >> 59) & 1) == 1:
+                            if is_bit_set(entry, 59):
                                 flags.append("PXNTable2")
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("UXNTable2")
                             flags.append("APTable2={:02b}".format((entry >> 61) & 0b11))
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable2")
                         else:
-                            if ((entry >> 60) & 1) == 1:
+                            if is_bit_set(entry, 60):
                                 flags.append("XNTable2") # Use XNTable, not UXNTable # PXNTable is undefined
                             flags.append("APTable2={:02b}".format((entry >> 61) & 0b11 & 0b10)) # APTable[0] must be 0
-                            if ((entry >> 63) & 1) == 1:
+                            if is_bit_set(entry, 63):
                                 flags.append("NSTable2")
                     else:
                         if is_stage2:
                             flags.append("MemAttr={:#x}".format((entry >> 2) & 0b1111))
                             flags.append("S2AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
                             flags.append("XN={:02b}".format((entry >> 53) & 0b11)) # Use XN, not UXN
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         elif is_2VAranges:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 53) & 1) == 1:
+                            if is_bit_set(entry, 53):
                                 flags.append("PXN")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("UXN")
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                         else:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11 & 0b10)) # AP[0] must be 0
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("XN") # Use XN, not UXN # PXN is undefined
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
 
                     # calc next table / output phys addr (drop the flag bits)
-                    if has_next_level(entry):
+                    if is_table:
                         if self.FEAT_LPA:
                             if is_64k_granule:
                                 next_level_table = (entry & 0x0000_ffff_ffff_0000) | (((entry >> 12) & 0b1111) << 48)
@@ -203879,7 +203945,7 @@ class PageTableArm64(PageTable):
                             phys_addr = entry & 0x0000_ffff_fffe_0000
 
                     # make entry
-                    if has_next_level(entry):
+                    if is_table:
                         LEVEL2.append([new_va, next_level_table, flags])
                         entry_type = "TABLE"
                     else:
@@ -203942,9 +204008,10 @@ class PageTableArm64(PageTable):
             COUNT = 0
             flag_cache = {}
 
+            bit_shift = self.LEVEL3_BIT_RANGE[0]
             for va_base, table_base, parent_flags in ProgressBar(LEVEL2, desc="LEVEL 3", disable=self.args.quiet):
                 indices, entries = self.read_table_entries(
-                    table_base, entries_per_table, 8, va_base, self.LEVEL3_BIT_RANGE[0],
+                    table_base, entries_per_table, 8, va_base, bit_shift,
                     functools.partial(read_table, parent_flags=parent_flags),
                 )
                 COUNT += len(entries)
@@ -203954,8 +204021,8 @@ class PageTableArm64(PageTable):
                         continue
 
                     # calc virtual address
-                    virt_addr = va_base + (i << self.LEVEL3_BIT_RANGE[0])
-                    virt_addr_end = virt_addr + (1 << self.LEVEL3_BIT_RANGE[0])
+                    virt_addr = va_base + (i << bit_shift)
+                    virt_addr_end = virt_addr + (1 << bit_shift)
 
                     if self.trace_only and self.is_not_trace_target(virt_addr, virt_addr_end):
                         continue
@@ -203967,11 +204034,11 @@ class PageTableArm64(PageTable):
                             flags.append("MemAttr={:#x}".format((entry >> 2) & 0b1111))
                             flags.append("S2AP={:02b}".format((entry >> 6) & 0b11))
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
                             flags.append("XN={:02b}".format((entry >> 53) & 0b11)) # Use XN, not UXN
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
@@ -203984,48 +204051,48 @@ class PageTableArm64(PageTable):
                             else:
                                 flags_tmp = []
                                 flags_tmp.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                                if ((entry >> 5) & 1) == 1:
+                                if is_bit_set(entry, 5):
                                     flags_tmp.append("NS")
                                 flags_tmp.append("AP={:02b}".format((entry >> 6) & 0b11))
                                 flags_tmp.append("SH={:02b}".format((entry >> 8) & 0b11))
-                                if ((entry >> 10) & 1) == 1:
+                                if is_bit_set(entry, 10):
                                     flags_tmp.append("AF")
-                                if ((entry >> 11) & 1) == 1:
+                                if is_bit_set(entry, 11):
                                     flags_tmp.append("nG")
-                                if ((entry >> 16) & 1) == 1:
+                                if is_bit_set(entry, 16):
                                     flags_tmp.append("nT")
-                                if ((entry >> 50) & 1) == 1:
+                                if is_bit_set(entry, 50):
                                     flags_tmp.append("GP")
-                                if ((entry >> 51) & 1) == 1:
+                                if is_bit_set(entry, 51):
                                     flags_tmp.append("DBM")
-                                if ((entry >> 52) & 1) == 1:
+                                if is_bit_set(entry, 52):
                                     flags_tmp.append("Contiguous")
-                                if ((entry >> 53) & 1) == 1:
+                                if is_bit_set(entry, 53):
                                     flags_tmp.append("PXN")
-                                if ((entry >> 54) & 1) == 1:
+                                if is_bit_set(entry, 54):
                                     flags_tmp.append("UXN")
                                 flags_tmp.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                                 flag_cache[entry_flags_key] = flags_tmp
                                 flags.extend(flags_tmp)
                         else:
                             flags.append("AttrIndx={:03b}".format((entry >> 2) & 0b111))
-                            if ((entry >> 5) & 1) == 1:
+                            if is_bit_set(entry, 5):
                                 flags.append("NS")
                             flags.append("AP={:02b}".format((entry >> 6) & 0b11 & 0b10)) # AP[0] must be 0
                             flags.append("SH={:02b}".format((entry >> 8) & 0b11))
-                            if ((entry >> 10) & 1) == 1:
+                            if is_bit_set(entry, 10):
                                 flags.append("AF")
-                            if ((entry >> 11) & 1) == 1:
+                            if is_bit_set(entry, 11):
                                 flags.append("nG")
-                            if ((entry >> 16) & 1) == 1:
+                            if is_bit_set(entry, 16):
                                 flags.append("nT")
-                            if ((entry >> 50) & 1) == 1:
+                            if is_bit_set(entry, 50):
                                 flags.append("GP")
-                            if ((entry >> 51) & 1) == 1:
+                            if is_bit_set(entry, 51):
                                 flags.append("DBM")
-                            if ((entry >> 52) & 1) == 1:
+                            if is_bit_set(entry, 52):
                                 flags.append("Contiguous")
-                            if ((entry >> 54) & 1) == 1:
+                            if is_bit_set(entry, 54):
                                 flags.append("XN") # Use XN, not UXN # PXN is undefined
                             flags.append("PBHA={:#x}".format((entry >> 59) & 0b1111))
                     else:
