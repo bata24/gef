@@ -219075,14 +219075,43 @@ class KernelCfiHashCommand(GenericCommand, BufferingOutput):
         return
 
 
-class KernelTaskFileScanner:
+class KernelLayoutReader:
+    """The memory readers shared by the resolvers that find a layout from the invariants of the objects in memory,
+    e.g. KernelCgroup and KernelBinder."""
+
+    @staticmethod
+    def read_words(address, size):
+        """Return the words at `address`, where the readable part is used if the end is not readable."""
+        while size >= current_arch.ptrsize:
+            data = read_memory(address, size, safe=True)
+            if data is not None:
+                return slice_unpack(data, current_arch.ptrsize)
+            # keep a multiple of the word, e.g. 0x140 -> 0xa0 -> 0x50 -> 0x28 -> 0x10
+            size = (size // 2) & ~(current_arch.ptrsize - 1)
+        return None
+
+    @staticmethod
+    def read_list(head, limit=0x1000):
+        """Return the nodes linked from the list_head at `head`, or None if it is broken or too long."""
+        nodes = []
+        lh = KernelListHead(head)
+        for node in lh.iter_entries():
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(node) or len(nodes) >= limit:
+                return None
+            nodes.append(node)
+        if lh.broken:
+            return None
+        return nodes
+
+
+class KernelTaskFileScanner(KernelLayoutReader):
     """The common part of the resolvers that find a kernel object (the "context") from file->private_data of the
     open files of the tasks, e.g. io_uring and userfaultfd.
 
     A subclass defines:
         TASK_OPTIONS                  # the options of KernelTask.initialize() for the fd scan
         validate_context(ctx)         # -> the score of an aligned, valid address as the context (0 if it is not)
-        get_kpath()                   # -> the VFS resolver, or None
+        get_kpath()                   # -> the VFS resolver, or None (optional)
         file_private_data(file)       # -> file->private_data from the debug information, or None (optional)
         check_task_command(command)   # -> False if the task resolver lacks what the fd scan needs (optional)
     and sets `self.meta = []` and `self.task_command = False` in initialize().
@@ -219109,8 +219138,16 @@ class KernelTaskFileScanner:
         return True
 
     def get_kpath(self):
-        """Return the VFS resolver, or None."""
-        raise NotImplementedError
+        """Return the VFS resolver of the task resolver, or None."""
+        command = self.get_task_command()
+        if command is None or not command.enabled["files"]:
+            return None
+        return command.kpath
+
+    @staticmethod
+    def is_anon_inode_path(path, name):
+        """Return True if `path` is the anon_inode file of `name`, e.g. "anon_inode:[eventpoll]" for "eventpoll"."""
+        return path == "[{:s}]".format(name) or path.endswith(":[{:s}]".format(name))
 
     def path_for_file(self, file):
         """Return the path of `file`, or "" if it is unavailable."""
@@ -219146,16 +219183,9 @@ class KernelTaskFileScanner:
 
         # struct file is randomized in old kernels and was reordered in v6.5/v7.0.
         # Restrict the fallback to a known fd of the subsystem, then validate the target as its context.
-        pointers = read_memory(file, 0x200, safe=True)
-        if pointers is None:
-            return None, None
-        try:
-            pointers = slice_unpack(pointers, current_arch.ptrsize)
-        except struct.error:
-            return None, None
         # The window can reach the next file object, so the smallest offset of the best score is file's own member
         best = None
-        for index, pointer in enumerate(pointers):
+        for index, pointer in enumerate(self.read_words(file, 0x200) or []):
             score = self.context_score(pointer)
             if score and (best is None or score > best[0]):
                 best = (score, index, pointer)
@@ -219230,10 +219260,6 @@ class KernelIoUring(KernelTaskFileScanner):
             if value is not None:
                 return value, member
         return None, None
-
-    @staticmethod
-    def is_ring_path(path):
-        return path == "anon_inode:[io_uring]" or path == "[io_uring]" or path.endswith(":[io_uring]")
 
     @staticmethod
     def is_power_of_two(value):
@@ -219324,12 +219350,8 @@ class KernelIoUring(KernelTaskFileScanner):
         """Return the ring metadata found from the pointers in io_ring_ctx, or None."""
         if not is_valid_addr(ctx) or ctx & (current_arch.ptrsize - 1):
             return None
-        pointers = read_memory(ctx, 0x400, safe=True)
+        pointers = self.read_words(ctx, 0x400)
         if pointers is None:
-            return None
-        try:
-            pointers = slice_unpack(pointers, current_arch.ptrsize)
-        except struct.error:
             return None
         singles = []
         for pointer in pointers:
@@ -219436,7 +219458,7 @@ class KernelIoUring(KernelTaskFileScanner):
                     path = kpath.get_file_path(file)
                 except (gdb.MemoryError, OverflowError, RuntimeError):
                     continue
-                if not self.is_ring_path(path):
+                if not self.is_anon_inode_path(path, "io_uring"):
                     continue
                 ctx, source = self.context_from_file(file)
                 rings.append({
@@ -220015,7 +220037,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
             return "ctx"
         if self.kio.request_context(address) and self.kio.context_score(self.kio.request_context(address)):
             return "request"
-        if self.kio.is_ring_path(self.kio.path_for_file(address)):
+        if self.kio.is_anon_inode_path(self.kio.path_for_file(address), "io_uring"):
             return "file"
         return None
 
@@ -220102,7 +220124,7 @@ class KernelIoUringCommand(GenericCommand, BufferingOutput):
                     for func, line in Kernel.export_meta(self, self.kio.meta):
                         func(line)
                     self.err_add_out("An io_uring file cannot be verified without the VFS object layout")
-                elif not self.kio.is_ring_path(path) or ctx is None:
+                elif not self.kio.is_anon_inode_path(path, "io_uring") or ctx is None:
                     self.err_add_out("Could not interpret {:#x} as an io_uring file".format(args.address))
                 else:
                     self.dump_context(ctx, [{"file": args.address, "path": path, "ctx_source": source}])
@@ -220201,7 +220223,7 @@ class KernelUserfaultfd(KernelTaskFileScanner):
                 continue
             files, _ = command.get_file_details(task)
             for entry in files:
-                if not self.is_uffd_path(entry["path"]):
+                if not self.is_anon_inode_path(entry["path"], "userfaultfd"):
                     continue
                 ctx, source = self.context_from_file(entry["file"])
                 result.append({
@@ -220209,10 +220231,6 @@ class KernelUserfaultfd(KernelTaskFileScanner):
                     "path": entry["path"], "ctx": ctx, "ctx_source": source
                 })
         return result
-
-    @staticmethod
-    def is_uffd_path(path):
-        return path == "anon_inode:[userfaultfd]" or path == "[userfaultfd]" or path.endswith(":[userfaultfd]")
 
     def validate_context(self, ctx):
         if not KernelAddressHeuristicFinderUtil.is_kernel_space(ctx):
@@ -220231,14 +220249,7 @@ class KernelUserfaultfd(KernelTaskFileScanner):
         if mm is not None and (mm in self.task_mms or is_valid_addr(mm)):
             return mm
         # mm is the last member; lockdep makes each wait_queue_head several times larger
-        pointers = read_memory(ctx, 0x200, safe=True)
-        if pointers is None:
-            return None
-        try:
-            words = slice_unpack(pointers, current_arch.ptrsize)
-        except struct.error:
-            return None
-        for word in words:
+        for word in self.read_words(ctx, 0x200) or []:
             if word in self.task_mms:
                 return word
         return None
@@ -220291,13 +220302,7 @@ class KernelUserfaultfd(KernelTaskFileScanner):
             # offset. The registered VMA itself holds the pointer at the smallest one.
             hits = []
             for vma in vmas:
-                window = read_memory(vma, 0x140, safe=True)
-                if window is None:
-                    continue
-                try:
-                    words = slice_unpack(window, current_arch.ptrsize)
-                except struct.error:
-                    continue
+                words = self.read_words(vma, 0x140) or []
                 hits.extend(index * current_arch.ptrsize for index, word in enumerate(words) if word == ctx)
             if not hits:
                 return []
@@ -220317,12 +220322,6 @@ class KernelUserfaultfd(KernelTaskFileScanner):
         if command is None or not command.enabled["maps"]:
             return None
         return command.kmm
-
-    def get_kpath(self):
-        command = self.get_task_command()
-        if command is None or not command.enabled["files"]:
-            return None
-        return command.kpath
 
     def waiter_ctx(self, node):
         """Return the ctx back pointer of the userfaultfd_wait_queue that owns list node `node`."""
@@ -220529,7 +220528,7 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
     def detect_address_type(self, address):
         if self.kuffd.context_score(address):
             return "ctx"
-        if self.kuffd.is_uffd_path(self.kuffd.path_for_file(address)):
+        if self.kuffd.is_anon_inode_path(self.kuffd.path_for_file(address), "userfaultfd"):
             return "file"
         return None
 
@@ -220600,7 +220599,7 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
                     for func, line in Kernel.export_meta(self, self.kuffd.meta):
                         func(line)
                     self.err_add_out("A userfaultfd file cannot be verified without the VFS object layout")
-                elif not self.kuffd.is_uffd_path(path) or ctx is None:
+                elif not self.kuffd.is_anon_inode_path(path, "userfaultfd") or ctx is None:
                     self.err_add_out("Could not interpret {:#x} as a userfaultfd file".format(args.address))
                 else:
                     self.dump_context(ctx, [{"file": args.address}])
@@ -220725,7 +220724,7 @@ class KernelEpoll(KernelTaskFileScanner):
         votes = collections.Counter()
         values = {}
         for file in set(files):
-            for index, word in enumerate(KernelLayoutReader.read_words(file, 0x200) or []):
+            for index, word in enumerate(self.read_words(file, 0x200) or []):
                 if index * ptr in skip:
                     continue
                 if not self.context_score(word):
@@ -220762,17 +220761,6 @@ class KernelEpoll(KernelTaskFileScanner):
             return None
         return read_int_from_memory(file + self.offset_private_data, safe=True)
 
-    @staticmethod
-    def is_anon_inode_path(path, name):
-        """Return True if `path` is the anon_inode file of `name`, e.g. "anon_inode:[eventpoll]" for "eventpoll"."""
-        return path == "[{:s}]".format(name) or path.endswith(":[{:s}]".format(name))
-
-    def get_kpath(self):
-        command = self.get_task_command()
-        if command is None or not command.enabled["files"]:
-            return None
-        return command.kpath
-
     def validate_context(self, ep):
         if self.find_ep_file(ep) is not None:
             return 10
@@ -220797,7 +220785,7 @@ class KernelEpoll(KernelTaskFileScanner):
             gap = 3
         else:
             gap = 2
-        words = KernelLayoutReader.read_words(ep, 0x400) or []
+        words = self.read_words(ep, 0x400) or []
         for index in range(gap, len(words)):
             if not KernelAddressHeuristicFinderUtil.is_kernel_space(words[index]):
                 continue
@@ -220818,15 +220806,14 @@ class KernelEpoll(KernelTaskFileScanner):
         if not KernelAddressHeuristicFinderUtil.is_kernel_space(value) or value & (ptr - 1):
             return False
         # ep follows rbn, rdllink, next, ffd and pwqlist, which are 9 words at least
-        epitem = KernelLayoutReader.read_words(value, 0x80) or []
+        epitem = self.read_words(value, 0x80) or []
         return ep in epitem[9:]
 
-    @staticmethod
-    def is_list_link(slot, value):
+    def is_list_link(self, slot, value):
         """Return True if `value` at `slot` is a link of list_head (or hlist_node), i.e. the node it points to points
         back to the slot. An empty list_head points to itself (next) or to the previous slot (prev).
         private_data, ep->file and epitem->ep are not, though the window can reach such a link to the other object."""
-        node = KernelLayoutReader.read_words(value, current_arch.ptrsize * 2) or []
+        node = self.read_words(value, current_arch.ptrsize * 2) or []
         return slot in node or slot - current_arch.ptrsize in node
 
     def is_ep_file(self, file, ep):
@@ -220836,7 +220823,7 @@ class KernelEpoll(KernelTaskFileScanner):
         private_data = self.file_private_data(file)
         if private_data is None:
             # struct file is randomized in old kernels, so any member in the window may be private_data
-            for index, word in enumerate(KernelLayoutReader.read_words(file, 0x200) or []):
+            for index, word in enumerate(self.read_words(file, 0x200) or []):
                 if word != ep:
                     continue
                 if self.is_list_link(file + index * current_arch.ptrsize, word):
@@ -220855,7 +220842,7 @@ class KernelEpoll(KernelTaskFileScanner):
             candidates = [read_int_from_memory(epi + offset, safe=True)]
         else:
             # ep follows rbn, rdllink, next, ffd and pwqlist, which are 9 words at least
-            candidates = (KernelLayoutReader.read_words(epi, 0x80) or [])[9:]
+            candidates = (self.read_words(epi, 0x80) or [])[9:]
         for ep in candidates:
             if not ep or not self.context_score(ep):
                 continue
@@ -220924,7 +220911,7 @@ class KernelEpoll(KernelTaskFileScanner):
             gap = 2
         else:
             gap = 1
-        ep_words = KernelLayoutReader.read_words(ep, 0x400) or []
+        ep_words = self.read_words(ep, 0x400) or []
         # rbr follows mtx, wq, poll_wait and rdllist. Their sizes depend on the config (+0x2b0 with PREEMPT_RT and
         # LOCK_STAT), but they are 9 words at least (spinlock_t is empty on UP).
         for index in range(9, len(ep_words) - gap):
@@ -220933,7 +220920,7 @@ class KernelEpoll(KernelTaskFileScanner):
                 continue
             if not self.is_ovflist(ep_words[index + gap], ep):
                 continue
-            words = KernelLayoutReader.read_words(root, 0x80)
+            words = self.read_words(root, 0x80)
             # the root of an rbtree is black without the parent
             if not words or words[0] != 1:
                 continue
@@ -221135,7 +221122,7 @@ class KernelEpoll(KernelTaskFileScanner):
         functions = [Ksym.get_addr("timerfd_tmrproc"), Ksym.get_addr("alarmtimer_fired")]
         ptr = current_arch.ptrsize
         start = interval - 0x100
-        words = KernelLayoutReader.read_words(start, 0x100) or []
+        words = self.read_words(start, 0x100) or []
         for index in reversed(range(len(words))):
             if words[index] in functions:
                 timer["expires"] = read_int64_from_memory(start + index * ptr - 8, safe=True)
@@ -221500,7 +221487,7 @@ class KernelEpitemCommand(GenericCommand, BufferingOutput):
         return
 
 
-class KernelProcfs:
+class KernelProcfs(KernelLayoutReader):
     """Resolve the proc_dir_entry layout, proc_root and init_net->proc_net, and read the entries."""
 
     # S_IFDIR | S_IRUGO | S_IXUGO, the mode of proc_root in all versions
@@ -221695,11 +221682,7 @@ class KernelProcfs:
                 if not ops or not KernelAddressHeuristicFinderUtil.is_kernel_space(ops):
                     continue
                 if ops not in members:
-                    data = read_memory(ops, current_arch.ptrsize * 10, safe=True)
-                    if data is None:
-                        members[ops] = []
-                    else:
-                        members[ops] = slice_unpack(data, current_arch.ptrsize)
+                    members[ops] = self.read_words(ops, current_arch.ptrsize * 10) or []
                 for key, (window, addresses) in functions.items():
                     if set(members[ops][window]) & addresses:
                         votes[(key, offset)] += 1
@@ -221857,34 +221840,6 @@ class KernelProcfsCommand(GenericCommand, BufferingOutput):
             self.warn_add_out("Could not find init_net->proc_net, so /proc/net is not shown")
         self.print_output(check_terminal_size=True)
         return
-
-
-class KernelLayoutReader:
-    """The memory readers shared by the resolvers that find a layout from the invariants of the objects in memory,
-    e.g. KernelCgroup and KernelBinder."""
-
-    @staticmethod
-    def read_words(address, size):
-        """Return the words at `address`, where the readable part is used if the end is not readable."""
-        while size >= current_arch.ptrsize:
-            data = read_memory(address, size, safe=True)
-            if data is not None:
-                return slice_unpack(data, current_arch.ptrsize)
-            size //= 2
-        return None
-
-    @staticmethod
-    def read_list(head, limit=0x1000):
-        """Return the nodes linked from the list_head at `head`, or None if it is broken or too long."""
-        nodes = []
-        lh = KernelListHead(head)
-        for node in lh.iter_entries():
-            if not KernelAddressHeuristicFinderUtil.is_kernel_space(node) or len(nodes) >= limit:
-                return None
-            nodes.append(node)
-        if lh.broken:
-            return None
-        return nodes
 
 
 class KernelCgroup(KernelLayoutReader):
