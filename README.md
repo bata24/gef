@@ -1261,13 +1261,13 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 ### Calculation
 
 <details>
-<summary><code>hash</code>, <code>crc</code>, <code>xor-memory</code>, <code>base-n-decode</code>, <code>base-n-encode</code>, <code>morse-decode</code>, <code>morse-encode</code>, <code>strlen</code>, <code>is-mem-zero</code>, <code>seq-length</code></summary>
+<summary><code>hash</code>, <code>crc</code>, <code>xor</code>, <code>base-n-decode</code>, <code>base-n-encode</code>, <code>morse-decode</code>, <code>morse-encode</code>, <code>strlen</code>, <code>is-mem-zero</code>, <code>seq-length</code></summary>
 
 - `hash`: calculates various (450+) hashes, or show known-collisions.
     - ![](images/hash.png)
 - `crc`: calculates various CRCs.
     - ![](images/crc.png)
-- `xor-memory`: displays or modifies a block of memory by applying XOR.
+- `xor` applies XOR to memory or files.
 - `base-n-decode`/`base-n-encode`: decodes/encodes various baseN.
     - ![](images/base-n-decode.png)
 - `morse-decode`/`morse-encode`: decodes/encodes morse code.

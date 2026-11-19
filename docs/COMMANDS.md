@@ -5914,72 +5914,76 @@ options:
   --phys      treat ADDRESS as a physical address.
 ```
 
-## `xor-memory`
+## `xor`
 
-The base command to xor a block of memory.
+Apply XOR to memory or a file.
 
 
 ### Syntax
 
 ```text
-usage: xor-memory [-h] {display,patch} ...
+usage: xor [-h] {memory,file} ...
 
 options:
-  -h, --help       show this help message and exit
+  -h, --help     show this help message and exit
 
 command:
-  {display,patch}
+  {memory,file}
 ```
 
-## `xor-memory display`
+## `xor file`
 
-Display a block of memory by xor-ing each byte with specified key.
+Display or save the result of applying XOR to a file with a repeating key.
 
 
 ### Syntax
 
 ```text
-usage: xor-memory display [-h] [-n] LOCATION SIZE KEY
+usage: xor file [-h] [-o OUTPUT] [-n] FILE KEY
+
+positional arguments:
+  FILE                 the file to XOR.
+  KEY                  the XOR key as hexadecimal bytes.
+
+options:
+  -h, --help           show this help message and exit
+  -o, --output OUTPUT  save the result to a new file.
+  -n, --no-pager       do not use the pager.
+```
+
+### Examples
+
+```gdb
+xor file /tmp/data.bin 41414141
+xor file /tmp/data.bin 41414141 -o /tmp/xored.bin
+```
+
+## `xor memory`
+
+Display or patch a block of memory by applying XOR with a repeating key.
+
+
+### Syntax
+
+```text
+usage: xor memory [-h] [--patch] [-n] LOCATION SIZE KEY
 
 positional arguments:
   LOCATION        the address of data to xor.
   SIZE            the size of data to xor.
-  KEY             the data to xor as key.
+  KEY             the XOR key as hexadecimal bytes.
 
 options:
   -h, --help      show this help message and exit
+  --patch         write the result to memory and record it in patch history.
   -n, --no-pager  do not use the pager.
 ```
 
 ### Examples
 
 ```gdb
-xor-memory display $sp 16 41414141
-```
-
-## `xor-memory patch`
-
-Patch a block of memory by xor-ing each byte with specified key.
-
-
-### Syntax
-
-```text
-usage: xor-memory patch [-h] LOCATION SIZE KEY
-
-positional arguments:
-  LOCATION    the address of data to xor.
-  SIZE        the size of data to xor.
-  KEY         the data to xor as key.
-
-options:
-  -h, --help  show this help message and exit
-```
-
-### Examples
-
-```gdb
-xor-memory patch $sp 16 41414141
+xor memory $sp 16 41414141
+xor memory $sp 16 41414141 --patch
 ```
 
 # 03-f. Memory - Dump/Load

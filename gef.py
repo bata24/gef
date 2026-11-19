@@ -49035,10 +49035,10 @@ class XInfoCommand(GenericCommand):
 
 
 @register_command
-class XorMemoryCommand(GenericCommand):
-    """The base command to xor a block of memory."""
+class XorCommand(GenericCommand):
+    """Apply XOR to memory or a file."""
 
-    _cmdline_ = "xor-memory"
+    _cmdline_ = "xor"
     _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -49046,8 +49046,8 @@ class XorMemoryCommand(GenericCommand):
         subparsers = parser.add_subparsers(title="command", dest="command", required=True)
     else:
         subparsers = parser.add_subparsers(title="command")
-    subparsers.add_parser("display")
-    subparsers.add_parser("patch")
+    subparsers.add_parser("memory")
+    subparsers.add_parser("file")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -49055,17 +49055,16 @@ class XorMemoryCommand(GenericCommand):
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         self.usage()
         return
 
 
 @register_command
-class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
-    """Display a block of memory by xor-ing each byte with specified key."""
+class XorMemoryCommand(GenericCommand, BufferingOutput):
+    """Display or patch a block of memory by applying XOR with a repeating key."""
 
-    _cmdline_ = "xor-memory display"
+    _cmdline_ = "xor memory"
     _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
@@ -49073,13 +49072,16 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
                         help="the address of data to xor.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
                         help="the size of data to xor.")
-    parser.add_argument("key", metavar="KEY", type=lambda x: bytes.fromhex(x),
-                        help="the data to xor as key.")
+    parser.add_argument("key", metavar="KEY", type=bytes.fromhex,
+                        help="the XOR key as hexadecimal bytes.")
+    parser.add_argument("--patch", action="store_true",
+                        help="write the result to memory and record it in patch history.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
         "{0:s} $sp 16 41414141",
+        "{0:s} $sp 16 41414141 --patch",
     ]).format(_cmdline_)
 
     def __init__(self):
@@ -49095,22 +49097,24 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
         if not args.key:
             err("Empty key")
             return
-        self.out = []
-
         start_addr = args.location
-        end_addr = args.location + args.size
+        end_addr = start_addr + args.size
         block = read_memory(start_addr, args.size, safe=True)
         if block is None:
             err("Failed to read memory")
             return
 
-        self.info_add_out("Displaying XOR-ing {:#x}-{:#x} with {:s}".format(start_addr, end_addr, repr(args.key)))
+        xored_block = xor(block, args.key[:len(block)])
+        if args.patch:
+            info("Patching {:#x}-{:#x} with XOR key {!r}".format(start_addr, end_addr, args.key))
+            gdb.execute("patch hex {:#x} {:s}".format(start_addr, xored_block.hex()))
+            return
 
+        self.out = []
+        self.info_add_out("Displaying XOR of {:#x}-{:#x} with {!r}".format(start_addr, end_addr, args.key))
         self.out.append(titlify("Original block"))
         self.out.append(hexdump(block, base=start_addr))
-
         self.out.append(titlify("XOR-ed block"))
-        xored_block = xor(block, args.key[:len(block)])
         self.out.append(hexdump(xored_block, base=start_addr))
 
         self.print_output(check_terminal_size=True)
@@ -49118,47 +49122,67 @@ class XorMemoryDisplayCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class XorMemoryPatchCommand(GenericCommand):
-    """Patch a block of memory by xor-ing each byte with specified key."""
+class XorFileCommand(GenericCommand, BufferingOutput):
+    """Display or save the result of applying XOR to a file with a repeating key."""
 
-    _cmdline_ = "xor-memory patch"
+    _cmdline_ = "xor file"
     _category_ = "03-e. Memory - Calculation"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the address of data to xor.")
-    parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
-                        help="the size of data to xor.")
-    parser.add_argument("key", metavar="KEY", type=lambda x: bytes.fromhex(x),
-                        help="the data to xor as key.")
+    parser.add_argument("filename", metavar="FILE", help="the file to XOR.")
+    parser.add_argument("key", metavar="KEY", type=bytes.fromhex,
+                        help="the XOR key as hexadecimal bytes.")
+    parser.add_argument("-o", "--output", metavar="OUTPUT", help="save the result to a new file.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        "{0:s} $sp 16 41414141",
+        "{0:s} /tmp/data.bin 41414141",
+        "{0:s} /tmp/data.bin 41414141 -o /tmp/xored.bin",
     ]).format(_cmdline_)
 
     def __init__(self):
-        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
     @Decorator.parse_args
-    @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        if args.size <= 0:
-            err("Invalid size")
-            return
         if not args.key:
             err("Empty key")
             return
-        start_addr = args.location
-        end_addr = args.location + args.size
-        block = read_memory(start_addr, args.size, safe=True)
-        if block is None:
-            err("Failed to read memory")
+        if not os.path.isfile(args.filename):
+            err("Not a regular file: {!r}".format(args.filename))
             return
-        info("Patching XOR-ing {:#x}-{:#x} with '{:s}'".format(start_addr, end_addr, repr(args.key)))
+        try:
+            with open(args.filename, "rb") as f:
+                block = f.read()
+        except OSError as e:
+            err(str(e))
+            return
+
         xored_block = xor(block, args.key[:len(block)])
-        gdb.execute("patch hex {:#x} {:s}".format(start_addr, xored_block.hex()))
+        if args.output is not None:
+            try:
+                output_dir = os.path.dirname(args.output) or "."
+                with tempfile.TemporaryDirectory(dir=output_dir) as tmpdir:
+                    tmp_path = os.path.join(tmpdir, "xor")
+                    with open(tmp_path, "wb") as f:
+                        f.write(xored_block)
+                    # Publish the completed file without replacing an existing destination.
+                    os.link(tmp_path, args.output)
+            except OSError as e:
+                err(str(e))
+                return
+            info("Saved {:d} bytes to {!r}".format(len(xored_block), args.output))
+            return
+
+        self.out = []
+        self.info_add_out("Displaying XOR of {!r} ({:d} bytes) with {!r}".format(args.filename, len(block), args.key))
+        self.out.append(titlify("Original block"))
+        self.out.append(hexdump(block, show_symbol=False))
+        self.out.append(titlify("XOR-ed block"))
+        self.out.append(hexdump(xored_block, show_symbol=False))
+        self.print_output(check_terminal_size=True)
         return
 
 
