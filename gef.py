@@ -31438,6 +31438,48 @@ class GlibcHeapBinsDump:
         self.out.extend(m)
         return nb_chunk
 
+    def dump_indexed_bins(self, args, bin_name, bin_indices):
+        # parse arena
+        arena = GlibcHeap.get_arena(args.arena_addr)
+
+        if arena is None:
+            err("No valid arena")
+            return
+
+        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
+            err("Heap is not initialized")
+            return
+
+        if args.all:
+            arenas = GlibcHeap.get_all_arenas()
+        else:
+            arenas = [arena]
+
+        title = bin_name.replace("_", " ")
+        self.out = []
+        for arena in arenas:
+            self.out.append(titlify("arena: {:s}".format(
+                Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                color="bold", msg_color="bold",
+            ))
+            self.out.append(titlify(title))
+            bins = {}
+            for i in bin_indices:
+                # index filter
+                if args.index_filter is not None:
+                    if i != args.index_filter:
+                        continue
+
+                # print
+                nb_chunk = self.pprint_bin(arena, i, bin_name, args.verbose)
+                if nb_chunk > 0:
+                    bins[i] = nb_chunk
+            self.info_add_out("Found {:d} valid chunks in {:d} {:s} (when traced from `bk`)".format(
+                sum(bins.values()), len(bins), title,
+            ))
+        self.print_output(check_terminal_size=True)
+        return
+
 
 @register_command
 class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
@@ -31750,45 +31792,7 @@ class GlibcHeapSmallBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        # parse arena
-        arena = GlibcHeap.get_arena(args.arena_addr)
-
-        if arena is None:
-            err("No valid arena")
-            return
-
-        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
-            err("Heap is not initialized")
-            return
-
-        if args.all:
-            arenas = GlibcHeap.get_all_arenas()
-        else:
-            arenas = [arena]
-
-        # doit
-        self.out = []
-        for arena in arenas:
-            self.out.append(titlify("arena: {:s}".format(
-                Symbol.format(arena.addr, show_address=True, nocolor=True)),
-                color="bold", msg_color="bold",
-            ))
-            self.out.append(titlify("small bins"))
-            bins = {}
-            for i in range(1, 63):
-                # index filter
-                if args.index_filter is not None:
-                    if i != args.index_filter:
-                        continue
-
-                # print
-                nb_chunk = self.pprint_bin(arena, i, "small_bins", args.verbose)
-                if nb_chunk > 0:
-                    bins[i] = nb_chunk
-            self.info_add_out("Found {:d} valid chunks in {:d} small bins (when traced from `bk`)".format(
-                sum(bins.values()), len(bins),
-            ))
-        self.print_output(check_terminal_size=True)
+        self.dump_indexed_bins(args, "small_bins", range(1, 63))
         return
 
 
@@ -31819,45 +31823,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        # parse arena
-        arena = GlibcHeap.get_arena(args.arena_addr)
-
-        if arena is None:
-            err("No valid arena")
-            return
-
-        if arena.heap_base is None or not is_valid_addr(arena.heap_base):
-            err("Heap is not initialized")
-            return
-
-        if args.all:
-            arenas = GlibcHeap.get_all_arenas()
-        else:
-            arenas = [arena]
-
-        # doit
-        self.out = []
-        for arena in arenas:
-            self.out.append(titlify("arena: {:s}".format(
-                Symbol.format(arena.addr, show_address=True, nocolor=True)),
-                color="bold", msg_color="bold",
-            ))
-            self.out.append(titlify("large bins"))
-            bins = {}
-            for i in range(63, 126):
-                # index filter
-                if args.index_filter is not None:
-                    if i != args.index_filter:
-                        continue
-
-                # print
-                nb_chunk = self.pprint_bin(arena, i, "large_bins", args.verbose)
-                if nb_chunk > 0:
-                    bins[i] = nb_chunk
-            self.info_add_out("Found {:d} valid chunks in {:d} large bins (when traced from `bk`)".format(
-                sum(bins.values()), len(bins),
-            ))
-        self.print_output(check_terminal_size=True)
+        self.dump_indexed_bins(args, "large_bins", range(63, 126))
         return
 
 
