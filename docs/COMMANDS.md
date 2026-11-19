@@ -11991,6 +11991,110 @@ log_end is a byte counter; its position in the buffer is log_end % log_buf_len.
 log_buf points to active storage, which may differ from the initial __log_buf.
 ```
 
+## `kepitem`
+
+Display the epitems of the epoll instances, and the counters of the watched eventfd and timerfd.
+
+
+### Syntax
+
+```text
+usage: kepitem [-h] [-hh] [-t {auto,eventpoll,epitem,file}] [-p PID] [-T TASK_FILTER] [-f FILTER] [--meta] [-n] [-q] [ADDRESS]
+
+positional arguments:
+  ADDRESS               the address of struct eventpoll, epitem or file.
+
+options:
+  -h, --help            show this help message and exit
+  -hh, --help-simple    show help without ASCII diagram.
+  -t, --type {auto,eventpoll,epitem,file}
+                        the type of ADDRESS. (default: auto)
+  -p, --pid PID         select epoll instances owned by this pid.
+  -T, --task-filter TASK_FILTER
+                        select epoll instances owned by this task_struct address.
+  -f, --filter FILTER   comm string REGEXP filter.
+  --meta                display layout and discovery information.
+  -n, --no-pager        do not use the pager.
+  -q, --quiet           show result only.
+```
+
+### Examples
+
+```gdb
+kepitem
+kepitem --pid 1337
+kepitem --filter systemd
+kepitem --type epitem 0xffff888012340000
+```
+
+### Notes
+
+```text
+eventpoll is found from file->private_data of an epoll fd, and its epitems from rbr.
+DWARF is used when available. Without it, the layout is validated with the back pointers.
+ADDRESS with `--type eventpoll` or `--type epitem` skips the fd scan.
+`ready` means that the epitem is on the ready list (rdllist), which epoll_wait() reports from.
+The watched eventfd and timerfd are read from wqh that eppoll_entry->whead points to,
+and `kobj WHEAD` shows eventfd_ctx or timerfd_ctx containing it.
+`expires` is the absolute time on the clock of clockid, and it is kept after the timer stops.
+
+Simplified epoll structure:
+
++-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+
+| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |
+| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+
+| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |
++-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |
+                                                                                                 |
++------------------------------------------------------------------------------------------------+
+|
+|  +-eventpoll---+     +->+-epitem----------------+
++->| mtx         |     |  | rbn                   |--->epitem (the children, sorted by ffd)
+   | wq          |     |  | rdllink               |--->eventpoll.rdllist (while ready)
+   | poll_wait   |     |  | next                  |
+   | rdllist     |     |  | ffd                   |
+   | lock        |     |  |   file                |--->file (the watched one)
+   | rbr         |-----+  |   fd                  |
+   | ovflist     |        | pwqlist               |--------------------------------+
+   | ws          |        | ep                    |--->eventpoll (back pointer)    |
+   | user        |        | fllink                |                                |
+   | file        |        | ws                    |                                |
+   | ...         |        | event                 |                                |
+   +-------------+        |   events              |                                |
+                          |   data                |                                |
+                          +-----------------------+                                |
+                                                                                   |
+   +-------------------------------------------------------------------------------+
+   |
+   |  +-eppoll_entry-------+
+   +->| llink (~v5.10)     |--->eppoll_entry (the next one)
+      | next (v5.11~)      |--->eppoll_entry (the next one)
+      | base               |--->epitem (back pointer)
+      | wait               |
+      |   flags            |
+      |   private          |
+      |   func             |--->ep_poll_callback
+      |   entry            |
+      | whead              |--+
+      +--------------------+  |
+                              |
+      +-----------------------+---------------+
+      |                                       |
+      |  +-eventfd_ctx-+                      |  +-timerfd_ctx-------+
+      |  | kref        |                      |  | t                 |
+      +->| wqh         |                      |  |   tmr (hrtimer)   |
+         | count       |                      |  |     ...           |
+         | ...         |                      |  |     _softexpires  |
+         +-------------+                      |  |     function      |--->timerfd_tmrproc
+                                              |  | tintv             |
+                                              |  | moffs             |
+                                              +->| wqh               |
+                                                 | ticks             |
+                                                 | clockid           |
+                                                 | ...               |
+                                                 +-------------------+
+```
+
 ## `kfilesystems`
 
 Dump filesystems.

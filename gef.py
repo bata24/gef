@@ -80906,6 +80906,11 @@ class Kernel:
         return KernelUserfaultfd.get_instance()
 
     @staticmethod
+    def epoll():
+        """Return the epoll resolver."""
+        return KernelEpoll.get_instance()
+
+    @staticmethod
     def io_uring():
         """Return the io_uring resolver."""
         return KernelIoUring.get_instance()
@@ -220629,6 +220634,868 @@ class KernelUserfaultfdCommand(GenericCommand, BufferingOutput):
                 self.task_name(owner["task"]), owner["task"], owner["fd"], owner["file"]))
         if not uffd_files:
             self.warn_add_out("No open userfaultfd file descriptors found")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+class KernelEpoll(KernelTaskFileScanner):
+    """Resolve the epoll instances (eventpoll) of the open files, and read their epitems, the wait queues they hook
+    and the counters of the watched eventfd and timerfd."""
+
+    MAX_ITEMS = 0x10000
+    # the clocks that timerfd_create() accepts
+    TIMERFD_CLOCKS = [0, 1, 7, 8, 9]
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        self.task_command = False
+        self.offset_private_data = None
+        self.private_data_source = None
+        return True
+
+    def find_epoll_files(self, pid=None, task_filter=(), comm_filter=()):
+        """Return the epoll files of the user processes that match the pid, the task_struct addresses and the comm
+        REGEXPs, or None without the VFS layout."""
+        command = self.get_task_command()
+        if self.get_kpath() is None:
+            return None
+        result = []
+        others = []
+        # threads share the files of their process, so only the processes are scanned
+        for info in command.get_tasks(user_only=True):
+            files, _ = command.get_file_details(info["task"])
+            for entry in files:
+                if not self.is_anon_inode_path(entry["path"], "eventpoll"):
+                    others.append(entry["file"])
+                    continue
+                result.append({
+                    "task": info["task"], "pid": info["pid"], "comm": info["comm"], "fd": entry["fd"],
+                    "file": entry["file"], "ep": None, "ep_source": None,
+                })
+
+        # every epoll file is used to resolve private_data, even if it is not selected
+        files = []
+        for entry in result:
+            files.append(entry["file"])
+        self.resolve_private_data(files, others)
+
+        entries = []
+        for entry in result:
+            entries.append((entry["task"], entry["pid"], entry["comm"], entry))
+        entries = KernelTask.filter_task_entries(entries, pid=pid, task_filter=task_filter, comm_filter=comm_filter)
+        selected = []
+        for _, _, _, entry in entries:
+            selected.append(entry)
+            ep = self.file_private_data(entry["file"])
+            if not ep:
+                continue
+            # ep->file is missing before v3.3, so an empty eventpoll is not validated, though the offset is
+            if not self.context_score(ep) and self.kversion >= "3.3":
+                continue
+            entry["ep"], entry["ep_source"] = ep, self.private_data_source
+        return selected
+
+    def resolve_private_data(self, files, others):
+        """Resolve the offset of file->private_data from the epoll files `files`, unless it is in the debug information.
+        The window of each file can reach the next objects, but private_data is at the same offset in every file, and
+        it is not shared with the other files (`others` are the non-epoll ones). So the offset whose word is validated
+        as eventpoll in the most files is taken (the smallest one if they tie)."""
+        if GefUtil.offsetof("file", "private_data") is not None:
+            self.private_data_source = "debug information"
+            return
+        if self.offset_private_data is not None:
+            return
+        ptr = current_arch.ptrsize
+        kpath = self.get_kpath()
+        # f_path is skipped, since the dentry can be next to the eventpoll (SLOB), whose file is in the window of it
+        skip = [kpath.offset_file_mnt, kpath.offset_file_dentry]
+        votes = collections.Counter()
+        values = {}
+        for file in set(files):
+            for index, word in enumerate(KernelLayoutReader.read_words(file, 0x200) or []):
+                if index * ptr in skip:
+                    continue
+                if not self.context_score(word):
+                    continue
+                if self.is_list_link(file + index * ptr, word):
+                    continue
+                votes[index * ptr] += 1
+                values.setdefault(index * ptr, set()).add(word)
+        # A member shared by the files (e.g., f_inode and f_cred) is not private_data, though its object can be next
+        # to an eventpoll (SLOB) and validated.
+        for offset in list(votes):
+            if len(values[offset]) < votes[offset]:
+                del votes[offset]
+                continue
+            for other in set(others):
+                if read_int_from_memory(other + offset, safe=True) in values[offset]:
+                    del votes[offset]
+                    break
+        if not votes:
+            return
+        best = max(votes.values())
+        self.offset_private_data = min(offset for offset in votes if votes[offset] == best)
+        self.private_data_source = "file member +{:#x} (validated in {:d} of {:d} files)".format(
+            self.offset_private_data, best, len(set(files)),
+        )
+        return
+
+    def file_private_data(self, file):
+        """Return file->private_data from the debug information, or at the offset resolved from the epoll files."""
+        private_data = GefUtil.field_int(GefUtil.typed_struct(file, "struct file"), "private_data")
+        if private_data is not None:
+            return private_data
+        if self.offset_private_data is None:
+            return None
+        return read_int_from_memory(file + self.offset_private_data, safe=True)
+
+    @staticmethod
+    def is_anon_inode_path(path, name):
+        """Return True if `path` is the anon_inode file of `name`, e.g. "anon_inode:[eventpoll]" for "eventpoll"."""
+        return path == "[{:s}]".format(name) or path.endswith(":[{:s}]".format(name))
+
+    def get_kpath(self):
+        command = self.get_task_command()
+        if command is None or not command.enabled["files"]:
+            return None
+        return command.kpath
+
+    def validate_context(self, ep):
+        if self.find_ep_file(ep) is not None:
+            return 10
+        # ep->file is missing before v3.3, so the root epitem is used instead, which needs a non-empty tree
+        if self.find_layout(ep) is not None:
+            return 10
+        return 0
+
+    def find_ep_file(self, ep):
+        """Return ep->file, which is an epoll file whose private_data points back to `ep`, or None."""
+        file = GefUtil.field_int(GefUtil.typed_struct(ep, "struct eventpoll"), "file")
+        if file is not None and self.is_ep_file(file, ep):
+            return file
+        # ep->file is added in v3.3. Before that, the window can still reach a pointer to an epoll file whose window
+        # reaches `ep` (as the private_data of the next file), so it is not searched.
+        if self.kversion < "3.3":
+            return None
+        # file follows rbr, ovflist, ws (v3.5~) and user. The locks before them depend on the config, and push file to
+        # +0x2d8 with PREEMPT_RT and LOCK_STAT. The window can reach another object that has a pointer to the file
+        # (e.g., the fd array after cred, which the file also points to), so ovflist is checked too.
+        if self.kversion >= "3.5":
+            gap = 3
+        else:
+            gap = 2
+        words = KernelLayoutReader.read_words(ep, 0x400) or []
+        for index in range(gap, len(words)):
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(words[index]):
+                continue
+            if not self.is_ovflist(words[index - gap], ep):
+                continue
+            if self.is_list_link(ep + index * current_arch.ptrsize, words[index]):
+                continue
+            if self.is_ep_file(words[index], ep):
+                return words[index]
+        return None
+
+    def is_ovflist(self, value, ep):
+        """Return True if `value` can be ep->ovflist, which is EP_UNACTIVE_PTR, or NULL or an epitem (pointing back to
+        `ep`) while the ready list is scanned."""
+        ptr = current_arch.ptrsize
+        if value in [0, (1 << (ptr * 8)) - 1]:
+            return True
+        if not KernelAddressHeuristicFinderUtil.is_kernel_space(value) or value & (ptr - 1):
+            return False
+        # ep follows rbn, rdllink, next, ffd and pwqlist, which are 9 words at least
+        epitem = KernelLayoutReader.read_words(value, 0x80) or []
+        return ep in epitem[9:]
+
+    @staticmethod
+    def is_list_link(slot, value):
+        """Return True if `value` at `slot` is a link of list_head (or hlist_node), i.e. the node it points to points
+        back to the slot. An empty list_head points to itself (next) or to the previous slot (prev).
+        private_data, ep->file and epitem->ep are not, though the window can reach such a link to the other object."""
+        node = KernelLayoutReader.read_words(value, current_arch.ptrsize * 2) or []
+        return slot in node or slot - current_arch.ptrsize in node
+
+    def is_ep_file(self, file, ep):
+        """Return True if `file` is an epoll file whose private_data is `ep`."""
+        if not KernelAddressHeuristicFinderUtil.is_kernel_space(file) or file & (current_arch.ptrsize - 1):
+            return False
+        private_data = self.file_private_data(file)
+        if private_data is None:
+            # struct file is randomized in old kernels, so any member in the window may be private_data
+            for index, word in enumerate(KernelLayoutReader.read_words(file, 0x200) or []):
+                if word != ep:
+                    continue
+                if self.is_list_link(file + index * current_arch.ptrsize, word):
+                    continue
+                break
+            else:
+                return False
+        elif private_data != ep:
+            return False
+        return self.is_anon_inode_path(self.path_for_file(file), "eventpoll")
+
+    def epitem_context(self, epi):
+        """Return the eventpoll that epitem `epi` points back to, or None."""
+        offset = GefUtil.offsetof("epitem", "ep")
+        if offset is not None:
+            candidates = [read_int_from_memory(epi + offset, safe=True)]
+        else:
+            # ep follows rbn, rdllink, next, ffd and pwqlist, which are 9 words at least
+            candidates = (KernelLayoutReader.read_words(epi, 0x80) or [])[9:]
+        for ep in candidates:
+            if not ep or not self.context_score(ep):
+                continue
+            # the epitem is in the tree of the eventpoll
+            layout = self.get_layout(ep)
+            if layout is None:
+                continue
+            if epi in KernelRBTree(ep + layout["rbr"]).parse():
+                return ep
+        return None
+
+    def get_layout(self, ep):
+        """Return the offsets to read the epitems of `ep`, via DWARF if it matches the memory, or via the root epitem.
+        None if the root is not found without DWARF (e.g., the tree is empty)."""
+        offsetof = GefUtil.offsetof
+        layout = {
+            "rbr": offsetof("eventpoll", "rbr"), "rdllink": offsetof("epitem", "rdllink"),
+            "file": offsetof("epitem", "ffd.file"), "fd": offsetof("epitem", "ffd.fd"),
+            "pwqlist": offsetof("epitem", "pwqlist"), "ep": offsetof("epitem", "ep"),
+            "events": offsetof("epitem", "event.events"), "data": offsetof("epitem", "event.data"),
+            "base": offsetof("eppoll_entry", "base"), "whead": offsetof("eppoll_entry", "whead"),
+            "entry": offsetof("eppoll_entry", "wait.entry"),
+        }
+        # wait_queue_t (~v4.12) names the list node task_list
+        if layout["entry"] is None:
+            layout["entry"] = offsetof("eppoll_entry", "wait.task_list")
+        if None in layout.values():
+            return self.find_layout(ep)
+        root = read_int_from_memory(ep + layout["rbr"], safe=True)
+        if root is None:
+            return None
+        # the debug information may be for another build
+        if root and read_int_from_memory(root + layout["ep"], safe=True) != ep:
+            return self.find_layout(ep)
+        # pwqlist is a list_head linked by llink (~v5.10), or a single-linked list by next (v5.11~)
+        layout["pwq_list"] = offsetof("eppoll_entry", "llink") is not None
+        layout["source"] = "debug information"
+        return layout
+
+    def find_layout(self, ep):
+        """Return the layout found from the root epitem of `ep`, or None if it is not found (e.g., the tree is empty).
+
+        struct epitem {
+            union { struct rb_node rbn; struct rcu_head rcu; }; // struct rb_node rbn (~v3.10)
+            struct list_head rdllink;
+            struct epitem *next;
+            struct epoll_filefd ffd; // { struct file *file; int fd; } __packed
+            int nwait; // ~v5.10
+            struct list_head pwqlist; // struct eppoll_entry *pwqlist (v5.11~)
+            struct eventpoll *ep;
+            struct list_head fllink; // struct hlist_node (v5.11~)
+            struct wakeup_source __rcu *ws; // v3.5~
+            struct epoll_event event; // { __poll_t events; __u64 data; }, packed on x86_64
+        };
+
+        struct eppoll_entry {
+            struct list_head llink; // struct eppoll_entry *next (v5.11~)
+            struct epitem *base;
+            wait_queue_entry_t wait; // { unsigned int flags; void *private; wait_queue_func_t func; struct list_head entry; }
+            wait_queue_head_t *whead;
+        };
+        """
+        ptr = current_arch.ptrsize
+        # ovflist follows rbr, which is rb_root_cached (v4.14~) or rb_root
+        if self.kversion >= "4.14":
+            gap = 2
+        else:
+            gap = 1
+        ep_words = KernelLayoutReader.read_words(ep, 0x400) or []
+        # rbr follows mtx, wq, poll_wait and rdllist. Their sizes depend on the config (+0x2b0 with PREEMPT_RT and
+        # LOCK_STAT), but they are 9 words at least (spinlock_t is empty on UP).
+        for index in range(9, len(ep_words) - gap):
+            root = ep_words[index]
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(root) or root & (ptr - 1):
+                continue
+            if not self.is_ovflist(ep_words[index + gap], ep):
+                continue
+            words = KernelLayoutReader.read_words(root, 0x80)
+            # the root of an rbtree is black without the parent
+            if not words or words[0] != 1:
+                continue
+            # ep follows rbn, rdllink, next, ffd and pwqlist, which are 9 words at least. The members between
+            # them vary (e.g., nwait, bool dying), so ep is found by the back pointer.
+            if ep not in words[9:]:
+                continue
+            offset_ep = words.index(ep, 9) * ptr
+            # An eppoll_entry is not ep, though another eppoll_entry of the same epitem in its window looks like rbr
+            # followed by ovflist (base, then NULL of wait.flags or wait.private). Its own base points to the root.
+            if root in ep_words[1:3]:
+                continue
+            # e.g., fllink links the epitems watching the same file
+            if self.is_list_link(root + offset_ep, ep):
+                continue
+            # ffd.file is the watched file
+            if self.get_kpath() is not None and not self.path_for_file(words[6]):
+                continue
+            # each child points back to the root
+            is_root = True
+            for child in words[1:3]:
+                if child == 0:
+                    continue
+                parent = read_int_from_memory(child, safe=True)
+                if parent is None or parent & ~3 != root:
+                    is_root = False
+            if not is_root:
+                continue
+
+            # pwqlist is right before ep. It is a list_head (~v5.10) or a pointer to the first eppoll_entry (v5.11~),
+            # and eppoll_entry->base points back to the epitem.
+            forms = [(offset_ep - ptr * 2, True), (offset_ep - ptr, False)]
+            if self.kversion >= "5.11":
+                forms.reverse()
+            offset_pwqlist, pwq_list, offset_base = None, None, None
+            for offset, is_list in forms:
+                first = words[offset // ptr]
+                if is_list:
+                    base = ptr * 2
+                    is_empty = first == root + offset
+                else:
+                    base = ptr
+                    is_empty = first == 0
+                if is_empty or read_int_from_memory(first + base, safe=True) == root:
+                    offset_pwqlist, pwq_list, offset_base = offset, is_list, base
+                    break
+
+            # event follows ep, fllink and ws (v3.5~), and epoll_event is aligned to u64 except on x86
+            candidates = [offset_ep + ptr * 4, offset_ep + ptr * 3]
+            if self.kversion < "3.5":
+                candidates.reverse()
+            offset_events = None
+            for offset in candidates:
+                if is_arm32() or is_riscv32():
+                    offset = align(offset, 8)
+                events = read_int32_from_memory(root + offset, safe=True)
+                if events is None:
+                    continue
+                # epoll_ctl() always adds EPOLLERR|EPOLLHUP, and only EP_PRIVATE_BITS are left after EPOLLONESHOT fires
+                if (events & 0x18) == 0x18 or events & 0x4000_0000:
+                    offset_events = offset
+                    break
+
+            layout = {
+                "rbr": index * ptr, "rdllink": ptr * 3, "file": ptr * 6, "fd": ptr * 7, "pwqlist": offset_pwqlist,
+                "ep": offset_ep, "events": offset_events, "data": None, "pwq_list": pwq_list, "base": offset_base,
+                "entry": None, "whead": None, "source": "heuristic",
+            }
+            if offset_events is not None:
+                if is_x86():
+                    layout["data"] = offset_events + 4
+                else:
+                    layout["data"] = offset_events + 8
+            # wait follows base, and whead follows wait
+            if offset_base is not None:
+                layout["entry"] = offset_base + ptr * 4
+                layout["whead"] = offset_base + ptr * 6
+            return layout
+        return None
+
+    def read_epitems(self, ep, layout):
+        """Return the epitems of `ep` sorted by fd. The ones that do not point back to `ep` are skipped."""
+        items = []
+        # rbn is the first member, so each rb_node is the epitem itself
+        for epi in KernelRBTree(ep + layout["rbr"]).parse()[:self.MAX_ITEMS]:
+            if read_int_from_memory(epi + layout["ep"], safe=True) != ep:
+                continue
+            file = read_int_from_memory(epi + layout["file"], safe=True)
+            item = {
+                "epitem": epi, "file": file, "fd": read_int32_from_memory(epi + layout["fd"], safe=True),
+                "path": self.path_for_file(file), "ready": None, "events": None, "data": None,
+                "pwqs": None, "watched": None,
+            }
+            # rdllink is linked while the epitem is on the ready list (or on the list being scanned)
+            rdllink = epi + layout["rdllink"]
+            next_link = read_int_from_memory(rdllink, safe=True)
+            if next_link is not None:
+                item["ready"] = next_link != rdllink
+            if layout["events"] is not None:
+                item["events"] = read_int32_from_memory(epi + layout["events"], safe=True)
+                item["data"] = read_int64_from_memory(epi + layout["data"], safe=True)
+
+            # the eppoll_entries that point back to the epitem
+            if layout["pwqlist"] is not None:
+                head = epi + layout["pwqlist"]
+                if layout["pwq_list"]:
+                    pwqs = list(itertools.islice(KernelListHead(head).iter_entries(), self.MAX_ITEMS))
+                else:
+                    pwqs = []
+                    pwq = read_int_from_memory(head, safe=True)
+                    while pwq and pwq not in pwqs and len(pwqs) < self.MAX_ITEMS:
+                        pwqs.append(pwq)
+                        pwq = read_int_from_memory(pwq, safe=True)
+                item["pwqs"] = []
+                for pwq in pwqs:
+                    if read_int_from_memory(pwq + layout["base"], safe=True) != epi:
+                        break
+                    whead = read_int_from_memory(pwq + layout["whead"], safe=True)
+                    item["pwqs"].append({"pwq": pwq, "whead": whead, "entry": pwq + layout["entry"]})
+
+            # eventfd and timerfd have only one wait queue, which is wqh in their context
+            if item["pwqs"] and item["pwqs"][0]["whead"]:
+                pwq = item["pwqs"][0]
+                if self.is_anon_inode_path(item["path"], "eventfd"):
+                    item["watched"] = {"type": "eventfd", "count": None}
+                    count = self.find_counter(pwq["whead"], pwq["entry"], "eventfd_ctx", "count")
+                    if count is not None:
+                        item["watched"]["count"] = read_int64_from_memory(count, safe=True)
+                elif self.is_anon_inode_path(item["path"], "timerfd"):
+                    item["watched"] = self.read_timerfd(pwq["whead"], pwq["entry"])
+            items.append(item)
+        return sorted(items, key=lambda x: (x["fd"] or 0, x["file"] or 0))
+
+    def find_counter(self, whead, entry, type_name, member):
+        """Return the address of the u64 `member` right after wqh in `type_name` (eventfd_ctx.count and
+        timerfd_ctx.ticks), where wqh is at `whead` and links the wait queue entry `entry`, or None."""
+        offset_wqh = GefUtil.offsetof(type_name, "wqh")
+        offset = GefUtil.offsetof(type_name, member)
+        if offset_wqh is not None and offset is not None:
+            return whead - offset_wqh + offset
+        # wait_queue_head_t is spinlock_t lock + struct list_head head, and the lock size depends on the config
+        # (e.g., lockdep). So the head is the first node in it of the wait queue that links `entry`.
+        ptr = current_arch.ptrsize
+        nodes = set(itertools.islice(KernelListHead(entry).iter_entries(), self.MAX_ITEMS))
+        for offset in range(0, 0x100, ptr):
+            if whead + offset not in nodes:
+                continue
+            # u64 is aligned to 4 bytes on i386
+            if is_x86_32():
+                return align(whead + offset + ptr * 2, 4)
+            return align(whead + offset + ptr * 2, 8)
+        return None
+
+    def read_timerfd(self, whead, entry):
+        """Return ticks, the interval, the expiry and clockid of the timerfd whose wqh is at `whead`.
+        Each value is None if it is unavailable.
+
+        struct timerfd_ctx {
+            union { struct hrtimer tmr; struct alarm alarm; } t; // struct hrtimer tmr (~v3.10)
+            ktime_t tintv;
+            ktime_t moffs;
+            wait_queue_head_t wqh;
+            u64 ticks;
+            int clockid; // int expired; int clockid; (~v3.16)
+            short unsigned expired; // v3.17~
+            short unsigned settime_flags; // v3.17~
+            ...
+        };
+        """
+        timer = {"type": "timerfd", "ticks": None, "interval": None, "expires": None, "clockid": None}
+        ticks = self.find_counter(whead, entry, "timerfd_ctx", "ticks")
+        if ticks is None:
+            return timer
+        timer["ticks"] = read_int64_from_memory(ticks, safe=True)
+
+        offset_wqh = GefUtil.offsetof("timerfd_ctx", "wqh")
+        offset_tintv = GefUtil.offsetof("timerfd_ctx", "tintv")
+        offset_clockid = GefUtil.offsetof("timerfd_ctx", "clockid")
+        if None not in [offset_wqh, offset_tintv, offset_clockid]:
+            interval = whead - offset_wqh + offset_tintv
+            clockids = [whead - offset_wqh + offset_clockid]
+        else:
+            # tintv and moffs (ktime_t) are right before wqh
+            interval = whead - 0x10
+            # clockid follows ticks (v3.17~), or `int expired` after ticks (~v3.16).
+            # The wrong one may still look valid, since `expired` is 0 or 1.
+            clockids = [ticks + 8, ticks + 12]
+            if self.kversion < "3.17":
+                clockids.reverse()
+        timer["interval"] = read_int64_from_memory(interval, safe=True)
+        for address in clockids:
+            clockid = read_int32_from_memory(address, safe=True)
+            if clockid in self.TIMERFD_CLOCKS:
+                timer["clockid"] = clockid
+                break
+
+        # The hrtimer (alarm.timer for the alarm clocks) is in the union before tintv, and _softexpires is right
+        # before its function. The window can reach the previous object, so the one nearest to tintv is taken.
+        functions = [Ksym.get_addr("timerfd_tmrproc"), Ksym.get_addr("alarmtimer_fired")]
+        ptr = current_arch.ptrsize
+        start = interval - 0x100
+        words = KernelLayoutReader.read_words(start, 0x100) or []
+        for index in reversed(range(len(words))):
+            if words[index] in functions:
+                timer["expires"] = read_int64_from_memory(start + index * ptr - 8, safe=True)
+                break
+        return timer
+
+
+@register_command
+class KernelEpitemCommand(GenericCommand, BufferingOutput):
+    """Display the epitems of the epoll instances, and the counters of the watched eventfd and timerfd."""
+
+    _cmdline_ = "kepitem"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("address", nargs="?", metavar="ADDRESS", type=AddressUtil.parse_address,
+                        help="the address of struct eventpoll, epitem or file.")
+    parser.add_argument("-t", "--type", choices=["auto", "eventpoll", "epitem", "file"], default="auto",
+                        help="the type of ADDRESS. (default: %(default)s)")
+    parser.add_argument("-p", "--pid", type=int, help="select epoll instances owned by this pid.")
+    parser.add_argument("-T", "--task-filter", action="append", type=AddressUtil.parse_address, default=[],
+                        help="select epoll instances owned by this task_struct address.")
+    parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="comm string REGEXP filter.")
+    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --pid 1337",
+        "{0:s} --filter systemd",
+        "{0:s} --type epitem 0xffff888012340000",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "eventpoll is found from file->private_data of an epoll fd, and its epitems from rbr.",
+        "DWARF is used when available. Without it, the layout is validated with the back pointers.",
+        "ADDRESS with `--type eventpoll` or `--type epitem` skips the fd scan.",
+        "`ready` means that the epitem is on the ready list (rdllist), which epoll_wait() reports from.",
+        "The watched eventfd and timerfd are read from wqh that eppoll_entry->whead points to,",
+        "and `kobj WHEAD` shows eventfd_ctx or timerfd_ctx containing it.",
+        "`expires` is the absolute time on the clock of clockid, and it is kept after the timer stops.",
+        "",
+        "Simplified epoll structure:",
+        "",
+        "+-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+",
+        "| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |",
+        "| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+",
+        "| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |",
+        "+-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |",
+        "                                                                                                 |",
+        "+------------------------------------------------------------------------------------------------+",
+        "|",
+        "|  +-eventpoll---+     +->+-epitem----------------+",
+        "+->| mtx         |     |  | rbn                   |--->epitem (the children, sorted by ffd)",
+        "   | wq          |     |  | rdllink               |--->eventpoll.rdllist (while ready)",
+        "   | poll_wait   |     |  | next                  |",
+        "   | rdllist     |     |  | ffd                   |",
+        "   | lock        |     |  |   file                |--->file (the watched one)",
+        "   | rbr         |-----+  |   fd                  |",
+        "   | ovflist     |        | pwqlist               |--------------------------------+",
+        "   | ws          |        | ep                    |--->eventpoll (back pointer)    |",
+        "   | user        |        | fllink                |                                |",
+        "   | file        |        | ws                    |                                |",
+        "   | ...         |        | event                 |                                |",
+        "   +-------------+        |   events              |                                |",
+        "                          |   data                |                                |",
+        "                          +-----------------------+                                |",
+        "                                                                                   |",
+        "   +-------------------------------------------------------------------------------+",
+        "   |",
+        "   |  +-eppoll_entry-------+",
+        "   +->| llink (~v5.10)     |--->eppoll_entry (the next one)",
+        "      | next (v5.11~)      |--->eppoll_entry (the next one)",
+        "      | base               |--->epitem (back pointer)",
+        "      | wait               |",
+        "      |   flags            |",
+        "      |   private          |",
+        "      |   func             |--->ep_poll_callback",
+        "      |   entry            |",
+        "      | whead              |--+",
+        "      +--------------------+  |",
+        "                              |",
+        "      +-----------------------+---------------+",
+        "      |                                       |",
+        "      |  +-eventfd_ctx-+                      |  +-timerfd_ctx-------+",
+        "      |  | kref        |                      |  | t                 |",
+        "      +->| wqh         |                      |  |   tmr (hrtimer)   |",
+        "         | count       |                      |  |     ...           |",
+        "         | ...         |                      |  |     _softexpires  |",
+        "         +-------------+                      |  |     function      |--->timerfd_tmrproc",
+        "                                              |  | tintv             |",
+        "                                              |  | moffs             |",
+        "                                              +->| wqh               |",
+        "                                                 | ticks             |",
+        "                                                 | clockid           |",
+        "                                                 | ...               |",
+        "                                                 +-------------------+",
+    ])
+
+    EPOLL_EVENTS = {
+        0x0000_0001: "IN",
+        0x0000_0002: "PRI",
+        0x0000_0004: "OUT",
+        0x0000_0008: "ERR",
+        0x0000_0010: "HUP",
+        0x0000_0020: "NVAL",
+        0x0000_0040: "RDNORM",
+        0x0000_0080: "RDBAND",
+        0x0000_0100: "WRNORM",
+        0x0000_0200: "WRBAND",
+        0x0000_0400: "MSG",
+        0x0000_2000: "RDHUP",
+        0x0800_0000: "URING_WAKE",
+        0x1000_0000: "EXCLUSIVE",
+        0x2000_0000: "WAKEUP",
+        0x4000_0000: "ONESHOT",
+        0x8000_0000: "ET",
+    }
+
+    def format_watched(self, watched):
+        if watched is None:
+            return "-"
+        if watched["type"] == "eventfd":
+            if watched["count"] is None:
+                return "eventfd: count=?"
+            return "eventfd: count={:d}".format(watched["count"])
+        texts = []
+        for name in ["ticks", "interval", "expires", "clockid"]:
+            value = watched[name]
+            if value is None:
+                texts.append("{:s}=?".format(name))
+            elif name == "clockid":
+                texts.append("{:s}={:s}".format(name, KernelTimerCommand.clockid_dict.get(value, str(value))))
+            elif name == "ticks":
+                texts.append("{:s}={:d}".format(name, value))
+            else:
+                # ktime_t is in nanoseconds
+                texts.append("{:s}={:d}.{:09d}s".format(name, value // 1_000_000_000, value % 1_000_000_000))
+        return "timerfd: " + ", ".join(texts)
+
+    def dump_epitems(self, ep):
+        layout = self.kepoll.get_layout(ep)
+        if layout is None:
+            self.out.append(titlify("epitem: none"))
+            return
+        items = self.kepoll.read_epitems(ep, layout)
+        if not items:
+            self.out.append(titlify("epitem: none"))
+            return
+
+        fmt = "{:18s} {:4s} {:18s} {:5s} {:18s} {:20s} {:s}"
+        legend = ["epitem", "fd", "file", "ready", "data", "events", "path"]
+        self.out.append(titlify("epitem"))
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        wait_fmt = "{:18s} {:4s} {:18s} {:18s} {:s}"
+        waits = []
+        for item in items:
+            epitem_text = "{:#018x}".format(item["epitem"])
+            if item["fd"] is None:
+                fd_text = "?"
+            else:
+                fd_text = str(item["fd"])
+            if item["file"] is None:
+                file_text = "?"
+            else:
+                file_text = "{:#018x}".format(item["file"])
+            if item["ready"] is None:
+                ready_text = "?"
+            elif item["ready"]:
+                ready_text = "yes"
+            else:
+                ready_text = "no"
+            if item["events"] is None:
+                data_text, events_text = "?", "?"
+            else:
+                data_text = "{:#018x}".format(item["data"] or 0)
+                names, _ = GefUtil.flags_to_names(item["events"], self.EPOLL_EVENTS)
+                events_text = "|".join(names) or "-"
+            self.out.append(fmt.format(
+                epitem_text, fd_text, file_text, ready_text, data_text, events_text, item["path"] or "?",
+            ).rstrip())
+
+            # the watched file usually has one wait queue, but some have more (e.g., a tty for read and write)
+            if item["pwqs"] is None:
+                waits.append(wait_fmt.format(epitem_text, fd_text, "?", "?", "?"))
+                continue
+            if not item["pwqs"]:
+                waits.append(wait_fmt.format(epitem_text, fd_text, "-", "-", "-"))
+                continue
+            for index, pwq in enumerate(item["pwqs"]):
+                if index == 0:
+                    watched_text = self.format_watched(item["watched"])
+                else:
+                    watched_text = ""
+                whead_text = "{:#018x}".format(pwq["whead"] or 0)
+                waits.append(wait_fmt.format(
+                    epitem_text, fd_text, "{:#018x}".format(pwq["pwq"]), whead_text, watched_text,
+                ).rstrip())
+
+        self.out.append(titlify("wait queue"))
+        legend = ["epitem", "fd", "eppoll_entry", "whead", "watched"]
+        self.out.append(GefUtil.make_legend(wait_fmt.format(*legend)))
+        self.out.extend(waits)
+        return
+
+    def dump_eventpoll(self, ep, owners):
+        # each eventpoll gets a bold title like kuffd, and its epitems and their wait queues get plain ones
+        self.out.append(titlify("eventpoll {:#x}".format(ep), color="bold", msg_color="bold"))
+        fmt = "{:18s} {:7s} {:16s} {:4s} {:s}"
+        legend = ["owner task", "pid", "task->comm", "fd", "file"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        # without the fd scan, ep->file is shown instead
+        if not owners:
+            owners = [{"file": self.kepoll.find_ep_file(ep)}]
+        # an extra owner of the same eventpoll (a passed or inherited fd) gets its own row
+        for owner in owners:
+            if owner.get("task") is None:
+                task_text, pid_text, comm_text, fd_text = "-", "-", "-", "-"
+            else:
+                task_text = "{:#018x}".format(owner["task"])
+                pid_text, comm_text, fd_text = str(owner["pid"]), owner["comm"], str(owner["fd"])
+            if owner.get("file") is None:
+                file_text = "-"
+            else:
+                file_text = "{:#018x}".format(owner["file"])
+            self.out.append(fmt.format(task_text, pid_text, comm_text, fd_text, file_text))
+        self.dump_epitems(ep)
+        return
+
+    def resolve_address(self, address, address_type):
+        """Return (the eventpoll of ADDRESS, its owners), or (None, None) after adding the error."""
+        if address_type == "auto":
+            if self.kepoll.context_score(address):
+                address_type = "eventpoll"
+            elif self.kepoll.is_anon_inode_path(self.kepoll.path_for_file(address), "eventpoll"):
+                address_type = "file"
+            elif self.kepoll.epitem_context(address) is not None:
+                address_type = "epitem"
+            else:
+                self.err_add_out("Could not identify {:#x} as eventpoll, epitem or epoll file".format(address))
+                return None, None
+
+        if address_type == "eventpoll":
+            if not self.kepoll.context_score(address):
+                self.err_add_out("Could not validate eventpoll at {:#x}".format(address))
+                return None, None
+            return address, []
+
+        if address_type == "epitem":
+            ep = self.kepoll.epitem_context(address)
+            if ep is None:
+                self.err_add_out("Could not find the eventpoll of epitem {:#x}".format(address))
+                return None, None
+            return ep, []
+
+        if self.kepoll.get_kpath() is None:
+            for func, line in Kernel.export_meta(self, self.kepoll.meta):
+                func(line)
+            self.err_add_out("An epoll file cannot be verified without the VFS object layout")
+            return None, None
+        if not self.kepoll.is_anon_inode_path(self.kepoll.path_for_file(address), "eventpoll"):
+            self.err_add_out("Could not interpret {:#x} as an epoll file".format(address))
+            return None, None
+        # private_data is resolved with the files of the processes, and only with ADDRESS if they have no epoll file
+        self.kepoll.find_epoll_files()
+        self.kepoll.resolve_private_data([address], [])
+        ep = self.kepoll.file_private_data(address)
+        if not ep or not self.kepoll.context_score(ep):
+            self.err_add_out("Could not find the eventpoll of the epoll file {:#x}".format(address))
+            return None, None
+        return ep, [{"file": address}]
+
+    def print_meta(self, args):
+        for func, line in Kernel.export_meta(self, self.kepoll.meta):
+            func(line)
+        self.quiet_info("kernel version: {!s}".format(self.kepoll.kversion))
+        for type_name in ["eventpoll", "epitem", "eppoll_entry", "eventfd_ctx", "timerfd_ctx"]:
+            size = GefUtil.type_size("struct " + type_name)
+            if size is None:
+                size_text = "unavailable"
+            else:
+                size_text = "{:#x}".format(size)
+            self.quiet_info("sizeof({:s}): {:s}".format(type_name, size_text))
+
+        epoll_files = self.kepoll.find_epoll_files(args.pid, args.task_filter, args.filter)
+        if epoll_files is None:
+            self.quiet_info("eventpoll discovery from fds: unavailable")
+            return
+        self.quiet_info("eventpoll discovery from fds: available")
+        # how the layout was resolved, shown for the first epoll instance that has an epitem
+        for owner in epoll_files:
+            if owner["ep"] is None:
+                continue
+            layout = self.kepoll.get_layout(owner["ep"])
+            if layout is None:
+                continue
+            self.quiet_info("file->private_data: {:s} (fd {:d} of {:s}[{:d}])".format(
+                owner["ep_source"], owner["fd"], owner["comm"], owner["pid"]))
+            for key, type_name, member in [
+                ("rbr", "eventpoll", "rbr"), ("ep", "epitem", "ep"), ("pwqlist", "epitem", "pwqlist"),
+                ("events", "epitem", "event"), ("whead", "eppoll_entry", "whead"),
+            ]:
+                if layout[key] is None:
+                    offset_text = "unavailable"
+                else:
+                    offset_text = "{:#x} ({:s})".format(layout[key], layout["source"])
+                self.quiet_info("offsetof({:s}, {:s}): {:s}".format(type_name, member, offset_text))
+            return
+        self.quiet_info("layout: unavailable (no epoll instance has an epitem)")
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+        self.kepoll = Kernel.epoll()
+        if not self.kepoll.initialize():
+            for func, line in Kernel.export_meta(self, self.kepoll.meta):
+                func(line)
+            self.quiet_err("Failed to initialize")
+            return
+
+        if args.meta:
+            self.print_meta(args)
+            return
+
+        self.out = []
+        if args.address is not None:
+            ep, owners = self.resolve_address(args.address, args.type)
+            if ep is not None:
+                self.dump_eventpoll(ep, owners)
+            self.print_output(check_terminal_size=True)
+            return
+
+        epoll_files = self.kepoll.find_epoll_files(args.pid, args.task_filter, args.filter)
+        if epoll_files is None:
+            for func, line in Kernel.export_meta(self, self.kepoll.meta):
+                func(line)
+            self.quiet_err("Failed to initialize the fd scan (ADDRESS with --type eventpoll does not need it)")
+            return
+        eventpolls = collections.OrderedDict()
+        unresolved = []
+        for owner in epoll_files:
+            if owner["ep"] is None:
+                unresolved.append(owner)
+            else:
+                eventpolls.setdefault(owner["ep"], []).append(owner)
+        for ep, owners in eventpolls.items():
+            self.dump_eventpoll(ep, owners)
+        for owner in unresolved:
+            self.warn_add_out("Found {:s}[{:d}] fd={:d} file={:#x}, but private_data is unresolved".format(
+                owner["comm"], owner["pid"], owner["fd"], owner["file"]))
+        if not epoll_files:
+            self.warn_add_out("No open epoll file descriptors found")
         self.print_output(check_terminal_size=True)
         return
 
