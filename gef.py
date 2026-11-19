@@ -20161,13 +20161,10 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     _category_ = "02-d. Process Information - Trivial Information"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="print all elements. (default: outputs up to 100)")
-    parser.add_argument("-i", "--increase-limit", action="store_true",
-                        help="increase rounding limit from 128 bytes to 4096 bytes.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print all elements. (default: outputs up to 100)")
+    parser.add_argument("-i", "--increase-limit", action="store_true", help="increase rounding limit from 128 to 4096 bytes.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address,
-                        help="address of the argv array.")
+    parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address, help="address of the argv array.")
     _syntax_ = parser.format_help()
 
     def get_address_from_symbol(self, symbol):
@@ -20314,69 +20311,18 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
 
 @register_command
-class EnvpCommand(GenericCommand, BufferingOutput):
+class EnvpCommand(ArgvCommand):
     """Display initial envp from __environ@ld, or modified envp managed by libc."""
 
     _cmdline_ = "envp"
     _category_ = "02-d. Process Information - Trivial Information"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-v", "--verbose", action="store_true",
-                        help="print all elements. (default: outputs up to 100)")
-    parser.add_argument("-i", "--increase-limit", action="store_true",
-                        help="increase rounding limit from 128 bytes to 4096 bytes.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="print all elements. (default: outputs up to 100)")
+    parser.add_argument("-i", "--increase-limit", action="store_true", help="increase rounding limit from 128 to 4096 bytes.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address,
-                        help="address of the envp array.")
+    parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address, help="address of the envp array.")
     _syntax_ = parser.format_help()
-
-    def get_address_from_symbol(self, symbol):
-        try:
-            return AddressUtil.parse_address(symbol)
-        except Exception:
-            return None
-
-    def print_from_mem(self, array):
-        fmt = "{:3s} {:{:d}s}  {:{:d}s} -> {:s}"
-        legend = [
-            "#",
-            "ArrAddr", AddressUtil.get_format_address_width(),
-            "StrAddr", AddressUtil.get_format_address_width(),
-            "String",
-        ]
-        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
-        if self.args.increase_limit:
-            max_size = get_pagesize()
-        else:
-            max_size = 128
-
-        i = 0
-        while True:
-            pos = array + i * current_arch.ptrsize
-            addr = read_int_from_memory(pos, safe=True)
-            if addr is None:
-                self.warn_add_out("Could not read pointer at {:#x}".format(pos))
-                break
-            if addr == 0:
-                break
-            if not self.args.verbose and i >= 100:
-                self.out.append("...")
-                break
-
-            s = repr(read_cstring_from_memory(addr, get_pagesize(), allow_non_ascii=True))
-            if len(s) > max_size:
-                s = s[:max_size] + "[...]"
-            s = Color.yellowify(s)
-
-            self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
-                i,
-                ProcessMap.lookup(pos),
-                ProcessMap.lookup(addr),
-                s,
-            ))
-            i += 1
-        return
 
     def print_from_proc(self, filename):
         fmt = "{:3s} {:s}"
@@ -20526,10 +20472,8 @@ class DumpArgsCommand(GenericCommand):
     _aliases_ = ["args"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-c", "--count", type=AddressUtil.parse_address,
-                        help="number of arguments to guess.")
-    parser.add_argument("-o", "--out-of-function", action="store_true",
-                        help="assume here is out of the function.")
+    parser.add_argument("-c", "--count", type=AddressUtil.parse_address, help="number of arguments to guess.")
+    parser.add_argument("-o", "--out-of-function", action="store_true", help="assume here is out of the function.")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
