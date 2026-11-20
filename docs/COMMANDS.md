@@ -13274,6 +13274,76 @@ Until v3.18, subdir points to the first child, and next links the siblings.
                    +----------------+
 ```
 
+## `krcu`
+
+Display the RCU callbacks waiting for a grace period. Useful for tracing delayed frees.
+
+
+### Syntax
+
+```text
+usage: krcu [-h] [-hh] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  --meta              display offset information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         enable quiet mode.
+```
+
+### Notes
+
+```text
+Lists the callbacks of call_rcu(), call_srcu() and call_rcu_tasks*(), and the objects of kfree_rcu() and
+kvfree_rcu(). They are freed after a grace period (GP) ends, which is later than the call.
+
+state:
+  done                : the GP has ended, and the callback is invoked soon.
+  wait                : waiting for the current GP.
+  next-ready          : waiting for the next GP.
+  next                : no GP is assigned yet.
+  bypass, nocb        : queued for an offloaded cpu (rcu_nocbs=).
+  queue, check0/1     : the batches of SRCU before Tree SRCU, which are processed in this order.
+  batch               : kvfree_rcu() has not requested a GP yet.
+object: the slab object that contains rcu_head, or the pointer that kfree_rcu() and kvfree_rcu() free.
+
+Simplified callback list (rcu_data, srcu_data and rcu_tasks_percpu are per-cpu):
+
++-rcu_data----+      +-rcu_head-+    +-rcu_head-+    +-rcu_head-+
+| ...         |  +-->| next     |--->| next     |--->| next     |--->NULL
+| cblist      |  |   | func     |    | func     |    | func     |
+|   head      |--+   +----------+    +----------+    +----------+
+|   tails[0]  |--+         ^                               ^
+|   tails[1]  |--|---------+                               |
+|   tails[2]  |--|-----------------------------------------+
+|   tails[3]  |--|-----------------------------------------+
+| ...         |  +--->&cblist.head while the segment is empty
++-------------+
+
+Each tail points to the last callback of its segment: done, wait, next-ready and next.
+
+Simplified kvfree_rcu() batches:
+
++-krc (per-cpu)-------+
+| head                |--->rcu_head--->rcu_head--->...       ==> state `batch`
+| bulk_head[2]        |--->kvfree_rcu_bulk_data.records[]    ==> state `batch`
+| krw_arr[2]          |
+|   rcu_work          |--->queued as a callback (rcu_work_rcufn)
+|   head_free         |--->rcu_head--->rcu_head--->...       ==> state `wait`
+|   bulk_head_free[2] |--->kvfree_rcu_bulk_data.records[]    ==> state `wait`
+|   krcp              |
+| monitor_work        |
++---------------------+
+
++-kmem_cache--+     +-slub_percpu_sheaves-+     +-slab_sheaf-+
+| cpu_sheaves |---->| main                |     | rcu_head   |--->queued as a callback (rcu_free_sheaf)
+| ...         |     | spare               |     | cache      |    when it is full
++-------------+     | rcu_free            |---->| size       |
+                    +---------------------+     | objects[]  |--->objects  ==> state `batch`
+                                                +------------+
+```
+
 ## `krefs`
 
 Search the kernel pointers that reference the specified address.

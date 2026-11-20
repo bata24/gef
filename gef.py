@@ -79458,6 +79458,85 @@ class KernelAddressHeuristicFinder:
         return None
 
     @staticmethod
+    def find_rcu_tasks_cbs(call_func):
+        """Return (the address of cbs_head, that of cbs_tail) of the Tasks RCU flavor that `call_func` (e.g.,
+        "call_rcu_tasks") queues to before v5.17, or None.
+        v3.18~v5.7 has the static rcu_tasks_cbs_head and rcu_tasks_cbs_tail, and v5.8~v5.16 has them at the top of
+        `struct rcu_tasks`. The tail points to the head while the list is empty, otherwise to the last callback."""
+
+        def is_cbs(head_addr, tail_addr):
+            try:
+                head = read_int_from_memory(head_addr)
+                tail = read_int_from_memory(tail_addr)
+                if head == 0:
+                    return tail == head_addr
+                # the list ends at the tail, where rcu_head.next is at +0
+                seen = set()
+                node = head
+                while len(seen) < 0x10000:
+                    if node in seen:
+                        return False
+                    seen.add(node)
+                    next_node = read_int_from_memory(node)
+                    if next_node == 0:
+                        return node == tail
+                    node = next_node
+            except gdb.MemoryError:
+                return False
+            return False
+
+        # plan 1 (directly)
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            if call_func == "call_rcu_tasks":
+                head = Ksym.get_addr("rcu_tasks_cbs_head")
+                tail = Ksym.get_addr("rcu_tasks_cbs_tail")
+                if head and tail:
+                    return head, tail
+            x = Ksym.get_addr(call_func[len("call_"):])
+            if x:
+                return x, x + current_arch.ptrsize
+
+        # plan 2 (available v3.18 or later)
+        # `call_rcu_tasks()` appends the callback by `*cbs_tail = rhp` and `cbs_tail = &rhp->next`,
+        # where the inlined `call_rcu_tasks_generic()` of v5.8~ accesses the members of `struct rcu_tasks`.
+        candidates = []
+        for address in Ksym.get_addrs(call_func, match="split"):
+            res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 200)
+            if is_x86_64() or is_x86_32():
+                g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
+            elif is_arm64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res),
+                    KernelAddressHeuristicFinderUtil.aarch64_adrp_use(res),
+                )
+            elif is_arm32():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
+                    KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
+                    KernelAddressHeuristicFinderUtil.arm32_const_use(res),
+                )
+            elif is_riscv32() or is_riscv64():
+                g = itertools.chain(
+                    KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
+                    KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
+                )
+            else:
+                g = []
+            for x in g:
+                if x not in candidates:
+                    candidates.append(x)
+        for x in candidates:
+            if is_cbs(x, x + current_arch.ptrsize):
+                return x, x + current_arch.ptrsize
+        for head in candidates:
+            for tail in candidates:
+                if head == tail:
+                    continue
+                if is_cbs(head, tail):
+                    return head, tail
+        return None
+
+    @staticmethod
     def find_timer_base_clk(timer_base, cpu):
         """Check the layout invariants of `struct timer_base`, and return the offset of `clk`."""
         layout = KernelAddressHeuristicFinder.find_timer_base_layout(timer_base, cpu)
@@ -80993,6 +81072,11 @@ class Kernel:
     def workqueue():
         """Return the workqueue resolver."""
         return KernelWorkqueue.get_instance()
+
+    @staticmethod
+    def rcu():
+        """Return the RCU callback resolver."""
+        return KernelRcu.get_instance()
 
     @staticmethod
     def irq():
@@ -159871,7 +159955,8 @@ class KernelSlub(KernelSlabAllocator):
                 remote_node_defrag_ratio_1000_count = 0
                 for kmem_cache in kmem_caches:
                     kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
-                    remote_node_defrag_ratio = read_int32_from_memory(kmem_cache_top + candidate_offset)
+                    # the window may reach an unmapped page after kmem_cache
+                    remote_node_defrag_ratio = read_int32_from_memory(kmem_cache_top + candidate_offset, safe=True)
                     if remote_node_defrag_ratio == 0x3e8:
                         remote_node_defrag_ratio_1000_count += 1
                 if remote_node_defrag_ratio_1000_count < len(kmem_caches) // 10: # heuristic threshold: 10%
@@ -226031,6 +226116,1004 @@ class KernelNftablesCommand(GenericCommand, BufferingOutput):
         if self.knft.partial_reasons:
             self.warn_add_out("Partial result: {:s}".format(", ".join(sorted(self.knft.partial_reasons))))
         self.print_output(check_terminal_size=not args.meta)
+        return
+
+
+class KernelRcu(KernelLayoutReader):
+    """Find the queues of the RCU callbacks (Tree/Tiny RCU, SRCU and Tasks RCU) and the batches of kvfree_rcu() (krc and
+    the rcu_free sheaves of SLUB), and collect what waits there for a grace period to be freed.
+
+    Most callback lists are static or dynamic per-cpu variables, so they are found by the invariant of their tails.
+    A tail is the address of the `next` member that ends a segment (rcu_head.next is at +0). It is the address of the
+    head itself while the segment and all before it are empty, otherwise the last callback of the segment.
+    So an empty rcu_segcblist is the NULL head followed by 4 pointers to itself."""
+
+    # the segments of rcu_segcblist (rcu_data.nxtlist and nxttail[] before v4.12)
+    SEGMENTS = ["done", "wait", "next-ready", "next"]
+    # a work, timer or irq_work behind a callback list tells the owner of the list
+    ANCHORS = {
+        "srcu_invoke_callbacks": "srcu", # srcu_data.work
+        "srcu_delay_timer": "srcu", # srcu_data.delay_work
+        "rcu_tasks_invoke_cbs_wq": "tasks", # rcu_tasks_percpu.rtp_work
+        "call_rcu_tasks_iw_wakeup": "tasks", # rcu_tasks_percpu.rtp_irq_work
+        "call_rcu_tasks_generic_timer": "tasks", # rcu_tasks_percpu.lazy_timer
+        "rcu_iw_handler": "rcu", # rcu_data.rcu_iw
+        "do_nocb_deferred_wakeup_timer": "rcu", # rcu_data.nocb_timer
+        "do_nocb_bypass_wakeup_timer": "rcu", # rcu_data.nocb_bypass_timer
+    }
+    # the type that names a per-cpu list whose variable has no symbol
+    KIND_TYPES = {"rcu": "rcu_data", "srcu": "srcu_data", "tasks": "rcu_tasks_percpu"}
+    # the callbacks of a sheaf full of the objects of kfree_rcu() (v6.18~), whose rcu_head is at the top
+    SHEAF_CALLBACKS = ["rcu_free_sheaf", "rcu_free_sheaf_nobarn"]
+    # kfree_rcu() before v5.7 and on Tiny RCU queues the offset of rcu_head in the object as the callback
+    KFREE_OFFSET_MAX = 0x1000
+    MAX_ENTRIES = 0x10_0000
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        self.incomplete = []
+        self.queues = []
+        return
+
+    def initialize(self):
+        """Find the queues and collect their entries. Return True if any queue is found.
+        `queues` is [{"kind", "name", "cpu", "address", "entries"}, ...]. Each entry is {"rcu_head", "func", "state",
+        "object"}, where `rcu_head` and `func` are None for a pointer batched by kvfree_rcu(), and `object` is the
+        pointer to be freed if it is known. A callback of a full sheaf also has "sheaf_cache" (the name) and "sheaf_objects"."""
+        self.meta = []
+        self.incomplete = []
+        self.queues = []
+        self.kversion = Kernel.version()
+        self.text = KernelText(Kernel.layout())
+        self.percpu = Kernel.per_cpu()
+        self.kslub = None
+
+        region = self.read_scan_region()
+        if region is not None:
+            start, words = region
+            self.find_callback_lists(start, words)
+            self.find_krc(start, words)
+            # Tiny SRCU is used only with Tiny RCU, which needs CONFIG_SMP=n
+            if self.percpu.is_up:
+                self.find_tiny_srcu(start, words)
+        self.find_rcu_tasks()
+        self.find_classic_srcu(region)
+        self.find_rcu_free_sheaves()
+        self.expand_sheaves()
+        return bool(self.queues)
+
+    def read_scan_region(self, data_bss=False):
+        """Return (start, words) of the per-cpu unit of cpu0, which also has the per-cpu variables of the modules and
+        the first dynamic ones, or of .data/.bss with CONFIG_SMP=n or `data_bss`. Return None if it is unknown."""
+        if self.percpu.is_up or data_bss:
+            # CONFIG_SMP=n defines the per-cpu variables in .data
+            klayout = Kernel.layout()
+            name = ".data/.bss"
+            start, size = klayout.rw_base, klayout.rw_size
+        else:
+            name = "per-cpu unit of cpu0"
+            start, size = self.percpu.get_base(0), self.percpu.unit_size
+            # only the static part is known without pcpu_unit_size
+            if size is None and self.percpu.end is not None:
+                size = self.percpu.end - self.percpu.start
+        if start is None or not size:
+            self.meta.append(("err", "{:s}: Not found".format(name)))
+            return None
+        size &= ~(current_arch.ptrsize - 1)
+        self.meta.append(("info", "{:s}: {:#x}-{:#x}".format(name, start, start + size)))
+        data = GefUtil.read_memory_padded(start, size, 0x10000)
+        return start, slice_unpack(data, current_arch.ptrsize)
+
+    def find_list_heads(self, start, words, width):
+        """Return the indexes of `words` (read from `start`) that look like the head of a callback list followed by
+        `width` tails. The order of the tails is verified later by walking the list."""
+        ptrsize = current_arch.ptrsize
+        indexes = []
+        address = start - ptrsize
+        for i in range(len(words) - width):
+            address += ptrsize
+            last = words[i + width]
+            if last == address:
+                # an empty list
+                if words[i] == 0 and words[i + 1:i + width] == (address,) * (width - 1):
+                    indexes.append(i)
+                continue
+            if not last:
+                # rcu_segcblist of an offloaded cpu is disabled by the NULL last tail (CONFIG_RCU_NOCB_CPU before v5.4)
+                if width == 4 and words[i + 1] == address:
+                    if words[i] == 0 and words[i + 2:i + 4] == (address, address):
+                        indexes.append(i)
+                continue
+            head = words[i]
+            if not head:
+                continue
+            # an empty list_head points to itself
+            if head == address:
+                continue
+            # the callbacks are aligned to the pointer size
+            if (head | last) & (ptrsize - 1):
+                continue
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(head):
+                continue
+            if not KernelAddressHeuristicFinderUtil.is_kernel_space(last):
+                continue
+            # an array of the same pointer is not a list, even if the pointer leads to NULL at +0 like a list of one
+            # callback (e.g. con_driver_map[], whose consw has the NULL owner at the top)
+            if i > 0 and words[i - 1] == head:
+                continue
+            if i + width + 1 < len(words) and words[i + width + 1] == head:
+                continue
+            if self.text.in_kernel_text(head):
+                continue
+            # a list of one callback that ends every segment looks the same as some pointers to an object whose top is
+            # NULL (e.g. uncore_*_uncores to empty_uncore[]), but such a callback is not a static variable
+            if words[i + 1:i + width + 1] == (head,) * width:
+                if KernelAddressHeuristicFinderUtil.is_in_kernel_image(head):
+                    continue
+            # the 9th word is a count: rcu_segcblist.len (v4.12~), or rcu_data.qlen_lazy, n_cbs_orphaned or n_cbs_adopted
+            if width == 4 and i + 9 < len(words):
+                if words[i + 9] >= self.MAX_ENTRIES:
+                    continue
+            # a middle tail ends its segment at the head or at a callback
+            for tail in words[i + 1:i + width]:
+                if tail == address:
+                    continue
+                if not tail or tail & (ptrsize - 1):
+                    break
+            else:
+                # the last callback ends the list
+                if read_int_from_memory(last, safe=True) == 0:
+                    indexes.append(i)
+        return indexes
+
+    def walk_callbacks(self, list_head, head, tails, states):
+        """Return the entries of the callbacks from `head`, or None if `tails` do not end the segments of the list in
+        order, where `list_head` is the address of the head. The state of each entry is the name of its segment."""
+        ptrsize = current_arch.ptrsize
+        entries = []
+        index = 0
+        # the empty segments at the front end at the head itself
+        while index < len(tails) and tails[index] == list_head:
+            index += 1
+        seen = set()
+        prev = list_head
+        node = head
+        while node:
+            if index >= len(tails):
+                return None
+            if node in seen:
+                return None
+            if len(entries) >= self.MAX_ENTRIES:
+                return None
+            if node & (ptrsize - 1):
+                return None
+            data = read_memory(node, ptrsize * 2, safe=True)
+            if data is None:
+                return None
+            next_node, func = slice_unpack(data, ptrsize)
+            # rcu_head.func is a function, but list_head.prev of a circular list points back like this
+            if func == prev:
+                return None
+            # the callbacks (2 words) overlap neither the head and the tails nor each other,
+            # but a free list of 8-byte objects (each word points to the next one) looks like a list
+            if list_head <= node < list_head + ptrsize * (len(tails) + 1):
+                return None
+            if next_node and abs(next_node - node) < ptrsize * 2:
+                return None
+            seen.add(node)
+            prev = node
+            entry = {"rcu_head": node, "func": func, "state": states[index], "object": None}
+            if func < self.KFREE_OFFSET_MAX:
+                entry["object"] = node - func
+            entries.append(entry)
+            while index < len(tails) and tails[index] == node:
+                index += 1
+            node = next_node
+        if index != len(tails):
+            return None
+        return entries
+
+    def read_callback_list(self, list_head, width, states):
+        """Return the entries of the callback list at `list_head`, whose head is followed by `width` tails, or None if
+        it is not a callback list. A list that is never initialized or disabled has no entry."""
+        ptrsize = current_arch.ptrsize
+        data = read_memory(list_head, ptrsize * (width + 1), safe=True)
+        if data is None:
+            return None
+        values = slice_unpack(data, ptrsize)
+        head = values[0]
+        tails = values[1:]
+        if head == 0 and tails[-1] == 0:
+            # e.g. rcu_data of a cpu that has never been online
+            if not any(tails):
+                return []
+            # rcu_segcblist of an offloaded cpu (CONFIG_RCU_NOCB_CPU before v5.4)
+            if all(tail == list_head for tail in tails[:-1]):
+                return []
+            return None
+        return self.walk_callbacks(list_head, head, tails, states)
+
+    def read_percpu_lists(self, address, width, states):
+        """Return [(cpu, list_head, entries), ...] of the per-cpu callback lists at the same place as `address` of cpu0,
+        or None if it is not a per-cpu callback list."""
+        static = address - self.percpu.get_offset(0)
+        lists = []
+        failed = []
+        for cpu, list_head in self.percpu.possible_addrs_of(static):
+            entries = self.read_callback_list(list_head, width, states)
+            if entries is None:
+                failed.append(cpu)
+                continue
+            lists.append((cpu, list_head, entries))
+        # a false one breaks on cpu0, where only the first words are checked, or on all the other cpus.
+        # A real one may break on a cpu that is changing it, e.g. between the 2 steps of rcu_segcblist_enqueue().
+        if not lists or lists[0][0] != 0:
+            return None
+        if len(failed) >= 2 and len(lists) == 1:
+            return None
+        for cpu in failed:
+            self.incomplete.append("the callback list of cpu{:d} at {:#x} is broken".format(cpu, address))
+        return lists
+
+    def find_callback_lists(self, start, words):
+        """Add the queues of rcu_segcblist (rcu_data, srcu_data and rcu_tasks_percpu) found in `words`, and those of
+        rcu_ctrlblk (Tiny RCU) with CONFIG_SMP=n."""
+        ptrsize = current_arch.ptrsize
+        anchors = {}
+        for name, kind in self.ANCHORS.items():
+            for address in Ksym.get_addrs(name):
+                anchors[address] = kind
+        indexes = self.find_list_heads(start, words, 4)
+        found = [(i, 4) for i in indexes]
+        if self.percpu.is_up:
+            # an empty rcu_segcblist starts with the same words as an empty rcu_ctrlblk
+            covered = set()
+            for i in indexes:
+                covered.update(range(i, i + 5))
+            for i in self.find_list_heads(start, words, 2):
+                if i not in covered:
+                    found.append((i, 2))
+            found.sort()
+
+        tree_rcu = False
+        tiny = []
+        for n, (i, width) in enumerate(found):
+            address = start + i * ptrsize
+            if width == 2:
+                tiny.append(address)
+                continue
+            # the first anchor before the next list tells the owner, since every owner has it behind the list
+            if n + 1 < len(found):
+                end = min(found[n + 1][0], i + 0x800 // ptrsize)
+            else:
+                end = min(len(words), i + 0x800 // ptrsize)
+            kind = "rcu"
+            for word in words[i + 5:end]:
+                if word in anchors:
+                    kind = anchors[word]
+                    break
+            lists = self.read_percpu_lists(address, 4, self.SEGMENTS)
+            if lists is None:
+                continue
+            if kind == "rcu":
+                tree_rcu = True
+            name = self.get_list_name(address, self.KIND_TYPES[kind], lists, (end - i) * ptrsize)
+            self.meta.append(("info", "{:s}: {:#x} (cpu0)".format(name, address)))
+            for cpu, list_head, entries in lists:
+                self.queues.append({"kind": kind, "name": name, "cpu": cpu, "address": list_head, "entries": entries})
+            if kind == "rcu":
+                self.find_nocb_lists(address, ptrsize * 5, (end - i) * ptrsize, name)
+
+        # Tiny RCU and Tree RCU are exclusive
+        if not tree_rcu:
+            for address in tiny:
+                entries = self.read_callback_list(address, 2, ["done", "wait"])
+                if entries is None:
+                    continue
+                name = self.get_list_name(address, "rcu_ctrlblk")
+                self.meta.append(("info", "{:s}: {:#x}".format(name, address)))
+                self.queues.append({"kind": "tiny", "name": name, "cpu": 0, "address": address, "entries": entries})
+        return
+
+    def get_list_name(self, address, type_name, lists=None, size=0):
+        """Return the name of the variable that has the list at `address` (of cpu0). Without the symbol, return the name of
+        its type and the owner that `find_owner()` finds in `size` bytes behind the per-cpu `lists`."""
+        if lists is None or self.percpu.is_up:
+            location = Symbol.lookup(address, ksym="prefer")
+        else:
+            static = address - self.percpu.get_offset(0)
+            # a dynamic one is after the static per-cpu variables
+            if self.percpu.is_static(static):
+                location = self.percpu.lookup_symbol(static)
+            else:
+                location = None
+        # the list is near the top of its owner (the nearest symbol is something else without CONFIG_KALLSYMS_ALL)
+        if location is not None and location[1] < 0x400:
+            return location[0]
+        if not lists:
+            return type_name
+        # rcu_data has the owner before v4.20, when it has the flavors
+        if type_name == "rcu_data" and self.kversion >= "4.20":
+            return type_name
+        owner = self.find_owner(lists, size)
+        if owner is None:
+            return type_name
+
+        # a static one may be a member of another variable (e.g. srcu_notifier_head.srcu)
+        location = Symbol.lookup(owner, ksym="prefer")
+        if location is None:
+            name = "{:#x}".format(owner)
+        elif location[1] >= 0x1000:
+            name = "{:#x}".format(owner)
+        elif location[1]:
+            return "{:s} of {:s}+{:#x}".format(type_name, *location)
+        else:
+            return "{:s} of {:s}".format(type_name, location[0])
+
+        # rcu_state of each flavor has `call` behind node[], which is call_rcu_sched, call_rcu_bh or call_rcu (preempt)
+        if type_name == "rcu_data":
+            calls = {}
+            for func in ["call_rcu_sched", "call_rcu_bh", "call_rcu"]:
+                for addr in Ksym.get_addrs(func):
+                    calls[addr] = func
+            # node[] is large with a large NR_CPUS
+            for offset in range(0, 0x10_0000, 0x1000):
+                words = self.read_words(owner + offset, 0x1000)
+                if words is None:
+                    break
+                for word in words:
+                    if word in calls:
+                        return "{:s} of {:s} ({:s})".format(type_name, name, calls[word][len("call_"):])
+                if len(words) < 0x1000 // current_arch.ptrsize:
+                    break
+        return "{:s} of {:s}".format(type_name, name)
+
+    def find_owner(self, lists, size):
+        """Return the owner that the per-cpu callback lists point back to, or None. The owner is at the end of each
+        (srcu_data.ssp, rcu_tasks_percpu.rtpp, and rcu_data.rsp before v4.20), just after `int cpu`, which has the
+        number of the cpu. `int index` is between them in rcu_tasks_percpu of v6.6~ (in the same word on 64-bit)."""
+        ptrsize = current_arch.ptrsize
+        windows = []
+        for cpu, list_head, _entries in lists:
+            words = self.read_words(list_head, size)
+            if words is None:
+                return None
+            windows.append((cpu, words))
+        count = min(len(words) for _cpu, words in windows)
+        for k in range(5, count - 1):
+            if is_32bit():
+                candidates = [k + 1, k + 2]
+            else:
+                candidates = [k + 1]
+            for index in candidates:
+                if index >= count:
+                    continue
+                owner = windows[0][1][index]
+                if not owner or owner & (ptrsize - 1):
+                    continue
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(owner):
+                    continue
+                # a callback in the text is not the owner
+                if self.text.contains(owner):
+                    continue
+                # each cpu has its own number and the same owner, which tells it with more than one cpu
+                for cpu, words in windows:
+                    if words[k] & 0xffff_ffff != cpu:
+                        break
+                    if words[index] != owner:
+                        break
+                else:
+                    return owner
+        return None
+
+    def find_nocb_lists(self, address, begin, end, name):
+        """Add the queues of rcu_data of the offloaded cpus (CONFIG_RCU_NOCB_CPU) found in [begin, end) bytes behind
+        `address`, which is rcu_data.cblist of cpu0. Each queue is a pair of the head and the tail, which are nocb_bypass
+        (v5.4~), nocb_head, nocb_follower_head and nocb_gp_head (v3.17~v5.3), or nocb_head (v3.8~v3.16) in this order."""
+        ptrsize = current_arch.ptrsize
+        if not Ksym.get_addrs("rcu_nocb_cb_kthread") and not Ksym.get_addrs("rcu_nocb_kthread"):
+            return
+        if self.kversion >= "5.4":
+            state, members = "bypass", ["nocb_bypass"]
+        elif self.kversion >= "3.17":
+            state, members = "nocb", ["nocb_head", "nocb_follower_head", "nocb_gp_head"]
+        else:
+            state, members = "nocb", ["nocb_head"]
+        offset_cblist = GefUtil.offsetof("rcu_data", "cblist")
+        if offset_cblist is None:
+            offset_cblist = GefUtil.offsetof("rcu_data", "nxtlist")
+        offsets = [GefUtil.offsetof("rcu_data", member) for member in members]
+        if offset_cblist is not None and None not in offsets:
+            positions = []
+            for offset in offsets:
+                positions.append(offset - offset_cblist)
+        else:
+            # nocb_gp_tail is set only on the offloaded cpus before v5.4, so the pairs of all cpus are collected
+            positions = set()
+            static = address - self.percpu.get_offset(0)
+            for _cpu, list_head in self.percpu.possible_addrs_of(static):
+                words = self.read_words(list_head + begin, end - begin)
+                if words is None:
+                    continue
+                for i in self.find_list_heads(list_head + begin, words, 1):
+                    positions.add(begin + i * ptrsize)
+            # the window may reach the next per-cpu variable, which has such a pair too (e.g. softnet_data.output_queue)
+            positions = sorted(positions)[:len(members)]
+        for position in positions:
+            lists = self.read_percpu_lists(address + position, 1, [state])
+            if lists is None:
+                continue
+            for cpu, list_head, entries in lists:
+                queue = {"kind": "rcu", "name": name + " (offloaded)", "cpu": cpu, "address": list_head, "entries": entries}
+                self.queues.append(queue)
+        return
+
+    def find_krc(self, start, words):
+        """Add the queues of the per-cpu kfree_rcu_cpu (krc, v5.7~), which batch the objects of kvfree_rcu().
+        krc is found by monitor_work.work.func, which is kfree_rcu_monitor, and krw_arr[].krcp, which points back to
+        the top of krc (KFREE_N_BATCHES is 2).
+
+        struct kfree_rcu_cpu {
+            struct rcu_head *head;
+            struct kfree_rcu_bulk_data *bhead; // v5.7~v5.8, `bkvhead[FREE_N_CHANNELS]` v5.9~v6.2
+            struct kfree_rcu_bulk_data *bcached; // v5.7~v5.8
+            unsigned long head_gp_snap; // v6.3~
+            atomic_t head_count; // v6.3~
+            struct list_head bulk_head[FREE_N_CHANNELS]; // v6.3~
+            atomic_t bulk_count[FREE_N_CHANNELS]; // v6.3~
+            struct kfree_rcu_cpu_work {
+                struct rcu_work rcu_work;
+                struct rcu_head *head_free;
+                struct rcu_gp_oldstate head_free_gp_snap; // v6.5~ (2 words with Tree RCU)
+                struct kfree_rcu_bulk_data *bhead_free; // v5.7~v5.8, `bkvhead_free[FREE_N_CHANNELS]` v5.9~v6.2
+                struct list_head bulk_head_free[FREE_N_CHANNELS]; // v6.3~
+                struct kfree_rcu_cpu *krcp;
+            } krw_arr[KFREE_N_BATCHES];
+            raw_spinlock_t lock;
+            struct delayed_work monitor_work;
+            ...
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        monitors = set(Ksym.get_addrs("kfree_rcu_monitor"))
+        if not monitors:
+            return
+        monitor = None
+        for i, word in enumerate(words):
+            if word in monitors:
+                monitor = i
+                break
+        if monitor is None:
+            self.meta.append(("warn", "krc: Not found"))
+            return
+
+        # krcp is the only pointer to the words before itself, except a list_head that points to itself
+        window = max(0, monitor - 0x400 // ptrsize)
+        counts = {}
+        for i in range(window, monitor):
+            word = words[i]
+            if word & (ptrsize - 1):
+                continue
+            if start + window * ptrsize <= word < start + i * ptrsize:
+                counts.setdefault(word, []).append(i)
+        backlinks = []
+        for top, indexes in counts.items():
+            if len(indexes) == 2:
+                backlinks.append((top, indexes))
+        if len(backlinks) != 1:
+            self.meta.append(("warn", "krc: Not found (no unique krw_arr[].krcp)"))
+            return
+        top, krcp_indexes = backlinks[0]
+        krcp_offsets = [i * ptrsize - (top - start) for i in krcp_indexes]
+        self.meta.append(("info", "krc: {:#x} (krw_arr[].krcp: {:s})".format(
+            top, ", ".join("+{:#x}".format(offset) for offset in krcp_offsets),
+        )))
+
+        static = top - self.percpu.get_offset(0)
+        for cpu, krc in self.percpu.possible_addrs_of(static):
+            if any(read_int_from_memory(krc + offset, safe=True) != krc for offset in krcp_offsets):
+                self.incomplete.append("krc of cpu{:d} at {:#x} does not have krw_arr[].krcp".format(cpu, krc))
+                continue
+            entries = self.read_krc(cpu, krc, krcp_offsets)
+            self.queues.append({"kind": "krc", "name": "krc", "cpu": cpu, "address": krc, "entries": entries})
+        return
+
+    def read_krc(self, cpu, krc, krcp_offsets):
+        """Return the entries of krc of `cpu`. krc itself batches the new objects, and each krw_arr[] holds a batch
+        waiting for the grace period, which `krcp_offsets` (the offsets of krw_arr[].krcp) tell."""
+        ptrsize = current_arch.ptrsize
+        # the version tells the layout first, but a merge-window build keeps the previous version
+        # (e.g. 6.2.0-13219 with bulk_head[] of v6.3), so bulk_head[0], which is a list_head of v6.3~, is checked
+        if self.kversion < "6.3":
+            bulk_head = krc + ptrsize * 3
+            try:
+                is_list = is_double_link_list(bulk_head)
+            except (gdb.MemoryError, OverflowError):
+                is_list = False
+            if not is_list:
+                layout = "v5.9"
+                if self.kversion < "5.9":
+                    layout = "v5.7"
+            else:
+                layout = "v6.3"
+        elif self.kversion < "6.5":
+            layout = "v6.3"
+        else:
+            layout = "v6.5"
+
+        # the members around krw_arr[].krcp, and kvfree_rcu_bulk_data (nr_records and records[])
+        if layout == "v5.7":
+            # a channel of kfree_rcu_bulk_data linked by next
+            channels = "pointer"
+            offsets_bulk = [ptrsize]
+            head_free = -ptrsize * 2
+            offsets_bulk_free = [-ptrsize]
+            # records[KFREE_BULK_MAX_ENTR] is followed by next, and they fill up the page
+            offset_nr, offset_records, offset_next = 0, ptrsize, get_pagesize() - ptrsize * 2
+        elif layout == "v5.9":
+            # 2 channels (kmalloc and vmalloc) of kvfree_rcu_bulk_data linked by next
+            channels = "pointer"
+            offsets_bulk = [ptrsize, ptrsize * 2]
+            head_free = -ptrsize * 3
+            offsets_bulk_free = [-ptrsize * 2, -ptrsize]
+            offset_nr, offset_records, offset_next = 0, ptrsize * 2, ptrsize
+        elif layout == "v6.3":
+            # 2 channels of list_head, and kvfree_rcu_bulk_data has gp_snap before nr_records
+            channels = "list"
+            offsets_bulk = [ptrsize * 3, ptrsize * 5]
+            head_free = -ptrsize * 5
+            offsets_bulk_free = [-ptrsize * 4, -ptrsize * 2]
+            offset_nr, offset_records, offset_next = ptrsize * 3, ptrsize * 4, None
+        else:
+            # head_free_gp_snap is added, and both gp_snap are rcu_gp_oldstate (rcu_gp_seq in v7.3~)
+            channels = "list"
+            offsets_bulk = [ptrsize * 3, ptrsize * 5]
+            head_free = -ptrsize * 7
+            offsets_bulk_free = [-ptrsize * 4, -ptrsize * 2]
+            offset_nr, offset_records, offset_next = ptrsize * 4, ptrsize * 5, None
+
+        sources = [(krc, 0, offsets_bulk, "batch")]
+        for offset in krcp_offsets:
+            sources.append((krc + offset, head_free, offsets_bulk_free, "wait"))
+        entries = []
+        for base, offset_head, offsets_channel, state in sources:
+            entries.extend(self.read_kvfree_head(read_int_from_memory(base + offset_head, safe=True), state))
+            for offset in offsets_channel:
+                if channels == "list":
+                    bnodes = self.read_list(base + offset)
+                else:
+                    bnodes = []
+                    bnode = read_int_from_memory(base + offset, safe=True)
+                    while bnode:
+                        if not is_valid_addr(bnode) or len(bnodes) >= 0x1000:
+                            bnodes = None
+                            break
+                        bnodes.append(bnode)
+                        bnode = read_int_from_memory(bnode + offset_next, safe=True)
+                if bnodes is None:
+                    self.incomplete.append("the bulk list of krc of cpu{:d} is broken".format(cpu))
+                    continue
+                for bnode in bnodes:
+                    nr_records = read_int_from_memory(bnode + offset_nr, safe=True)
+                    # the records fill up to the page
+                    if nr_records is None or nr_records > get_pagesize() // ptrsize:
+                        self.incomplete.append("kvfree_rcu_bulk_data at {:#x} is broken".format(bnode))
+                        continue
+                    data = read_memory(bnode + offset_records, nr_records * ptrsize, safe=True)
+                    if data is None:
+                        self.incomplete.append("kvfree_rcu_bulk_data at {:#x} is broken".format(bnode))
+                        continue
+                    for pointer in slice_unpack(data, ptrsize):
+                        entries.append({"rcu_head": None, "func": None, "state": state, "object": pointer})
+        return entries
+
+    def read_kvfree_head(self, head, state):
+        """Return the entries of the objects linked by rcu_head from `head`, which kvfree_rcu() could not batch into
+        kvfree_rcu_bulk_data."""
+        ptrsize = current_arch.ptrsize
+        entries = []
+        seen = set()
+        node = head
+        while node and node not in seen:
+            if len(entries) >= self.MAX_ENTRIES:
+                break
+            data = read_memory(node, ptrsize * 2, safe=True)
+            if data is None:
+                self.incomplete.append("the rcu_head list of krc is broken at {:#x}".format(node))
+                break
+            next_node, func = slice_unpack(data, ptrsize)
+            seen.add(node)
+            # rcu_head.func has the offset of rcu_head before v6.3, then the object itself.
+            # v7.3~ has only `next` (kvfree_rcu_head), so the object is the slab object that contains it.
+            if self.kversion >= "7.3":
+                pointer = None
+            elif func < self.KFREE_OFFSET_MAX:
+                pointer = node - func
+            else:
+                pointer = func
+            entries.append({"rcu_head": node, "func": None, "state": state, "object": pointer})
+            node = next_node
+        return entries
+
+    def find_tiny_srcu(self, start, words):
+        """Add the queues of the static srcu_struct of Tiny SRCU found in `words` of .data/.bss.
+        srcu_work.func is srcu_drive_gp, and the list is just before srcu_work.
+
+        struct srcu_struct {
+            ...
+            struct rcu_head *srcu_cb_head;
+            struct rcu_head **srcu_cb_tail;
+            struct work_struct srcu_work; // data, entry, func
+            ...
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        drives = set(Ksym.get_addrs("srcu_drive_gp"))
+        if not drives:
+            return
+        for i, word in enumerate(words):
+            if word not in drives:
+                continue
+            if i < 5:
+                continue
+            address = start + (i - 5) * ptrsize
+            entries = self.read_callback_list(address, 1, ["wait"])
+            if entries is None:
+                continue
+            name = self.get_list_name(address, "srcu_struct")
+            self.meta.append(("info", "{:s}: {:#x} (Tiny SRCU)".format(name, address)))
+            self.queues.append({"kind": "srcu", "name": name, "cpu": None, "address": address, "entries": entries})
+        return
+
+    def find_classic_srcu(self, region):
+        """Add the queues of the static srcu_struct before Tree SRCU (v3.11~v4.11) found in .data/.bss.
+        work.work.func is process_srcu, and the 4 batches are just before work.
+
+        struct srcu_struct {
+            unsigned long completed;
+            struct srcu_struct_array __percpu *per_cpu_ref;
+            spinlock_t queue_lock;
+            bool running;
+            struct rcu_batch batch_queue; // head, tail
+            struct rcu_batch batch_check0;
+            struct rcu_batch batch_check1;
+            struct rcu_batch batch_done;
+            struct delayed_work work; // work.data, work.entry, work.func, ...
+            ...
+        };
+        """
+        ptrsize = current_arch.ptrsize
+        # Tree SRCU and Tiny SRCU replaced it in v4.12
+        if self.kversion >= "4.12":
+            return
+        processes = set(Ksym.get_addrs("process_srcu"))
+        if not processes:
+            return
+        # the per-cpu unit is already .data/.bss with CONFIG_SMP=n
+        if not self.percpu.is_up:
+            region = self.read_scan_region(data_bss=True)
+        if region is None:
+            return
+        start, words = region
+        for i, word in enumerate(words):
+            if word not in processes:
+                continue
+            if i < 11:
+                continue
+            entries = []
+            for n, state in enumerate(["queue", "check0", "check1", "done"]):
+                batch = self.read_callback_list(start + (i - 11 + n * 2) * ptrsize, 1, [state])
+                if batch is None:
+                    break
+                entries.extend(batch)
+            else:
+                address = start + (i - 11) * ptrsize
+                name = self.get_list_name(address, "srcu_struct")
+                self.meta.append(("info", "{:s}: {:#x} (batch_queue)".format(name, address)))
+                self.queues.append({"kind": "srcu", "name": name, "cpu": None, "address": address, "entries": entries})
+        return
+
+    def find_rcu_tasks(self):
+        """Add the queues of Tasks RCU before it became per-cpu (v3.18~v5.16)."""
+        # v5.17~ has the per-cpu rcu_tasks_percpu
+        if self.kversion >= "5.17":
+            return
+        for call_func in ["call_rcu_tasks", "call_rcu_tasks_rude", "call_rcu_tasks_trace"]:
+            if not Ksym.get_addrs(call_func):
+                continue
+            found = KernelAddressHeuristicFinder.find_rcu_tasks_cbs(call_func)
+            if found is None:
+                self.meta.append(("warn", "the callback list of {:s}: Not found".format(call_func)))
+                continue
+            cbs_head, cbs_tail = found
+            self.meta.append(("info", "{:s}: cbs_head {:#x}, cbs_tail {:#x}".format(call_func, cbs_head, cbs_tail)))
+            head = read_int_from_memory(cbs_head)
+            tail = read_int_from_memory(cbs_tail)
+            entries = self.walk_callbacks(cbs_head, head, [tail], ["wait"])
+            if entries is None:
+                self.incomplete.append("the callback list of {:s} is broken".format(call_func))
+                continue
+            name = call_func[len("call_"):]
+            self.queues.append({"kind": "tasks", "name": name, "cpu": None, "address": cbs_head, "entries": entries})
+        return
+
+    def get_slub(self):
+        """Return the SLUB resolver for the sheaves, or None."""
+        if self.kslub is None:
+            self.kslub = False
+            if Kernel.get_slab_type() == "SLUB":
+                kslub = Kernel.slub()
+                if kslub.initialize() and kslub.sheaves_enabled:
+                    self.kslub = kslub
+                else:
+                    self.meta.append(("warn", "SLUB sheaves: Not resolved"))
+        if self.kslub is False:
+            return None
+        return self.kslub
+
+    def read_sheaf(self, sheaf):
+        """Return (kmem_cache, objects) of slab_sheaf at `sheaf`, or None if it is broken."""
+        ptrsize = current_arch.ptrsize
+        kslub = self.get_slub()
+        cache = read_int_from_memory(sheaf + kslub.slab_sheaf_offset_kmem_cache, safe=True)
+        size = read_int32_from_memory(sheaf + kslub.slab_sheaf_offset_size, safe=True)
+        if cache is None or size is None:
+            return None
+        # a sheaf has at most sheaf_capacity objects, which is far less than this
+        if size > 0x1000:
+            return None
+        data = read_memory(sheaf + kslub.slab_sheaf_offset_objects, size * ptrsize, safe=True)
+        if data is None:
+            return None
+        return cache, slice_unpack(data, ptrsize)
+
+    def find_rcu_free_sheaves(self):
+        """Add the queues of slub_percpu_sheaves.rcu_free (v6.18~), which batches the objects of kfree_rcu() until it is
+        full, then it is queued as a callback."""
+        ptrsize = current_arch.ptrsize
+        if self.kversion < "6.18":
+            return
+        kslub = self.get_slub()
+        if kslub is None:
+            return
+        offset_rcu_free = GefUtil.offsetof("slub_percpu_sheaves", "rcu_free")
+        if offset_rcu_free is None:
+            if kslub.slub_percpu_sheaves_offset_main is None:
+                self.meta.append(("warn", "offsetof(slub_percpu_sheaves, rcu_free): Not found"))
+                return
+            # main, spare, rcu_free
+            offset_rcu_free = kslub.slub_percpu_sheaves_offset_main + ptrsize * 2
+        self.meta.append(("info", "offsetof(slub_percpu_sheaves, rcu_free): {:#x}".format(offset_rcu_free)))
+        for cache in kslub.walk_caches([], [], names_only=True)[1:]:
+            for cpu in range(kslub.ncpus):
+                pcs = kslub.get_slub_percpu_sheaves(cache["address"], cpu)
+                if pcs is None:
+                    continue
+                sheaf = read_int_from_memory(pcs + offset_rcu_free, safe=True)
+                if not sheaf:
+                    continue
+                parsed = self.read_sheaf(sheaf)
+                if parsed is None:
+                    self.incomplete.append("the rcu_free sheaf of {:s} at {:#x} is broken".format(cache["name"], sheaf))
+                    continue
+                _, objects = parsed
+                entries = []
+                for pointer in objects:
+                    entries.append({"rcu_head": None, "func": None, "state": "batch", "object": pointer})
+                name = "rcu_free sheaf of {:s}".format(cache["name"])
+                self.queues.append({"kind": "sheaf", "name": name, "cpu": cpu, "address": sheaf, "entries": entries})
+        return
+
+    def expand_sheaves(self):
+        """Add "sheaf_cache" and "sheaf_objects" to each callback of a full sheaf of the objects of kfree_rcu()."""
+        callbacks = set()
+        for name in self.SHEAF_CALLBACKS:
+            callbacks.update(Ksym.get_addrs(name))
+        if not callbacks:
+            return
+        for queue in self.queues:
+            for entry in queue["entries"]:
+                if entry["func"] not in callbacks:
+                    continue
+                if self.get_slub() is None:
+                    return
+                parsed = self.read_sheaf(entry["rcu_head"])
+                if parsed is None:
+                    self.incomplete.append("the sheaf at {:#x} is broken".format(entry["rcu_head"]))
+                    continue
+                cache, objects = parsed
+                entry["sheaf_cache"] = self.kslub.get_name(cache)
+                entry["sheaf_objects"] = objects
+        return
+
+
+@register_command
+class KernelRcuCommand(GenericCommand, BufferingOutput):
+    """Display the RCU callbacks waiting for a grace period. Useful for tracing delayed frees."""
+
+    _cmdline_ = "krcu"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("--meta", action="store_true", help="display offset information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
+    _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "Lists the callbacks of call_rcu(), call_srcu() and call_rcu_tasks*(), and the objects of kfree_rcu() and",
+        "kvfree_rcu(). They are freed after a grace period (GP) ends, which is later than the call.",
+        "",
+        "state:",
+        "  done                : the GP has ended, and the callback is invoked soon.",
+        "  wait                : waiting for the current GP.",
+        "  next-ready          : waiting for the next GP.",
+        "  next                : no GP is assigned yet.",
+        "  bypass, nocb        : queued for an offloaded cpu (rcu_nocbs=).",
+        "  queue, check0/1     : the batches of SRCU before Tree SRCU, which are processed in this order.",
+        "  batch               : kvfree_rcu() has not requested a GP yet.",
+        "object: the slab object that contains rcu_head, or the pointer that kfree_rcu() and kvfree_rcu() free.",
+        "",
+        "Simplified callback list (rcu_data, srcu_data and rcu_tasks_percpu are per-cpu):",
+        "",
+        "+-rcu_data----+      +-rcu_head-+    +-rcu_head-+    +-rcu_head-+",
+        "| ...         |  +-->| next     |--->| next     |--->| next     |--->NULL",
+        "| cblist      |  |   | func     |    | func     |    | func     |",
+        "|   head      |--+   +----------+    +----------+    +----------+",
+        "|   tails[0]  |--+         ^                               ^",
+        "|   tails[1]  |--|---------+                               |",
+        "|   tails[2]  |--|-----------------------------------------+",
+        "|   tails[3]  |--|-----------------------------------------+",
+        "| ...         |  +--->&cblist.head while the segment is empty",
+        "+-------------+",
+        "",
+        "Each tail points to the last callback of its segment: done, wait, next-ready and next.",
+        "",
+        "Simplified kvfree_rcu() batches:",
+        "",
+        "+-krc (per-cpu)-------+",
+        "| head                |--->rcu_head--->rcu_head--->...       ==> state `batch`",
+        "| bulk_head[2]        |--->kvfree_rcu_bulk_data.records[]    ==> state `batch`",
+        "| krw_arr[2]          |",
+        "|   rcu_work          |--->queued as a callback (rcu_work_rcufn)",
+        "|   head_free         |--->rcu_head--->rcu_head--->...       ==> state `wait`",
+        "|   bulk_head_free[2] |--->kvfree_rcu_bulk_data.records[]    ==> state `wait`",
+        "|   krcp              |",
+        "| monitor_work        |",
+        "+---------------------+",
+        "",
+        "+-kmem_cache--+     +-slub_percpu_sheaves-+     +-slab_sheaf-+",
+        "| cpu_sheaves |---->| main                |     | rcu_head   |--->queued as a callback (rcu_free_sheaf)",
+        "| ...         |     | spare               |     | cache      |    when it is full",
+        "+-------------+     | rcu_free            |---->| size       |",
+        "                    +---------------------+     | objects[]  |--->objects  ==> state `batch`",
+        "                                                +------------+",
+    ])
+
+    # the order of the queues to display
+    KIND_ORDER = {"rcu": 0, "tiny": 1, "srcu": 2, "tasks": 3, "krc": 4, "sheaf": 5}
+
+    def resolve_object(self, address):
+        """Return (the slab object that contains `address`, the name of its cache), or (None, None)."""
+        obj = Kernel.get_slab_object(address)
+        if obj is None:
+            return None, None
+        if obj["object_base"] is None:
+            return None, None
+        return obj["object_base"], obj["name"]
+
+    def dump_queue(self, queue):
+        width = AddressUtil.get_format_address_width()
+        rows = []
+        for entry in queue["entries"]:
+            if entry["rcu_head"] is None:
+                rcu_head = "-"
+            else:
+                rcu_head = "{:#0{w}x}".format(entry["rcu_head"], w=width)
+            # the object to be freed is given, or it contains rcu_head
+            if entry["object"] is not None:
+                _, cache = self.resolve_object(entry["object"])
+                obj = entry["object"]
+            else:
+                obj, cache = self.resolve_object(entry["rcu_head"])
+            if cache is None:
+                cache = "-"
+            if obj is None:
+                obj = "-"
+            else:
+                obj = "{:#0{w}x}".format(obj, w=width)
+            # what kvfree_rcu() batches is not a callback
+            if entry["func"] is None:
+                if queue["kind"] == "sheaf":
+                    callback = "kfree_rcu"
+                else:
+                    callback = "kvfree_rcu"
+            elif entry["func"] < KernelRcu.KFREE_OFFSET_MAX:
+                callback = "kfree_rcu (rcu_head at +{:#x})".format(entry["func"])
+            else:
+                callback = Symbol.format(entry["func"], missing="NO_SYMBOL", ksym="prefer", show_address=True, nocolor=True)
+            rows.append([rcu_head, entry["state"], obj, cache, callback])
+
+            # the objects of kfree_rcu() in a full sheaf wait with it
+            if "sheaf_objects" in entry:
+                for pointer in entry["sheaf_objects"]:
+                    obj = "{:#0{w}x}".format(pointer, w=width)
+                    rows.append(["-", entry["state"], obj, entry["sheaf_cache"], "kfree_rcu (in the sheaf)"])
+
+        if queue["cpu"] is None:
+            title = "{:s}: {:#x}".format(queue["name"], queue["address"])
+        else:
+            title = "cpu{:d} {:s}: {:#x}".format(queue["cpu"], queue["name"], queue["address"])
+        self.out.append(titlify("{:s} (entries: {:d})".format(title, len(queue["entries"]))))
+        cache_width = max([20] + [len(row[3]) for row in rows])
+        fmt = "{:<{w}s} {:<10s} {:<{w}s} {:<{cw}s} {:s}"
+        if not self.args.quiet:
+            legend = ["rcu_head", "state", "object", "cache", "callback"]
+            self.out.append(GefUtil.make_legend(fmt.format(*legend, w=width, cw=cache_width)))
+        for row in rows:
+            self.out.append(fmt.format(*row, w=width, cw=cache_width).rstrip())
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.args = args
+        # the version is detected at the first command, which takes a while
+        self.quiet_info("Wait for memory scan")
+        kversion = Kernel.version()
+        if kversion is None:
+            err("Could not find Linux kernel")
+            return
+        if kversion < "3.0":
+            err("Unsupported before v3.0")
+            return
+
+        krcu = Kernel.rcu()
+        ret = krcu.initialize()
+        if args.meta or not ret:
+            for func, line in Kernel.export_meta(self, krcu.meta):
+                func(line)
+        if not ret:
+            err("Could not find any queue of RCU")
+            return
+
+        if args.meta:
+            counts = {}
+            for queue in krcu.queues:
+                counts[queue["kind"]] = counts.get(queue["kind"], 0) + 1
+            for kind in sorted(counts, key=lambda x: self.KIND_ORDER[x]):
+                self.quiet_info("{:s} queues: {:d}".format(kind, counts[kind]))
+            for reason in krcu.incomplete:
+                self.quiet_warn("Incomplete: {:s}".format(reason))
+            return
+
+        def sort_key(queue):
+            if queue["cpu"] is None:
+                cpu = -1
+            else:
+                cpu = queue["cpu"]
+            return self.KIND_ORDER[queue["kind"]], queue["name"], cpu
+
+        self.out = []
+        total = 0
+        for queue in sorted(krcu.queues, key=sort_key):
+            if not queue["entries"]:
+                continue
+            self.dump_queue(queue)
+            total += len(queue["entries"])
+        self.quiet_info_add_out("{:d} entries in {:d} queues".format(total, len(krcu.queues)))
+        for reason in krcu.incomplete:
+            self.warn_add_out("Incomplete: {:s}".format(reason))
+        self.print_output(check_terminal_size=True)
         return
 
 
