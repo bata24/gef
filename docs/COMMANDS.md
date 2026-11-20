@@ -2845,7 +2845,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -v, --verbose         print all elements. (default: outputs up to 100)
-  -i, --increase-limit  increase rounding limit from 128 bytes to 4096 bytes.
+  -i, --increase-limit  increase rounding limit from 128 to 4096 bytes.
   -n, --no-pager        do not use the pager.
 ```
 
@@ -2905,7 +2905,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -v, --verbose         print all elements. (default: outputs up to 100)
-  -i, --increase-limit  increase rounding limit from 128 bytes to 4096 bytes.
+  -i, --increase-limit  increase rounding limit from 128 to 4096 bytes.
   -n, --no-pager        do not use the pager.
 ```
 
