@@ -23256,8 +23256,8 @@ class XtapCommand(GenericCommand):
 
     _note_ = "\n".join([
         "Hooked syscalls:",
-        "  read-like: read, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv",
-        "  write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev",
+        "  read-like: read, recv, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv",
+        "  write-like: write, send, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev",
         "  i386: socketcall suboperations for socket transfers",
         "",
         "- Relies on `catch syscall`.",
@@ -23268,6 +23268,7 @@ class XtapCommand(GenericCommand):
 
     syscall_spec = {
         "read":             ("in",  "buf"),
+        "recv":             ("in",  "buf"),
         "recvfrom":         ("in",  "buf"),
         "pread64":          ("in",  "buf"),
         "readv":            ("in",  "iovec"),
@@ -23277,6 +23278,7 @@ class XtapCommand(GenericCommand):
         "recvmmsg":         ("in",  "mmsghdr"),
         "recvmmsg_time64":  ("in",  "mmsghdr"),
         "write":            ("out", "buf"),
+        "send":             ("out", "buf"),
         "sendto":           ("out", "buf"),
         "pwrite64":         ("out", "buf"),
         "writev":           ("out", "iovec"),
@@ -23459,6 +23461,8 @@ class XtapCommand(GenericCommand):
             return "$orig_rax"
         if is_x86_32():
             return "$orig_eax"
+        if is_arm32() or is_arm64():
+            return current_arch.syscall_register # r7 and x8 survive the syscall
         return None
 
     def current_syscall_number(self):
@@ -23515,10 +23519,16 @@ class XtapCommand(GenericCommand):
         reason = getattr(event, "details", {}).get("reason")
         entry_marker = False
         if name in self.hooked_set:
-            ret_reg = self.syscall_table.name_table[name].ret_regs[0]
-            retval = get_register(ret_reg)
-            if retval is not None:
-                entry_marker = u2i(retval, current_arch.ptrsize * 8) == -38 # Linux ENOSYS at syscall entry
+            # the kernel leaves a mark of the entry stop in the registers
+            if is_x86_32() or is_x86_64():
+                ret_reg = self.syscall_table.name_table[name].ret_regs[0]
+                retval = get_register(ret_reg)
+                if retval is not None:
+                    entry_marker = u2i(retval, current_arch.ptrsize * 8) == -38 # Linux ENOSYS at syscall entry
+            elif is_arm32():
+                entry_marker = get_register("$r12") == 0 # ip is 0 at the entry stop and 1 at the exit stop
+            elif is_arm64():
+                entry_marker = get_register("$x7") == 0 # x7 is 0 at the entry stop and 1 at the exit stop
         is_return = not entry_marker
         if not is_remote_debug() and reason == "syscall-return":
             is_return = True
@@ -23630,7 +23640,9 @@ class XtapCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "pin", "kgdb", "vmware", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    # gdbserver catches syscalls only on x86 and ARM. GDB itself lacks `catch syscall` on SH4, M68K, ALPHA, HPPA, OR1K,
+    # MICROBLAZE, XTENSA and CSKY, and on MIPS it takes the number from v0, which holds the result at the return.
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         self.target_fds = list(args.fd)
         self.maxlen = args.maxlen

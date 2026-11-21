@@ -2133,8 +2133,8 @@ xtap 4 --max 0x40    # tap fd 4, dump at most 0x40 bytes per transfer
 
 ```text
 Hooked syscalls:
-  read-like: read, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv
-  write-like: write, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev
+  read-like: read, recv, recvfrom, recvmsg, recvmmsg, recvmmsg_time64, pread64, preadv, preadv2, readv
+  write-like: write, send, sendto, sendmsg, sendmmsg, pwrite64, pwritev, pwritev2, writev
   i386: socketcall suboperations for socket transfers
 
 - Relies on `catch syscall`.
