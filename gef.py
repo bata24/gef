@@ -19962,19 +19962,38 @@ class LinuxSignal:
             KERNEL_NAMES[number] = "SIGRTMAX"
 
     # the libc reserves the first RT signals for its internal use and moves its SIGRTMIN after them
-    LIBC_NAMES = {
+    LIBC_RESERVED_NAMES = {
         "glibc": {32: "SIGCANCEL", 33: "SIGSETXID"},
         "musl": {32: "SIGTIMER", 33: "SIGCANCEL", 34: "SIGSYNCCALL"},
     }
-    for libc_names, rtmin in [(LIBC_NAMES["glibc"], 34), (LIBC_NAMES["musl"], 35)]:
-        libc_names[rtmin] = "SIGRTMIN"
-        for number in range(rtmin + 1, 50):
-            libc_names[number] = "SIGRTMIN+{:d}".format(number - rtmin)
-        for number in range(50, 65):
-            if number < 64:
-                libc_names[number] = "SIGRTMAX-{:d}".format(64 - number)
-            else:
-                libc_names[number] = "SIGRTMAX"
+
+    # the architectures numbering the classic signals 1-31 differently (arch/*/include/uapi/asm/signal.h)
+    ARCH_NAMES = {
+        "MIPS": [
+            "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+            "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGUSR1",
+            "SIGUSR2", "SIGCHLD", "SIGPWR", "SIGWINCH", "SIGURG", "SIGIO", "SIGSTOP", "SIGTSTP",
+            "SIGCONT", "SIGTTIN", "SIGTTOU", "SIGVTALRM", "SIGPROF", "SIGXCPU", "SIGXFSZ",
+        ],
+        "ALPHA": [
+            "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+            "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGURG",
+            "SIGSTOP", "SIGTSTP", "SIGCONT", "SIGCHLD", "SIGTTIN", "SIGTTOU", "SIGIO", "SIGXCPU",
+            "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGPWR", "SIGUSR1", "SIGUSR2",
+        ],
+        "SPARC": [
+            "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGEMT", "SIGFPE",
+            "SIGKILL", "SIGBUS", "SIGSEGV", "SIGSYS", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGURG",
+            "SIGSTOP", "SIGTSTP", "SIGCONT", "SIGCHLD", "SIGTTIN", "SIGTTOU", "SIGIO", "SIGXCPU",
+            "SIGXFSZ", "SIGVTALRM", "SIGPROF", "SIGWINCH", "SIGPWR", "SIGUSR1", "SIGUSR2",
+        ],
+        "HPPA": [
+            "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGSTKFLT", "SIGFPE",
+            "SIGKILL", "SIGBUS", "SIGSEGV", "SIGXCPU", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGUSR1",
+            "SIGUSR2", "SIGCHLD", "SIGPWR", "SIGVTALRM", "SIGPROF", "SIGIO", "SIGWINCH", "SIGSTOP",
+            "SIGTSTP", "SIGCONT", "SIGTTIN", "SIGTTOU", "SIGURG", "SIGXFSZ", "SIGSYS",
+        ],
+    }
 
     FLAGS = (
         (0x0000_0001, "SA_NOCLDSTOP"),
@@ -19990,14 +20009,79 @@ class LinuxSignal:
         (0x8000_0000, "SA_RESETHAND"),
     )
 
+    # the architectures defining the flags differently
+    ARCH_FLAGS = {
+        "MIPS": (
+            (0x0000_0001, "SA_NOCLDSTOP"),
+            (0x0000_0008, "SA_SIGINFO"),
+            (0x0000_0400, "SA_UNSUPPORTED"),
+            (0x0000_0800, "SA_EXPOSE_TAGBITS"),
+            (0x0001_0000, "SA_NOCLDWAIT"),
+            (0x0800_0000, "SA_ONSTACK"),
+            (0x1000_0000, "SA_RESTART"),
+            (0x4000_0000, "SA_NODEFER"),
+            (0x8000_0000, "SA_RESETHAND"),
+        ),
+        "ALPHA": (
+            (0x0000_0001, "SA_ONSTACK"),
+            (0x0000_0002, "SA_RESTART"),
+            (0x0000_0004, "SA_NOCLDSTOP"),
+            (0x0000_0008, "SA_NODEFER"),
+            (0x0000_0010, "SA_RESETHAND"),
+            (0x0000_0020, "SA_NOCLDWAIT"),
+            (0x0000_0040, "SA_SIGINFO"),
+            (0x0000_0400, "SA_UNSUPPORTED"),
+            (0x0000_0800, "SA_EXPOSE_TAGBITS"),
+        ),
+        "SPARC": (
+            (0x0000_0001, "SA_ONSTACK"),
+            (0x0000_0002, "SA_RESTART"),
+            (0x0000_0004, "SA_RESETHAND"),
+            (0x0000_0008, "SA_NOCLDSTOP"),
+            (0x0000_0020, "SA_NODEFER"),
+            (0x0000_0100, "SA_NOCLDWAIT"),
+            (0x0000_0200, "SA_SIGINFO"),
+            (0x0000_0400, "SA_UNSUPPORTED"),
+            (0x0000_0800, "SA_EXPOSE_TAGBITS"),
+        ),
+        "HPPA": (
+            (0x0000_0001, "SA_ONSTACK"),
+            (0x0000_0004, "SA_RESETHAND"),
+            (0x0000_0008, "SA_NOCLDSTOP"),
+            (0x0000_0010, "SA_SIGINFO"),
+            (0x0000_0020, "SA_NODEFER"),
+            (0x0000_0040, "SA_RESTART"),
+            (0x0000_0080, "SA_NOCLDWAIT"),
+            (0x0000_0400, "SA_UNSUPPORTED"),
+            (0x0000_0800, "SA_EXPOSE_TAGBITS"),
+        ),
+    }
+
     # the flags that only the kernel sees
     KERNEL_FLAGS = (
         (0x0080_0000, "SA_IMMUTABLE"),
     )
 
     @classmethod
+    def get_libc_names(cls, libc, rtmax=64):
+        """Return the libc names of the RT signals; SIGRTMIN+n and SIGRTMAX-n meet in the middle like `kill -l`."""
+        names = dict(cls.LIBC_RESERVED_NAMES.get(libc, {}))
+        if not names:
+            return names
+        rtmin = max(names) + 1
+        middle = (rtmin + rtmax) // 2
+        names[rtmin] = "SIGRTMIN"
+        for number in range(rtmin + 1, middle + 1):
+            names[number] = "SIGRTMIN+{:d}".format(number - rtmin)
+        for number in range(middle + 1, rtmax):
+            names[number] = "SIGRTMAX-{:d}".format(rtmax - number)
+        names[rtmax] = "SIGRTMAX"
+        return names
+
+    @classmethod
     def format_flags(cls, flags, extra=()):
-        names, unknown = GefUtil.flags_to_names(flags, cls.FLAGS + tuple(extra))
+        flags_table = cls.ARCH_FLAGS.get(current_arch.arch, cls.FLAGS)
+        names, unknown = GefUtil.flags_to_names(flags, flags_table + tuple(extra))
         if unknown:
             names.append("{:#x}".format(unknown))
         if names:
@@ -20005,16 +20089,18 @@ class LinuxSignal:
         return "-"
 
     @classmethod
-    def format_mask(cls, mask, names=None, compact=False):
+    def format_mask(cls, mask, names=None, compact=False, nsig=64):
         if names is None:
             names = cls.NAMES
-        if compact and bin(mask & 0xffff_ffff_ffff_ffff).count("1") > 32:
+        full_mask = (1 << nsig) - 1
+        if compact and bin(mask & full_mask).count("1") > nsig // 2:
             # a mask made by sigfillset() is shown by the signals it lacks
-            missing = ~mask & 0xffff_ffff_ffff_ffff
+            missing = ~mask & full_mask
             if missing:
-                return "all except " + cls.format_mask(missing, names)
+                return "all except " + cls.format_mask(missing, names, nsig=nsig)
             return "all except none"
-        names = [names.get(number, "SIG{:d}".format(number)) for number in range(1, 65) if mask & (1 << (number - 1))]
+        numbers = range(1, nsig + 1)
+        names = [names.get(number, "SIG{:d}".format(number)) for number in numbers if mask & (1 << (number - 1))]
         if names:
             return ",".join(names)
         return "-"
@@ -20036,6 +20122,9 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         "Reads dispositions by running rt_sigaction in the inferior; seccomp may block or terminate it.",
     ])
 
+    # the architectures whose struct sigaction has sa_restorer (__ARCH_HAS_SA_RESTORER)
+    RESTORER_ARCHS = ("X86", "ARM", "ARM64", "PPC", "SPARC", "S390X", "SH4", "M68K", "XTENSA", "NIOS2", "ARC")
+
     @staticmethod
     def get_rt_sigaction_number():
         syscall_table = Syscall.get_syscall_table()
@@ -20050,29 +20139,46 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
 
     @staticmethod
     def get_layout():
-        if is_64bit():
-            return {"size": 32, "handler": 0, "flags": 8, "restorer": 16, "mask": 24}
-        return {"size": 20, "handler": 0, "flags": 4, "restorer": 8, "mask": 12}
-
-    @staticmethod
-    def unpack_word(data, offset):
-        size = current_arch.ptrsize
-        unpack = GefUtil.get_unpack(size)
-        return unpack(data[offset:offset + size])
+        # the kernel struct sigaction, whose layout compat_sigaction of a 32-bit process shares
+        ptrsize = current_arch.ptrsize
+        if is_mips32() or is_mips64() or is_mipsn32():
+            # the 32-bit flags come first (__ARCH_HAS_IRIX_SIGACTION), and the mask has 128 signals
+            return {"size": ptrsize * 2 + 16, "flags": 0, "flags_size": 4, "handler": ptrsize, "mask": ptrsize * 2, "nsig": 128}
+        layout = {"handler": 0, "flags": ptrsize, "flags_size": ptrsize, "mask": ptrsize * 2, "nsig": 64}
+        if current_arch.arch in SignalHandlersCommand.RESTORER_ARCHS:
+            layout["mask"] += ptrsize # sa_restorer
+        layout["size"] = layout["mask"] + 8
+        return layout
 
     def query(self, syscall_number, signal_number, address, layout):
         write_memory(address, b"\x00" * layout["size"])
-        state = ExecSyscall(syscall_number, [signal_number, 0, address, 8]).exec_code()
-        result = state["reg"][current_arch.return_register]
-        result = u2i(result, current_arch.ptrsize * 8)
-        if result != 0:
-            return result, None
+        sigsetsize = layout["nsig"] // 8
+        if is_alpha():
+            args = [signal_number, 0, address, sigsetsize, 0] # the restorer follows sigsetsize
+        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+            args = [signal_number, 0, address, 0, sigsetsize] # the restorer precedes sigsetsize
+        else:
+            args = [signal_number, 0, address, sigsetsize]
+        state = ExecSyscall(syscall_number, args).exec_code()
+        errno = ExecSyscall.get_errno(state)
+        if errno is not None:
+            return errno, None
 
         data = read_memory(address, layout["size"])
-        action = {name: self.unpack_word(data, offset) for name, offset in layout.items() if name != "size"}
-        if current_arch.ptrsize == 4:
-            action["mask"] = u64(data[layout["mask"]:layout["mask"] + 8])
-        return 0, action
+        ptrsize = current_arch.ptrsize
+        unpack = GefUtil.get_unpack(ptrsize)
+        unpack_flags = GefUtil.get_unpack(layout["flags_size"])
+        mask = 0
+        # sigset_t is an array of unsigned long, the lowest signals first
+        for i in range(layout["nsig"] // (ptrsize * 8)):
+            offset = layout["mask"] + i * ptrsize
+            mask |= unpack(data[offset:offset + ptrsize]) << (i * ptrsize * 8)
+        action = {
+            "handler": unpack(data[layout["handler"]:layout["handler"] + ptrsize]),
+            "flags": unpack_flags(data[layout["flags"]:layout["flags"] + layout["flags_size"]]),
+            "mask": mask,
+        }
+        return None, action
 
     @staticmethod
     def format_handler(handler):
@@ -20087,7 +20193,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_core_file():
@@ -20099,7 +20205,18 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
             return
 
         layout = self.get_layout()
-        address = current_arch.sp
+        libc = GefUtil.get_libc()
+        if current_arch.arch in LinuxSignal.ARCH_NAMES:
+            names = dict(enumerate(LinuxSignal.ARCH_NAMES[current_arch.arch], 1))
+        else:
+            names = {number: name for number, name in LinuxSignal.NAMES.items() if number < 32}
+        if layout["nsig"] == 128:
+            names.update(LinuxSignal.get_libc_names(libc, rtmax=127)) # the libc leaves the 128th signal unused
+        else:
+            names.update(LinuxSignal.get_libc_names(libc))
+
+        # below the stack pointer, since ExecSyscall restores the stack argument slots above it on MIPS o32
+        address = (current_arch.sp - 0x100) & ~0xf
         with ContextManager.temporary_memory(address, length=layout["size"], safe=True) as backup:
             if backup is None:
                 err("Could not reserve scratch space on the inferior stack")
@@ -20107,25 +20224,21 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
 
             actions = []
             with ContextManager.gdb_parameter("suppress-cli-notifications", "on", ignore_error=True):
-                for signal_number in range(1, 65):
-                    result, action = self.query(syscall_number, signal_number, address, layout)
-                    if result == -22 and signal_number in (9, 19): # SIGKILL and SIGSTOP cannot be queried.
-                        action = {"handler": 0, "flags": 0, "restorer": 0, "mask": 0}
-                    elif result != 0:
-                        err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, -result))
+                for signal_number in range(1, layout["nsig"] + 1):
+                    errno, action = self.query(syscall_number, signal_number, address, layout)
+                    if errno == 22 and names[signal_number] in ("SIGKILL", "SIGSTOP"): # they cannot be queried
+                        action = {"handler": 0, "flags": 0, "mask": 0}
+                    elif errno is not None:
+                        err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, errno))
                         return
                     actions.append((signal_number, action))
-
-        libc = GefUtil.get_libc()
-        names = {number: name for number, name in LinuxSignal.NAMES.items() if number < 32}
-        names.update(LinuxSignal.LIBC_NAMES.get(libc, {}))
 
         rows = []
         for signal_number, action in actions:
             rows.append((
                 str(signal_number), names.get(signal_number, "SIG{:d}".format(signal_number)),
                 self.format_handler(action["handler"]), LinuxSignal.format_flags(action["flags"]),
-                LinuxSignal.format_mask(action["mask"], names),
+                LinuxSignal.format_mask(action["mask"], names, nsig=layout["nsig"]),
             ))
 
         handler_width = max(30, max(len(Color.remove_color(row[2])) for row in rows))
@@ -100671,7 +100784,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for message in Kernel.mm().pop_warnings():
             self.quiet_warn(message)
         libc = info["libc"]
-        libc_names = LinuxSignal.LIBC_NAMES.get(libc, {})
+        libc_names = LinuxSignal.get_libc_names(libc)
         if libc:
             self.out.append(titlify("sighandlers of `{:s}` ({:s})".format(comm_string, libc)))
         else:
