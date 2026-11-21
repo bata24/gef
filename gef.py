@@ -15353,6 +15353,36 @@ def is_in_kernel():
         if priv is None:
             return False
         return priv == 1
+    elif is_mips32() or is_mips64():
+        sr = get_register("$sr")
+        if sr is None:
+            return False
+        # Status.EXL or Status.ERL forces the kernel mode
+        if sr & 0b110 != 0:
+            return True
+        return (sr >> 3) & 0b11 == 0 # Status.KSU (0 is the kernel)
+    elif is_ppc32() or is_ppc64():
+        msr = get_register("$msr")
+        if msr is None:
+            return False
+        return msr & (1 << 14) == 0 # MSR.PR
+    elif is_s390x():
+        pswm = get_register("$pswm")
+        if pswm is None:
+            return False
+        return (pswm >> 48) & 1 == 0 # PSW bit 15 (problem state)
+    elif is_loongarch64():
+        # CRMD.PLV is only in the monitor. The user (PLV3) cannot run in the DMW or the upper half of the address space,
+        # and the kernel runs only there.
+        pc = current_arch.pc
+        if pc is None:
+            return False
+        return AddressUtil.is_msb_on(pc)
+    elif is_sparc32():
+        psr = get_register("$psr")
+        if psr is None:
+            return False
+        return psr & 0x80 != 0 # PSR.S
     # All other architectures are considered userland.
     return False
 
@@ -48672,14 +48702,15 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 info("Redirect to `xfiles` (args are ignored)")
                 gdb.execute("xfiles")
                 return
-            elif is_in_kernel():
-                info("Redirect to `kvmmap` (args are ignored; use `pagewalk` to show phys addr)")
-                gdb.execute("kvmmap")
-                return
-            else:
-                info("Redirect to `pagewalk` (args are ignored)")
-                gdb.execute("pagewalk --quiet")
-                return
+            if is_in_kernel():
+                # `kvmmap` supports x86, ARM and RISC-V
+                if is_x86() or is_arm32() or is_arm64() or is_riscv32() or is_riscv64():
+                    info("Redirect to `kvmmap` (args are ignored; use `pagewalk` to show phys addr)")
+                    gdb.execute("kvmmap")
+                    return
+            info("Redirect to `pagewalk` (args are ignored)")
+            gdb.execute("pagewalk --quiet")
+            return
 
         if args.outer and not is_qemu_user():
             err("Unsupported `--outer` option in this gdb mode")
@@ -70002,6 +70033,9 @@ class KernelAddressHeuristicFinderUtil:
 
     @staticmethod
     def is_kernel_space(v):
+        # s390x has separate address spaces for the kernel and the user, and the kernel uses the low addresses
+        if is_s390x():
+            return True
         if AddressUtil.is_msb_on(v):
             return True
         # VMSPLIT_1G and VMSPLIT_2G_OPT place the kernel space below the MSB
@@ -71054,6 +71088,221 @@ class KernelAddressHeuristicFinderUtil:
         return
 
     @staticmethod
+    def filter_addr_gen(addrs, skip, skip_msb_check, read_valid):
+        """Apply the common filters of the address generators below to the addresses built from the code."""
+        for v in addrs:
+            v = AddressUtil.normalize_address(v)
+            if not skip_msb_check and not KernelAddressHeuristicFinderUtil.is_kernel_space(v):
+                continue
+            if read_valid and not is_valid_addr_addr(v):
+                continue
+            if skip > 0:
+                skip -= 1
+                continue
+            yield v
+        return
+
+    @staticmethod
+    def parse_insn_line(line, comment):
+        """Return (pc, mnemonic, operands) of a line of `x/i`, or None. `comment` starts the comment of the arch."""
+        m = re.match(r"\s*(?:=>\s*)?(0x[0-9a-f]+)(?:\s+<[^>]*>)?:\s*(\S+)\s*(.*)", line)
+        if not m:
+            return None
+        ops = [x.strip() for x in m.group(3).split(comment, 1)[0].split(",")]
+        return int(m.group(1), 16), m.group(2), ops
+
+    @staticmethod
+    def mips_lui_use(res, skip=0, skip_msb_check=False, read_valid=False):
+        """Yield the addresses built from `lui rd, hi16` and the following `(d)addiu rX, rd, lo16` or
+        a pointer-sized load/store such as `lw rX, lo16(rd)` (`ld`/`sd` on 64-bit).
+        A 64-bit kernel in CKSEG0 is built with `-msym32`, so the same pair builds a sign-extended address."""
+
+        def gen():
+            no_write = r"s[bhwdc]\w*|b\w*|j|jr|t\w+|nop|ssnop|ehb|sync\w*|cache|pref|eret|wait|d?mt\w+"
+            if is_64bit():
+                pointer_access = ("ld", "sd")
+            else:
+                pointer_access = ("lw", "sw")
+            bases = {}
+            for line in res.splitlines():
+                insn = KernelAddressHeuristicFinderUtil.parse_insn_line(line, "#")
+                if insn is None:
+                    continue
+                _, mnemonic, ops = insn
+                try:
+                    if mnemonic == "lui" and len(ops) == 2:
+                        bases[ops[0]] = u2i((int(ops[1], 0) & 0xffff) << 16, 32)
+                        continue
+                    if mnemonic in ("addiu", "daddiu") and len(ops) == 3 and ops[1] in bases:
+                        yield bases[ops[1]] + int(ops[2], 0)
+                    elif mnemonic in pointer_access:
+                        m = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[-1])
+                        if m and m.group(2) in bases:
+                            yield bases[m.group(2)] + int(m.group(1))
+                except ValueError:
+                    pass
+                # a store, a branch and a trap write no register; anything else overwrites the first operand
+                if mnemonic in ("jal", "jalr", "bal"):
+                    # the callee keeps s0-s7 and fp (s8)
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"s[0-8]|fp", k)}
+                elif not re.fullmatch(no_write, mnemonic):
+                    bases.pop(ops[0], None)
+            return
+
+        return KernelAddressHeuristicFinderUtil.filter_addr_gen(gen(), skip, skip_msb_check, read_valid)
+
+    @staticmethod
+    def ppc_addis_use(res, skip=0, skip_msb_check=False, read_valid=False, follow_addi=False):
+        """Yield the addresses built from `addis rd, r2, hi16` (TOC-relative, 64-bit) or `lis rd, hi16`, and the
+        following `addi rX, rd, lo16` or a pointer-sized load/store such as `ld rX, lo16(rd)` (`lwz`/`stw` on 32-bit).
+        The TOC of 64-bit is built by the global entry of the function, `addis r2, r12, hi16` and
+        `addi r2, r2, lo16`, where r12 is the function address. Otherwise r2 already holds it.
+        `follow_addi` also yields the addresses built from the result of `addi`, as GCC accesses the variables
+        of a file from the first (the section anchor), such as `addi r10, r10, 8` after `addi r10, r10, lo16`."""
+
+        def gen():
+            no_write = r"st\w*|b\w*|cmp\w*|t[wd]\w*|mt\w+|\w*sync|eieio|nop|dcb\w+|icbi"
+            if is_64bit():
+                pointer_access = ("ld", "std")
+            else:
+                pointer_access = ("lwz", "stw")
+            bases = {}
+            if is_64bit():
+                toc = get_register("$r2")
+                if toc:
+                    bases["r2"] = toc
+            first = True
+            for line in res.splitlines():
+                insn = KernelAddressHeuristicFinderUtil.parse_insn_line(line, "#")
+                if insn is None:
+                    continue
+                pc, mnemonic, ops = insn
+                try:
+                    if first and mnemonic == "addis" and ops[:2] == ["r2", "r12"]:
+                        bases["r2"] = pc + (u2i(int(ops[2], 0) & 0xffff, 16) << 16)
+                        first = False
+                        continue
+                    first = False
+                    if mnemonic == "addis" and len(ops) == 3 and ops[1] in bases:
+                        bases[ops[0]] = bases[ops[1]] + (u2i(int(ops[2], 0) & 0xffff, 16) << 16)
+                        continue
+                    if mnemonic == "lis" and len(ops) == 2:
+                        bases[ops[0]] = u2i((int(ops[1], 0) & 0xffff) << 16, 32)
+                        continue
+                    if mnemonic == "addi" and ops[:2] == ["r2", "r2"]:
+                        bases["r2"] += int(ops[2], 0)
+                        continue
+                    if mnemonic == "addi" and len(ops) == 3 and ops[1] in bases:
+                        address = bases[ops[1]] + int(ops[2], 0)
+                        yield address
+                        if follow_addi:
+                            bases[ops[0]] = address
+                            continue
+                    elif mnemonic in pointer_access:
+                        m = re.fullmatch(r"(-?\d+)\((\w+)\)", ops[-1])
+                        if m and m.group(2) in bases:
+                            yield bases[m.group(2)] + int(m.group(1))
+                except ValueError:
+                    pass
+                # r2 is the TOC all the time (`ori r2,r2,0` after a call is a nop)
+                if mnemonic in ("bl", "bctrl", "blrl"):
+                    # the callee keeps r14-r31
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"r2|r1[4-9]|r2\d|r3[01]", k)}
+                elif ops[0] != "r2" and not re.fullmatch(no_write, mnemonic):
+                    bases.pop(ops[0], None)
+            return
+
+        return KernelAddressHeuristicFinderUtil.filter_addr_gen(gen(), skip, skip_msb_check, read_valid)
+
+    @staticmethod
+    def s390x_larl_use(res, skip=0, skip_msb_check=False, read_valid=False):
+        """Yield the addresses of `larl rX, addr` and of the pointer-sized PC-relative accesses (`lgrl`, `stgrl`)."""
+        regexp = r"\b(?:larl|lgrl|stgrl)\s+%r\d+,\s*(0x[0-9a-f]+)"
+        return KernelAddressHeuristicFinderUtil.common_addr_gen(res, regexp, skip, skip_msb_check, read_valid)
+
+    @staticmethod
+    def loongarch_pcalau12i_use(res, skip=0, skip_msb_check=False, read_valid=False, follow_addi=False):
+        """Yield the addresses built from `pcalau12i rd, hi20` (the 4KB page of PC + hi20 << 12) and the following
+        `addi.d rX, rd, lo12` or a pointer-sized load/store such as `ld.d rX, rd, lo12` (`ldptr.d` too).
+        `follow_addi` also yields the addresses built from the result of `addi.d`, as GCC accesses the variables
+        of a file from the first (the section anchor), such as `addi.d $a1, $a1, 16` after `addi.d $a1, $a1, lo12`."""
+
+        def gen():
+            bases = {}
+            for line in res.splitlines():
+                insn = KernelAddressHeuristicFinderUtil.parse_insn_line(line, "#")
+                if insn is None:
+                    continue
+                pc, mnemonic, ops = insn
+                try:
+                    if mnemonic == "pcalau12i" and len(ops) == 2:
+                        hi20 = int(ops[1], 0) & 0xfffff
+                        if hi20 & 0x80000:
+                            hi20 -= 0x100000
+                        bases[ops[0]] = (pc & ~0xfff) + (hi20 << 12)
+                        continue
+                    if mnemonic == "addi.d" and len(ops) == 3 and ops[1] in bases:
+                        address = bases[ops[1]] + int(ops[2], 0)
+                        yield address
+                        if follow_addi:
+                            bases[ops[0]] = address
+                            continue
+                    elif mnemonic in ("ld.d", "st.d", "ldptr.d", "stptr.d") and len(ops) == 3 and ops[1] in bases:
+                        yield bases[ops[1]] + int(ops[2], 0)
+                except ValueError:
+                    pass
+                # a store and a branch write no register; anything else overwrites the first operand
+                if mnemonic in ("bl", "jirl"):
+                    # the callee keeps s0-s8 and fp
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"\$(?:s[0-8]|fp)", k)}
+                elif not re.fullmatch(r"f?st\w*|b\w*|nop|[di]bar|ertn|idle|break|syscall|cacop|preld\w*", mnemonic):
+                    bases.pop(ops[0], None)
+            return
+
+        return KernelAddressHeuristicFinderUtil.filter_addr_gen(gen(), skip, skip_msb_check, read_valid)
+
+    @staticmethod
+    def sparc32_sethi_use(res, skip=0, skip_msb_check=False, read_valid=False):
+        """Yield the addresses built from `sethi %hi(addr), rd` and the following `or rd, lo10, rX`
+        (`add` too) or a word-sized load/store such as `ld [ rd + lo10 ], rX`."""
+
+        def gen():
+            bases = {}
+            for line in res.splitlines():
+                insn = KernelAddressHeuristicFinderUtil.parse_insn_line(line, "!")
+                if insn is None:
+                    continue
+                _, mnemonic, ops = insn
+                try:
+                    if mnemonic == "sethi" and len(ops) == 2:
+                        m = re.fullmatch(r"%hi\((0x[0-9a-f]+)\)", ops[0])
+                        if m:
+                            bases[ops[1]] = int(m.group(1), 16)
+                            continue
+                    if mnemonic in ("or", "add") and len(ops) == 3 and ops[0] in bases:
+                        yield bases[ops[0]] + int(ops[1], 0)
+                    elif mnemonic in ("ld", "st"):
+                        m = re.search(r"\[\s*(%\w+)\s*(?:([+-])\s*(\w+)\s*)?\]", ",".join(ops))
+                        if m and m.group(1) in bases:
+                            offset = int(m.group(3) or "0", 0)
+                            if m.group(2) == "-":
+                                offset = -offset
+                            yield bases[m.group(1)] + offset
+                except ValueError:
+                    pass
+                # the destination is the last operand. `save` and `restore` switch the register window.
+                if mnemonic in ("save", "restore"):
+                    bases.clear()
+                elif mnemonic in ("call", "jmpl"):
+                    # the callee keeps the locals and the ins of this window
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"%[li]\d", k)}
+                elif not re.fullmatch(r"st\w*|clr|b\w*|cmp|tst|ret|retl|jmp|nop|t\w+|unimp", mnemonic):
+                    bases.pop(ops[-1], None)
+            return
+
+        return KernelAddressHeuristicFinderUtil.filter_addr_gen(gen(), skip, skip_msb_check, read_valid)
+
+    @staticmethod
     def get_kernel_image_range():
         """Return [start, end) of the kernel image (.text/.rodata/.data/.bss), or None if unknown."""
         try:
@@ -71278,6 +71527,7 @@ class KernelConstsBase:
     SZ_64M = 0x0400_0000
     SZ_128M = 0x0800_0000
     SZ_256M = 0x1000_0000
+    SZ_512M = 0x2000_0000
     SZ_1G = 0x4000_0000
     SZ_2G = 0x8000_0000
     SZ_1T = 0x0100_0000_0000
@@ -71330,6 +71580,61 @@ class KernelConstsBase:
             return None
         return AddressUtil.normalize_address(phys_kbase - (linear_candidates[0] - page_offset))
 
+    @property
+    def high_memory(self):
+        """Return the end of the lowmem, i.e., the linear mapping from PAGE_OFFSET (ARM32, PPC32)."""
+        if hasattr(self, "cached_high_memory"):
+            return self.cached_high_memory
+
+        page_offset = self.PAGE_OFFSET
+        if page_offset is None:
+            return None
+
+        maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color")
+        maps = [entry for entry in maps if entry.vstart >= page_offset and entry.pstart is not None]
+
+        if maps == []: # `pagewalk` failed, or stopped in user mode
+            return None
+
+        physmap = maps[0]
+        for entry in maps[1:]:
+            # the IBATs and the DBATs of PPC32 overlap at PAGE_OFFSET
+            if entry.vstart == physmap.vstart and entry.pstart == physmap.pstart:
+                physmap = max(physmap, entry, key=lambda x: x.vend)
+                continue
+            if physmap.vend != entry.vstart:
+                break
+            if physmap.pend != entry.pstart:
+                break
+            physmap = entry
+
+        self.cached_high_memory = physmap.vend
+        return self.cached_high_memory
+
+    def read_variables_from_code(self, names, gen):
+        """Return the values of the variables `names` that hold the vmalloc area decided at boot (PowerPC, s390x).
+        Without CONFIG_KALLSYMS_ALL, return the values of the two variables that `is_vmalloc_addr()` compares with
+        (it is inline before v5.6, so `__vmalloc()` that passes them is used then), whose addresses `gen` finds
+        in its code. Return None if they are not found."""
+        if KernelAddressHeuristicFinder.USE_DIRECTLY:
+            addrs = [Ksym.get_addr(name) for name in names]
+            if all(addrs):
+                values = [read_int_from_memory(addr, safe=True) for addr in addrs]
+                if None not in values:
+                    return values
+
+        for name in ["is_vmalloc_addr", "__vmalloc"]:
+            values = []
+            for addr in Ksym.get_addrs(name, match="split"):
+                res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 30)
+                for x in gen(res):
+                    v = read_int_from_memory(x, safe=True)
+                    if v and v not in values:
+                        values.append(v)
+            if len(values) == 2:
+                return values
+        return None
+
     def test(self): # noqa: V105
         if is_32bit():
             target = ["PAGE_OFFSET", "PAGE_OFFSET_END", "VMALLOC_START", "VMALLOC_END"]
@@ -71349,8 +71654,6 @@ class KernelConstsBase:
 
 class KernelConstsX86(KernelConstsBase):
     """A class that manages x86 constants by version."""
-
-    START_KERNEL_MAP = 0xffff_ffff_8000_0000
 
     def __init__(self, version=None, kaslr=None, pae=None):
         super().__init__(version)
@@ -71798,6 +72101,8 @@ class KernelConstsX86(KernelConstsBase):
 
 class KernelConstsX64(KernelConstsBase):
     """A class that manages x64 constants by version."""
+
+    START_KERNEL_MAP = 0xffff_ffff_8000_0000
 
     def __init__(self, version=None, kaslr=None, level5pt=None):
         super().__init__(version)
@@ -72525,32 +72830,6 @@ class KernelConstsArm32(KernelConstsBase):
     @property
     def PAGE_OFFSET_END(self):
         return self.high_memory
-
-    @property
-    def high_memory(self):
-        if hasattr(self, "cached_high_memory"):
-            return self.cached_high_memory
-
-        page_offset = self.PAGE_OFFSET
-        if page_offset is None:
-            return None
-
-        maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color")
-        maps = [entry for entry in maps if entry.vstart >= page_offset and entry.pstart is not None]
-
-        if maps == []: # `pagewalk` failed, or stopped in user mode
-            return None
-
-        physmap = maps[0]
-        for entry in maps[1:]:
-            if physmap.vend != entry.vstart:
-                break
-            if physmap.pend != entry.pstart:
-                break
-            physmap = entry
-
-        self.cached_high_memory = physmap.vend
-        return self.cached_high_memory
 
     @property
     def MODULES_VADDR(self):
@@ -73660,6 +73939,562 @@ class KernelConstsRiscv(KernelConstsBase):
         return top - size
 
 
+class KernelConstsMips(KernelConstsBase):
+    """MIPS kernel memory boundaries. KSEG0 (32-bit) and XKPHYS (64-bit) are the direct mapping windows,
+    and the layout of the tables is read from the TLB refill handler that Linux generates. MIPS has no vmemmap."""
+
+    sizeof_struct_page = None
+    VMEMMAP_START = None
+    VMEMMAP_END = None
+
+    @property
+    def page_table(self):
+        if not hasattr(self, "cached_page_table"):
+            page_table = PageTableMips()
+            if not page_table.parse_refill_handler():
+                return None
+            self.cached_page_table = page_table
+        return self.cached_page_table
+
+    @property
+    def PAGE_SHIFT(self):
+        if self.page_table is None:
+            return None
+        return self.page_table.page_shift
+
+    @property
+    def PAGE_SIZE(self):
+        if self.PAGE_SHIFT is None:
+            return None
+        return 1 << self.PAGE_SHIFT
+
+    @property
+    def CONFIG_HIGHMEM(self):
+        # v5.11~ renamed it to __nr_free_highpages
+        addr = Ksym.get_addr("nr_free_highpages") or Ksym.get_addr("__nr_free_highpages")
+        return bool(addr)
+
+    @property
+    def PAGE_OFFSET(self):
+        # CAC_BASE + PHYS_OFFSET (0). The cached XKPHYS of 64-bit uses the CCA of KSEG0 (Config0.K0).
+        if is_mips32():
+            return 0x8000_0000
+        if self.page_table is None or self.page_table.kseg0_cca is None:
+            return None
+        return (0b10 << 62) | (self.page_table.kseg0_cca << 59)
+
+    @property
+    def PAGE_OFFSET_END(self):
+        if self.PAGE_OFFSET is None:
+            return None
+        if is_mips32():
+            return self.PAGE_OFFSET + self.SZ_512M # KSEG0
+        return self.PAGE_OFFSET + (1 << 59) # XKPHYS of a CCA
+
+    @property
+    def TASK_SIZE(self):
+        if is_mips32():
+            return 0x8000_0000 # KUSEG
+        return None
+
+    @property
+    def MAP_BASE(self):
+        if is_mips32():
+            return 0xc000_0000 # KSEG2
+        return 0xc000_0000_0000_0000 # XKSEG
+
+    @property
+    def FIXADDR_TOP(self):
+        # (unsigned long)(long)(int)0xfffe0000
+        return AddressUtil.normalize_address(0xffff_ffff_fffe_0000)
+
+    @property
+    def end_of_fixed_addresses(self):
+        # FIX_CMAP_BEGIN to FIX_CMAP_END (= 8 colours * 2). HIGHMEM adds KM_MAX_IDX (KM_TYPE_NR ~v5.10) * NR_CPUS.
+        if not self.CONFIG_HIGHMEM:
+            return 17
+        configs = Kernel.config().get_configs() or {}
+        nr_cpus = configs.get("CONFIG_NR_CPUS")
+        if nr_cpus is None:
+            return None
+        if self.kversion < "5.11":
+            if configs.get("CONFIG_DEBUG_HIGHMEM") == "y":
+                km = 41
+            else:
+                km = 20
+        else:
+            if configs.get("CONFIG_DEBUG_KMAP_LOCAL") == "y":
+                km = 33
+            else:
+                km = 16
+        return 17 + km * int(nr_cpus)
+
+    @property
+    def FIXADDR_START(self):
+        end = self.end_of_fixed_addresses
+        if end is None or self.PAGE_SHIFT is None:
+            return None
+        return self.FIXADDR_TOP - (end << self.PAGE_SHIFT)
+
+    @property
+    def VMALLOC_START(self):
+        if is_mips32():
+            return self.MAP_BASE
+        if self.PAGE_SIZE is None:
+            return None
+        return self.MAP_BASE + 2 * self.PAGE_SIZE
+
+    @property
+    def VMALLOC_END(self):
+        if self.page_table is None:
+            return None
+        if is_mips64():
+            # MAP_BASE + min(the range of the tables, 1 << cpu_vmbits) - 4GB, where the tables are sized for cpu_vmbits
+            shift, count = self.page_table.levels[0]
+            return self.MAP_BASE + (count << shift) - (1 << 32)
+        if not self.CONFIG_HIGHMEM:
+            if self.FIXADDR_START is None:
+                return None
+            return self.FIXADDR_START - 2 * self.PAGE_SIZE
+        # PKMAP_BASE - 2 pages. PKMAP is a page table (LAST_PKMAP is 512 for 64-bit PTEs or CONFIG_MIPS_HUGE_TLB_SUPPORT,
+        # i.e., when a page table has PAGE_SIZE / 8 entries, otherwise 1024) whose end is FIXADDR_START aligned down
+        # to its size. The fixmap is too small to move it unless NR_CPUS is very large, so it is used if unknown.
+        if self.page_table.levels[-1][1] == self.PAGE_SIZE // 8:
+            pkmap_size = 512 << self.PAGE_SHIFT
+        else:
+            pkmap_size = 1024 << self.PAGE_SHIFT
+        fixaddr_start = self.FIXADDR_START
+        if fixaddr_start is None:
+            fixaddr_start = self.FIXADDR_TOP - (17 << self.PAGE_SHIFT)
+        pkmap_end = fixaddr_start & ~(pkmap_size - 1)
+        return pkmap_end - pkmap_size - 2 * self.PAGE_SIZE
+
+    @property
+    def MODULES_VADDR(self):
+        if is_mips32():
+            return self.VMALLOC_START
+        # CKSSEG, since the 64-bit kernel in CKSEG0 is built with -msym32
+        return AddressUtil.normalize_address(0xffff_ffff_c000_0000)
+
+    @property
+    def MODULES_END(self):
+        if is_mips32():
+            return self.VMALLOC_END
+        if self.FIXADDR_START is None:
+            return None
+        return self.FIXADDR_START - 2 * self.PAGE_SIZE
+
+
+class KernelConstsPpc(KernelConstsBase):
+    """PowerPC kernel memory boundaries. 64-bit is Book3S (Hash or Radix MMU), whose vmalloc area is decided at boot.
+    32-bit places vmalloc above the lowmem and below `ioremap_bot`."""
+
+    sizeof_struct_page = None
+
+    @property
+    def PAGE_SHIFT(self):
+        if hasattr(self, "cached_PAGE_SHIFT"):
+            return self.cached_PAGE_SHIFT
+        # the smallest mapping is a base page (4KB or 64KB on 64-bit)
+        sizes = [entry.page_size for entry in AddrMap.get_maps() if entry.page_size]
+        if not sizes:
+            return None
+        self.cached_PAGE_SHIFT = min(sizes).bit_length() - 1
+        return self.cached_PAGE_SHIFT
+
+    @property
+    def PAGE_SIZE(self):
+        if self.PAGE_SHIFT is None:
+            return None
+        return 1 << self.PAGE_SHIFT
+
+    @property
+    def is_radix(self):
+        # the same check as `pagewalk ppc`
+        if get_register("$ptcr") is None:
+            return False
+        return (get_register("$lpcr") >> 20) & 1 == 1 # LPCR.HR
+
+    @property
+    def KERN_VIRT_START(self):
+        # The linear map is below it. v5.2~ maps all the kernel regions in 0xc, and 4KB Hash shrinks them
+        # (since v5.10 and backported to v5.4.y, so it is told by VMALLOC_START).
+        if is_ppc32():
+            return None
+        if self.is_radix:
+            return 0xc008_0000_0000_0000
+        if self.kversion < "5.2":
+            return 0xd000_0000_0000_0000
+        if self.PAGE_SHIFT == 16:
+            return 0xc008_0000_0000_0000
+        return self.VMALLOC_START
+
+    @property
+    def PAGE_OFFSET(self):
+        if is_ppc64():
+            return 0xc000_0000_0000_0000
+        # KERNELBASE is PAGE_OFFSET (CONFIG_PAGE_OFFSET), which is aligned to 256MB
+        klayout = Kernel.layout(use_iomem=False)
+        if klayout.text_base is None:
+            return None
+        return klayout.text_base & ~(self.SZ_256M - 1)
+
+    @property
+    def PAGE_OFFSET_END(self):
+        if is_ppc32():
+            return self.high_memory
+        return self.KERN_VIRT_START
+
+    @property
+    def TASK_SIZE(self):
+        if is_ppc64():
+            return None
+        # CONFIG_TASK_SIZE is PAGE_OFFSET (0xc0000000) by default, or lower to make room for the modules
+        configs = Kernel.config().get_configs() or {}
+        if configs.get("CONFIG_TASK_SIZE"):
+            return int(configs["CONFIG_TASK_SIZE"], 16)
+        return self.PAGE_OFFSET
+
+    def read_vmalloc_variables(self):
+        if hasattr(self, "cached_vmalloc_range"):
+            return self.cached_vmalloc_range
+        if is_ppc64():
+            names = ["__vmalloc_start", "__vmalloc_end"]
+        else:
+            names = ["ioremap_bot"]
+        self.cached_vmalloc_range = self.read_variables_from_code(names, KernelAddressHeuristicFinderUtil.ppc_addis_use)
+        return self.cached_vmalloc_range
+
+    @property
+    def VMALLOC_START(self):
+        if is_ppc32():
+            # ((high_memory + VMALLOC_OFFSET) & ~(VMALLOC_OFFSET - 1)), where VMALLOC_OFFSET is 16MB
+            if self.high_memory is None:
+                return None
+            return (self.high_memory + self.SZ_16M) & ~(self.SZ_16M - 1)
+        values = self.read_vmalloc_variables()
+        if values is None:
+            return None
+        return min(values)
+
+    @property
+    def VMALLOC_END(self):
+        values = self.read_vmalloc_variables()
+        if values is None:
+            return None
+        # ioremap_bot of 32-bit, which may be aligned down for KASAN
+        return max(values)
+
+    @property
+    def VMEMMAP_START(self):
+        if is_ppc32():
+            return None
+        # The variable `vmemmap` is not in kallsyms without CONFIG_KALLSYMS_ALL, but the page array is
+        # SPARSEMEM_VMEMMAP, so it is the base of the page array.
+        page = Kernel.page()
+        if not page.initialize() or page.mode != "LINEAR":
+            return None
+        return page.page_base
+
+    @property
+    def VMEMMAP_END(self):
+        if self.VMEMMAP_START is None:
+            return None
+        if self.kversion < "5.2":
+            if self.is_radix:
+                return 0xc00c_0000_0000_0000 # RADIX_KERN_IO_START
+            return None # the whole region 0xf
+        # VMEMMAP_START + H_KERN_MAP_SIZE / RADIX_KERN_MAP_SIZE
+        if not self.is_radix and self.PAGE_SHIFT == 12:
+            if self.KERN_VIRT_START == 0xc000_1000_0000_0000:
+                return self.VMEMMAP_START + (1 << 44)
+            return self.VMEMMAP_START + (1 << 40)
+        return self.VMEMMAP_START + (1 << 49)
+
+    @property
+    def FIXADDR_TOP(self):
+        if is_ppc32():
+            # -PAGE_SIZE without KASAN
+            if self.PAGE_SIZE is None:
+                return None
+            return AddressUtil.normalize_address(-self.PAGE_SIZE)
+        return None
+
+    FIXADDR_START = None
+
+    @property
+    def MODULES_VADDR(self):
+        # the modules of 64-bit are in the vmalloc area
+        if is_ppc32():
+            return None
+        return self.VMALLOC_START
+
+    @property
+    def MODULES_END(self):
+        if is_ppc32():
+            return None
+        return self.VMALLOC_END
+
+
+class KernelConstsS390x(KernelConstsBase):
+    """s390x kernel memory boundaries. The kernel has its own address space, and the boot code decides the layout
+    and stores it into the variables `VMALLOC_START`, `VMALLOC_END`, `MODULES_VADDR`, `MODULES_END` and `vmemmap`.
+    The identity mapping starts at 0 (`__identity_base` on newer kernels, which may be randomized)."""
+
+    PAGE_SHIFT = 12
+    PAGE_SIZE = 1 << PAGE_SHIFT
+    sizeof_struct_page = None
+    FIXADDR_TOP = None
+    FIXADDR_START = None
+
+    @property
+    def PAGE_OFFSET(self):
+        if hasattr(self, "cached_PAGE_OFFSET"):
+            return self.cached_PAGE_OFFSET
+        # the alias of the kernel image in the identity mapping (it is the image itself before v6.2)
+        klayout = Kernel.layout(use_iomem=False)
+        if klayout.text_base is None:
+            return None
+        maps = AddrMap.get_maps()
+        phys = AddrMap.v2p(klayout.text_base, maps=maps)
+        if phys is None:
+            return None
+        aliases = [x for x in AddrMap.p2v(phys, maps=maps) if x != klayout.text_base]
+        if len(aliases) > 1:
+            return None
+        if aliases:
+            self.cached_PAGE_OFFSET = aliases[0] - phys
+        else:
+            self.cached_PAGE_OFFSET = klayout.text_base - phys
+        return self.cached_PAGE_OFFSET
+
+    @property
+    def PAGE_OFFSET_END(self):
+        if hasattr(self, "cached_PAGE_OFFSET_END"):
+            return self.cached_PAGE_OFFSET_END
+        page_offset = self.PAGE_OFFSET
+        if page_offset is None:
+            return None
+        # The physical addresses are absolute ones, so the lowcore (the first 8KB) and the prefix area (8KB) of
+        # each CPU are swapped in the identity mapping.
+        maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --disable-color")
+        end = None
+        for entry in maps:
+            if entry.vend <= page_offset + 0x2000:
+                continue
+            if end is not None and entry.vstart != end:
+                break
+            if entry.pstart is None:
+                break
+            if entry.vstart - entry.pstart != page_offset and entry.vsize > 0x2000:
+                break
+            end = entry.vend
+        if end is None:
+            return None
+        self.cached_PAGE_OFFSET_END = end
+        return self.cached_PAGE_OFFSET_END
+
+    def read_vmalloc_variables(self):
+        if not hasattr(self, "cached_vmalloc_range"):
+            gen = KernelAddressHeuristicFinderUtil.s390x_larl_use
+            self.cached_vmalloc_range = self.read_variables_from_code(["VMALLOC_START", "VMALLOC_END"], gen)
+        return self.cached_vmalloc_range
+
+    @property
+    def VMALLOC_START(self):
+        values = self.read_vmalloc_variables()
+        if values is None:
+            return None
+        return min(values)
+
+    @property
+    def VMALLOC_END(self):
+        values = self.read_vmalloc_variables()
+        if values is None:
+            return None
+        return max(values)
+
+    def read_variable(self, name):
+        if not KernelAddressHeuristicFinder.USE_DIRECTLY:
+            return None
+        addr = Ksym.get_addr(name)
+        if not addr:
+            return None
+        return read_int_from_memory(addr, safe=True)
+
+    @property
+    def MODULES_VADDR(self):
+        return self.read_variable("MODULES_VADDR")
+
+    @property
+    def MODULES_END(self):
+        return self.read_variable("MODULES_END")
+
+    @property
+    def VMEMMAP_START(self):
+        # `vmemmap` is not in kallsyms without CONFIG_KALLSYMS_ALL, but it is the base of the page array
+        page = Kernel.page()
+        if not page.initialize() or page.mode != "LINEAR":
+            return None
+        return page.page_base
+
+    @property
+    def VMEMMAP_END(self):
+        # v5.19~ (`vmemmap_size`)
+        size = self.read_variable("vmemmap_size")
+        if self.VMEMMAP_START is None or not size:
+            return None
+        return self.VMEMMAP_START + size
+
+
+class KernelConstsLoongarch(KernelConstsBase):
+    """LoongArch kernel memory boundaries. DMW1 is the cached direct mapping window, and the mapped area starts at
+    vm_map_base = 0 - (1 << cpu_vabits), where cpu_vabits is VALEN - 1 (47 on the existing CPUs).
+    PWCL and PWCH tell the layout of the tables."""
+
+    sizeof_struct_page = None
+    cpu_vabits = 47
+    cpu_pabits = 47
+    FIXADDR_TOP = None
+    FIXADDR_START = None
+
+    @property
+    def levels(self):
+        if not hasattr(self, "cached_levels"):
+            page_table = PageTableLoongarch()
+            csrs = page_table.parse_csrs(PageTable.execute_monitor("info registers"))
+            if "PWCL" not in csrs or "PWCH" not in csrs:
+                return None
+            self.cached_levels = page_table.parse_layout(csrs["PWCL"], csrs["PWCH"])
+        return self.cached_levels
+
+    @property
+    def PAGE_SHIFT(self):
+        if self.levels is None:
+            return None
+        return self.levels[-1][0]
+
+    @property
+    def PAGE_SIZE(self):
+        if self.PAGE_SHIFT is None:
+            return None
+        return 1 << self.PAGE_SHIFT
+
+    @property
+    def PAGE_OFFSET(self):
+        return 0x9000_0000_0000_0000 # CACHE_BASE + PHYS_OFFSET (0)
+
+    @property
+    def PAGE_OFFSET_END(self):
+        return self.PAGE_OFFSET + (1 << 48) # DMW1
+
+    @property
+    def vm_map_base(self):
+        return AddressUtil.normalize_address(-(1 << self.cpu_vabits))
+
+    @property
+    def MODULES_VADDR(self):
+        if self.PAGE_SIZE is None:
+            return None
+        return self.vm_map_base + self.SZ_32M + 2 * self.PAGE_SIZE # PCI_IOSIZE
+
+    @property
+    def MODULES_END(self):
+        if self.MODULES_VADDR is None:
+            return None
+        if self.kversion < "7.2.5":
+            return self.MODULES_VADDR + self.SZ_256M
+        return self.MODULES_VADDR + self.SZ_2G
+
+    @property
+    def VMALLOC_START(self):
+        return self.MODULES_END
+
+    @property
+    def VMEMMAP_SIZE(self):
+        # sizeof(struct page) * (1 << (cpu_pabits + 1 - PAGE_SHIFT)) for SPARSEMEM_VMEMMAP, 0 for FLATMEM
+        if not Ksym.get_addr("vmemmap_populate"):
+            return 0
+        page = Kernel.page()
+        if not page.initialize():
+            return None
+        return page.sizeof_struct_page << (self.cpu_pabits + 1 - self.PAGE_SHIFT)
+
+    @property
+    def KFENCE_AREA_SIZE(self):
+        if not Ksym.get_addr("kfence_alloc_pool_and_metadata") and not Ksym.get_addr("kfence_alloc_pool"):
+            return 0
+        configs = Kernel.config().get_configs() or {}
+        num_objects = int(configs.get("CONFIG_KFENCE_NUM_OBJECTS", "255"))
+        return ((num_objects + 1) * 2 + 2) * self.PAGE_SIZE
+
+    @property
+    def VMALLOC_END(self):
+        if self.levels is None or self.VMEMMAP_SIZE is None:
+            return None
+        # vm_map_base + min(the range of the tables, 1 << cpu_vabits (halved for KASAN)) - PMD_SIZE - VMEMMAP_SIZE
+        # - KFENCE_AREA_SIZE. PMD_SHIFT is the shift of the level above the page table (or PGDIR_SHIFT if folded).
+        shift, width = self.levels[0]
+        span = 1 << self.cpu_vabits
+        if Ksym.get_addr("kasan_init"):
+            span //= 2
+        span = min(1 << (shift + width), span)
+        pmd_size = 1 << self.levels[-2][0]
+        return self.vm_map_base + span - pmd_size - self.VMEMMAP_SIZE - self.KFENCE_AREA_SIZE
+
+    @property
+    def VMEMMAP_START(self):
+        # the base of the page array; the alignment of `vmemmap` depends on HVO since v7.1
+        if not self.VMEMMAP_SIZE:
+            return None
+        page = Kernel.page()
+        if not page.initialize() or page.mode != "LINEAR":
+            return None
+        return page.page_base
+
+    @property
+    def VMEMMAP_END(self):
+        if self.VMEMMAP_START is None:
+            return None
+        return self.VMEMMAP_START + self.VMEMMAP_SIZE - 1
+
+
+class KernelConstsSparc32(KernelConstsBase):
+    """SPARC32 (SRMMU) kernel memory boundaries."""
+
+    PAGE_SHIFT = 12
+    PAGE_SIZE = 1 << PAGE_SHIFT
+    sizeof_struct_page = None
+    PAGE_OFFSET = 0xf000_0000
+    PAGE_OFFSET_END = 0xfc00_0000 # PAGE_OFFSET + SRMMU_MAXMEM
+    TASK_SIZE = PAGE_OFFSET
+    VMALLOC_START = 0xfe60_0000
+    VMALLOC_END = 0xffc0_0000
+    MODULES_VADDR = VMALLOC_START
+    MODULES_END = VMALLOC_END
+    VMEMMAP_START = None
+    VMEMMAP_END = None
+    FIXADDR_TOP = 0xfcff_f000
+
+    @property
+    def FIXADDR_START(self):
+        # FIXADDR_TOP - ((KM_MAX_IDX (KM_TYPE_NR ~v5.10) * NR_CPUS + 1) << PAGE_SHIFT)
+        configs = Kernel.config().get_configs() or {}
+        if Kernel.per_cpu().is_up:
+            nr_cpus = 1
+        elif configs.get("CONFIG_NR_CPUS"):
+            nr_cpus = int(configs["CONFIG_NR_CPUS"])
+        else:
+            return None
+        if self.kversion < "5.11":
+            km = 20
+        elif configs.get("CONFIG_DEBUG_KMAP_LOCAL") == "y":
+            km = 33
+        else:
+            km = 16
+        return self.FIXADDR_TOP - ((km * nr_cpus + 1) << self.PAGE_SHIFT)
+
+
 class KernelAddressHeuristicFinder:
     """A class that heuristically finds a specific symbol in the kernel."""
 
@@ -73712,6 +74547,16 @@ class KernelAddressHeuristicFinder:
             return KernelConstsArm32()
         elif is_riscv32() or is_riscv64():
             return KernelConstsRiscv()
+        elif is_mips32() or is_mips64():
+            return KernelConstsMips()
+        elif is_ppc32() or is_ppc64():
+            return KernelConstsPpc()
+        elif is_s390x():
+            return KernelConstsS390x()
+        elif is_loongarch64():
+            return KernelConstsLoongarch()
+        elif is_sparc32():
+            return KernelConstsSparc32()
         return None
 
     @staticmethod
@@ -75108,6 +75953,16 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
                 elif is_riscv64() or is_riscv32():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=True)
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for x in g:
                     if not is_valid_addr(x):
                         continue
@@ -75362,6 +76217,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -75383,6 +76248,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -75405,6 +76280,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -75430,6 +76315,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     if is_double_link_list(x):
                         return x
@@ -75451,6 +76346,16 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
+            elif is_mips32() or is_mips64():
+                g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+            elif is_ppc32() or is_ppc64():
+                g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+            elif is_s390x():
+                g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+            elif is_loongarch64():
+                g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+            elif is_sparc32():
+                g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
             for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                 if is_double_link_list(x):
                     return x
@@ -75477,6 +76382,16 @@ class KernelAddressHeuristicFinder:
                             KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                             KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                         )
+                    elif is_mips32() or is_mips64():
+                        g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                    elif is_ppc32() or is_ppc64():
+                        g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                    elif is_s390x():
+                        g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                    elif is_loongarch64():
+                        g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                    elif is_sparc32():
+                        g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                     for x in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                         if is_double_link_list(x):
                             return x
@@ -75499,6 +76414,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for slab_mutex in KernelAddressHeuristicFinderUtil.filter_in_kernel_image(g):
                     for i in range(16):
                         x = slab_mutex + current_arch.ptrsize * i
@@ -81194,8 +82119,8 @@ class Kernel:
                 else:
                     return "SLUB"
 
-        # care for both cache_reap and cache_reap.cold
-        if Ksym.get_addrs("cache_reap", match="in"):
+        # care for both cache_reap and cache_reap.cold, but not _xfs_mru_cache_reap
+        if Ksym.get_addrs("cache_reap", match="split"):
             return "SLAB"
 
         if Ksym.get_addrs("slob_", match="in"):
@@ -81314,6 +82239,9 @@ class Kernel:
         if not resolver.initialize():
             return None
         for virt in resolver.page2virt(page) or []:
+            # The uncached window (DMW0) of LoongArch is below the cached one (DMW1), which is the linear mapping
+            if is_loongarch64() and virt >> 60 == 0x8:
+                continue
             if KernelAddressHeuristicFinderUtil.is_kernel_space(virt):
                 return virt
         return None
@@ -81663,7 +82591,8 @@ class KernelLayout:
     @staticmethod
     def get_exception_vector():
         """Return the runtime address of an exception entry in the kernel text, or None.
-        x86: the #DE handler, ARM32: a handler of the vector page, ARM64: `VBAR`, RISC-V: `stvec`."""
+        x86: the #DE handler, ARM32: a handler of the vector page, ARM64: `VBAR`, RISC-V: `stvec`,
+        LoongArch: `EENTRY`."""
 
         # This function is designed for the case where the symbol is not available.
         # Do not use Ksym.get_addr.
@@ -81731,6 +82660,15 @@ class KernelLayout:
             stvec = get_register("stvec")
             if is_valid_addr(stvec):
                 return stvec
+
+        elif is_loongarch64():
+            # `EENTRY` has exception_handlers[] in .bss of the kernel image.
+            # The gdbstub does not have CSRs, so it is read from the monitor.
+            if is_qemu_system():
+                res = PageTable.execute_monitor("info registers")
+                m = re.search(r"\bEENTRY\s+([0-9a-f]+)\b", res)
+                if m and is_valid_addr(int(m.group(1), 16)):
+                    return int(m.group(1), 16)
 
         return None
 
@@ -81816,6 +82754,53 @@ class KernelLayout:
                         text_base_map_index = i
                         break
 
+        elif is_ppc64():
+            # The exception vectors of Book3S 64-bit are at the physical address 0 with the kernel image, which is in
+            # the linear mapping. Its permission is unknown with the bolted entries of the Hash MMU.
+            system_reset_vector = 0xc000_0000_0000_0100
+            for i, entry in enumerate(dic["maps"]):
+                if entry.contains_virtual(system_reset_vector):
+                    dic["text_base"] = entry.vstart
+                    dic["text_end"] = entry.vend
+                    text_base_map_index = i
+                    break
+
+        elif is_mips32() or is_mips64():
+            # The image is in an unmapped segment (KSEG0, or CKSEG0 or XKPHYS on 64-bit) that pagewalk shows as
+            # a whole window. All the windows of XKPHYS alias it, so the window that the kernel runs in is used.
+            pc = current_arch.pc
+            if pc is not None and is_in_kernel():
+                for i, entry in enumerate(dic["maps"]):
+                    if entry.contains_virtual(pc) and entry.vsize >= 0x2000_0000:
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = entry.vend
+                        text_base_map_index = i
+                        break
+
+        elif is_loongarch64():
+            eentry = KernelLayout.get_exception_vector()
+            if eentry is not None:
+                for i, entry in enumerate(dic["maps"]):
+                    if entry.contains_virtual(eentry):
+                        # The image is in a direct mapping window (DMW) that maps the whole physical memory as RWX,
+                        # so only the part below `EENTRY` (.bss) is searched for .rodata.
+                        dic["text_base"] = entry.vstart
+                        dic["text_end"] = eentry
+                        # UEFI leaves the PE image it loaded below the kernel, and the search from the top of the window
+                        # finds the banner in it. The kernel starts with the same header (the EFI stub), so `_text` is
+                        # the nearest one below the PC in .text, aligned to PECOFF_SEGMENT_ALIGN (64KB).
+                        pc = current_arch.pc
+                        if is_in_kernel() and entry.vstart <= pc < eentry:
+                            for addr in range(pc & ~0xffff, max(entry.vstart, pc - 0x1000_0000) - 1, -0x10000):
+                                data = read_memory(addr, 0x40, safe=True)
+                                if data is None or data[:2] != b"MZ":
+                                    continue
+                                if read_memory(addr + u32(data[0x3c:]), 4, safe=True) == b"PE\0\0":
+                                    dic["text_base"] = addr
+                                    break
+                        text_base_map_index = i
+                        break
+
         # 1b. search for the kernel base heuristic way
         if dic["text_base"] is None:
             # .text is usually noticeably larger than other areas.
@@ -81839,6 +82824,15 @@ class KernelLayout:
                 else:
                     # Not found, so fast return
                     return KernelLayout.build(dic, use_iomem)
+
+        # The BATs of Book3S 32-bit map .text by IBATs (R-X) and the whole lowmem including .rodata by a DBAT (RW-)
+        # from the same start, so .rodata is searched in the latter.
+        if is_ppc32():
+            for entry in dic["maps"]:
+                if entry.vstart != dic["text_base"] or str(entry.permission) != "rw-":
+                    continue
+                if entry.vend > dic["text_end"]:
+                    dic["text_end"] = entry.vend
 
         # 2a. search for the kernel RO base
         # If the `-enable-kvm` option for qemu-system is not enabled,
@@ -82073,7 +83067,8 @@ class KernelLayout:
             return base
 
         klayout = base
-        if is_arm32() or is_x86():
+        # The mapping of LoongArch starts at the DMW, i.e., physical address 0
+        if is_arm32() or is_x86() or is_loongarch64():
             text_base = lookup(("_text",), base.text_base, base.text_end)
             # `_text` is not in kallsyms of ARM32 without CONFIG_KALLSYMS_ALL. Then `_stext`
             # is better than PAGE_OFFSET, but not than `_text` from the iomem.
@@ -158965,6 +159960,16 @@ class KernelSlabAllocator:
         name_addr = read_int_from_memory(addr + self.kmem_cache_offset_name)
         return read_cstring_from_memory(name_addr)
 
+    @staticmethod
+    def read_inuse_objects_frozen(addr):
+        """Return (inuse, objects, frozen) of `unsigned inuse:16; unsigned objects:15; unsigned frozen:1;`
+        in struct slab (struct page before v5.17) of SLUB and SLUB_TINY.
+        A big-endian compiler allocates the bit-fields from the most significant bit."""
+        x = read_int32_from_memory(addr)
+        if Endian.is_big_endian():
+            return x >> 16, (x >> 1) & 0x7fff, x & 1
+        return x & 0xffff, (x >> 16) & 0x7fff, x >> 31
+
 
 class KernelSlub(KernelSlabAllocator):
     """Resolve SLUB layouts and read slab caches and free lists."""
@@ -159215,6 +160220,11 @@ class KernelSlub(KernelSlabAllocator):
         kversion = Kernel.version()
         if not kversion:
             self.meta.append(("err", "Failed to resolve kernel version"))
+            return None
+
+        # MIPS, PowerPC and LoongArch resolve the page size from the page tables, which may fail
+        if Kernel.slab_page_size() is None:
+            self.meta.append(("err", "Failed to resolve the page size"))
             return None
 
         # resolve slab_caches
@@ -159499,7 +160509,10 @@ class KernelSlub(KernelSlabAllocator):
     @staticmethod
     @Cache.cache_this_session(per_inferior=True)
     def warmup_page2virt():
-        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
+        if (
+            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
+            or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
+        ):
             Kernel.page2virt(0)
         return
 
@@ -159571,10 +160584,20 @@ class KernelSlub(KernelSlabAllocator):
                 else:
                     seen.add(val)
 
-                for cpuoff in self.percpu.offsets: # allow []
-                    if not is_valid_addr(AddressUtil.normalize_address(val + cpuoff)):
-                        found = False
-                        break
+                # cpu_slab of CONFIG_SMP=n is a pointer itself ([0]). Nothing is checked if __per_cpu_offset is unknown.
+                for cpuoff in self.percpu.effective_offsets:
+                    addr = AddressUtil.normalize_address(val + cpuoff)
+                    if is_valid_addr(addr):
+                        continue
+                    # gdb can read only the pages in the TLB of MIPS, so the per-cpu chunks allocated later
+                    # in the vmalloc area may be unreadable
+                    if is_mips32() or is_mips64():
+                        consts = KernelAddressHeuristicFinder.consts()
+                        if consts.VMALLOC_START is not None and consts.VMALLOC_END is not None:
+                            if consts.VMALLOC_START <= addr < consts.VMALLOC_END:
+                                continue
+                    found = False
+                    break
 
             if found:
                 self.kmem_cache_offset_list = candidate_offset
@@ -159653,8 +160676,19 @@ class KernelSlub(KernelSlabAllocator):
         """
 
         kmem_caches = self.parse_kmem_caches_for_initialize()
+        # The members are in the object, and the bytes after it may look random (e.g., the padding of kmem_cache
+        # on s390x). kmem_cache itself is allocated from the cache named "kmem_cache".
+        limit = None
+        for kmem_cache in kmem_caches:
+            kmem_cache_top = kmem_cache - self.kmem_cache_offset_list
+            if self.get_name(kmem_cache_top) == "kmem_cache":
+                limit = read_int32_from_memory(kmem_cache_top + self.kmem_cache_offset_object_size)
+                limit -= self.kmem_cache_offset_list
+                break
         for i in range(2, 0x40):
             candidate_offset = current_arch.ptrsize * i
+            if limit is not None and candidate_offset + current_arch.ptrsize > limit:
+                break
             found = True
             count = 0
             seen = set()
@@ -159701,6 +160735,9 @@ class KernelSlub(KernelSlabAllocator):
             if found:
                 # search for `struct kmem_cache_node *node` or `unsigned int *random_seq`
                 for i in range(1, 9):
+                    if limit is not None and candidate_offset + current_arch.ptrsize * (i + 1) > limit:
+                        found = False
+                        break
                     maybe_ptrs = []
                     for kmem_cache in kmem_caches:
                         v = read_int_from_memory(kmem_cache + candidate_offset + current_arch.ptrsize * i)
@@ -160017,7 +161054,9 @@ class KernelSlub(KernelSlabAllocator):
                 if user_offset != 0 and user_size == 0:
                     found = False
                     break
-                if object_size < user_size:
+                # the usercopy region is in the object. On 32-bit PPC, a pointer of kobj and kobj.kref (1)
+                # satisfy the check of the size alone.
+                if object_size < user_offset + user_size:
                     found = False
                     break
 
@@ -160735,6 +161774,16 @@ class KernelSlub(KernelSlabAllocator):
                 # the MSB check below would take this end-of-freelist for pattern1
                 chunk = pattern2(addr, chunk, cache)
                 self.swap = True
+            elif is_s390x():
+                # The MSB check does not work for the low kernel addresses of s390x. The next free chunk is
+                # in the same slab, so the right pattern gives the address near `addr`.
+                chunk1, chunk2 = pattern1(addr, chunk, cache), pattern2(addr, chunk, cache)
+                if abs(chunk1 - addr) < abs(chunk2 - addr):
+                    chunk = chunk1
+                    self.swap = False
+                else:
+                    chunk = chunk2
+                    self.swap = True
             elif (chunk >> shift_bits) == (cache["random"] >> shift_bits):
                 chunk = pattern1(addr, chunk, cache)
                 self.swap = False
@@ -160783,10 +161832,10 @@ class KernelSlub(KernelSlabAllocator):
             kmem_cache["kmem_cache_cpu"][cpu]["address"] + self.kmem_cache_cpu_offset_page,
         )
         if is_valid_addr(page):
-            x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
-            active_page["inuse"] = x & 0xffff
-            active_page["objects"] = (x >> 16) & 0x7fff
-            active_page["frozen"] = (x >> 31) & 1
+            inuse, objects, frozen = self.read_inuse_objects_frozen(page + self.page_offset_inuse_objects_frozen)
+            active_page["inuse"] = inuse
+            active_page["objects"] = objects
+            active_page["frozen"] = frozen
             active_chunk = read_int_from_memory(page + self.page_offset_freelist)
             active_page["freelist"] = self.walk_freelist(active_chunk, kmem_cache, simple=simple)
             pages_needed = (
@@ -160820,12 +161869,14 @@ class KernelSlub(KernelSlabAllocator):
             if not is_valid_addr(current_partial_page):
                 kmem_cache["kmem_cache_cpu"][cpu]["partial_pages"].append(partial_page)
                 break
-            x = read_int_from_memory(current_partial_page + self.page_offset_inuse_objects_frozen)
-            partial_page["inuse"] = x & 0xffff
-            partial_page["objects"] = (x >> 16) & 0x7fff
+            inuse, objects, frozen = self.read_inuse_objects_frozen(
+                current_partial_page + self.page_offset_inuse_objects_frozen,
+            )
+            partial_page["inuse"] = inuse
+            partial_page["objects"] = objects
             if partial_page["objects"] == 0 or partial_page["inuse"] > partial_page["objects"]:
                 break # something is wrong
-            partial_page["frozen"] = (x >> 31) & 1
+            partial_page["frozen"] = frozen
             partial_chunk = read_int_from_memory(current_partial_page + self.page_offset_freelist)
             partial_page["freelist"] = self.walk_freelist(partial_chunk, kmem_cache, simple=simple)
             pages_needed = (
@@ -160862,12 +161913,14 @@ class KernelSlub(KernelSlabAllocator):
             if not is_valid_addr(node_page["address"]):
                 node_page_list.append(node_page)
                 break
-            x = read_int_from_memory(node_page["address"] + self.page_offset_inuse_objects_frozen)
-            node_page["inuse"] = x & 0xffff
-            node_page["objects"] = (x >> 16) & 0x7fff
+            inuse, objects, frozen = self.read_inuse_objects_frozen(
+                node_page["address"] + self.page_offset_inuse_objects_frozen,
+            )
+            node_page["inuse"] = inuse
+            node_page["objects"] = objects
             if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
                 break # something is wrong
-            node_page["frozen"] = (x >> 31) & 1
+            node_page["frozen"] = frozen
             node_chunk = read_int_from_memory(node_page["address"] + self.page_offset_freelist)
             node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache, simple=simple)
             pages_needed = (
@@ -161231,7 +162284,10 @@ class SlabDumpCommandMixin:
     # for slub-dump and slub-tiny-dump
     @Cache.cache_this_session
     def warmup_page2virt(self):
-        if is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32():
+        if (
+            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
+            or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
+        ):
             args = self.args # backup
             KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
@@ -162005,7 +163061,10 @@ class SlubDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.hexdump_used < 0 or args.hexdump_freed < 0:
@@ -162150,6 +163209,11 @@ class KernelSlubTiny(KernelSlabAllocator):
         kversion = Kernel.version()
         if not kversion:
             self.meta.append(("err", "Failed to resolve kernel version"))
+            return None
+
+        # MIPS, PowerPC and LoongArch resolve the page size from the page tables, which may fail
+        if Kernel.slab_page_size() is None:
+            self.meta.append(("err", "Failed to resolve the page size"))
             return None
 
         # resolve slab_caches
@@ -162298,44 +163362,47 @@ class KernelSlubTiny(KernelSlabAllocator):
         kmem_caches = self.parse_kmem_caches_for_initialize()
         start_offset = self.kmem_cache_offset_list + current_arch.ptrsize * 2 # sizeof(kmem_cache.list)
         for candidate_offset in range(start_offset, start_offset + 0x100, current_arch.ptrsize):
-            # walk from list for heuristic search
-            found = True
-            for kmem_cache in kmem_caches:
-                top = kmem_cache - self.kmem_cache_offset_list
-                maybe_node = read_int_from_memory(top + candidate_offset)
-                if not is_valid_addr(maybe_node):
-                    found = False
-                    break
-                # skip node[0].{list_lock,nr_partial} and check node[0].partial.next
-                if not is_valid_addr(maybe_node + current_arch.ptrsize * 2):
-                    found = False
-                    break
-                # node[0].partial.next is slab
-                # maybe_slab actually points to &slab.next, not to the beginning of the structure
-                maybe_slab = read_int_from_memory(maybe_node + current_arch.ptrsize * 2)
-                if not is_valid_addr(maybe_slab):
-                    found = False
-                    break
-                # slab.next (it's actually the list_head)
-                a = read_int_from_memory(maybe_slab)
-                if not is_valid_addr(a):
-                    found = False
-                    break
-                b = read_int_from_memory(maybe_slab + current_arch.ptrsize)
-                if not is_valid_addr(b):
-                    found = False
-                    break
-                # something is in linklist
-                if a != maybe_node + current_arch.ptrsize * 2:
-                    # check slab->slab_cache
-                    c = read_int_from_memory(maybe_slab - current_arch.ptrsize)
-                    if c != top:
+            # skip node[0].{list_lock,nr_partial} and check node[0].partial.next.
+            # list_lock is 0 bytes without CONFIG_SMP (and CONFIG_DEBUG_SPINLOCK), e.g., SPARC32.
+            for offset_partial in (current_arch.ptrsize * 2, current_arch.ptrsize):
+                # walk from list for heuristic search
+                found = True
+                for kmem_cache in kmem_caches:
+                    top = kmem_cache - self.kmem_cache_offset_list
+                    maybe_node = read_int_from_memory(top + candidate_offset)
+                    # NULL is readable on s390x (the lowcore)
+                    if not maybe_node or not is_valid_addr(maybe_node):
                         found = False
                         break
+                    if not is_valid_addr(maybe_node + offset_partial):
+                        found = False
+                        break
+                    # node[0].partial.next is slab
+                    # maybe_slab actually points to &slab.next, not to the beginning of the structure
+                    maybe_slab = read_int_from_memory(maybe_node + offset_partial)
+                    if not maybe_slab or not is_valid_addr(maybe_slab):
+                        found = False
+                        break
+                    # slab.next (it's actually the list_head)
+                    a = read_int_from_memory(maybe_slab)
+                    if not a or not is_valid_addr(a):
+                        found = False
+                        break
+                    b = read_int_from_memory(maybe_slab + current_arch.ptrsize)
+                    if not b or not is_valid_addr(b):
+                        found = False
+                        break
+                    # something is in linklist
+                    if a != maybe_node + offset_partial:
+                        # check slab->slab_cache
+                        c = read_int_from_memory(maybe_slab - current_arch.ptrsize, safe=True)
+                        if c != top:
+                            found = False
+                            break
 
-            if found:
-                self.kmem_cache_offset_node = candidate_offset
-                return
+                if found:
+                    self.kmem_cache_offset_node = candidate_offset
+                    return
         return
 
     def resolve_kmem_cache_node_offset_partial(self):
@@ -162347,8 +163414,11 @@ class KernelSlubTiny(KernelSlabAllocator):
         # slow path
         self.kmem_cache_node_offset_partial = None
         kmem_caches = self.parse_kmem_caches_for_initialize()
+        if self.kmem_cache_offset_node is None:
+            return
         node = read_int_from_memory(kmem_caches[0] - self.kmem_cache_offset_list + self.kmem_cache_offset_node)
-        for i in range(2, 16):
+        # list_lock is 0 bytes without CONFIG_SMP, so partial may follow nr_partial at the first word
+        for i in range(1, 16):
             offset_partial = current_arch.ptrsize * i
             if is_double_link_list(node + offset_partial):
                 self.kmem_cache_node_offset_partial = offset_partial
@@ -162474,12 +163544,14 @@ class KernelSlubTiny(KernelSlabAllocator):
                 if not is_valid_addr(node_page["address"]):
                     node_page_list.append(node_page)
                     break
-                x = read_int_from_memory(node_page["address"] + self.slab_offset_inuse_objects_frozen)
-                node_page["inuse"] = x & 0xffff
-                node_page["objects"] = (x >> 16) & 0x7fff
+                inuse, objects, frozen = self.read_inuse_objects_frozen(
+                    node_page["address"] + self.slab_offset_inuse_objects_frozen,
+                )
+                node_page["inuse"] = inuse
+                node_page["objects"] = objects
                 if node_page["objects"] == 0 or node_page["inuse"] > node_page["objects"]:
                     break # something is wrong
-                node_page["frozen"] = (x >> 31) & 1
+                node_page["frozen"] = frozen
                 node_chunk = read_int_from_memory(node_page["address"] + self.slab_offset_freelist)
                 node_page["freelist"] = self.walk_freelist(node_chunk, kmem_cache, simple=simple)
                 pages_needed = (
@@ -162851,7 +163923,10 @@ class SlubTinyDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin)
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.hexdump_used < 0 or args.hexdump_freed < 0:
@@ -163022,6 +164097,11 @@ class KernelSlab(KernelSlabAllocator):
             self.meta.append(("err", "Failed to resolve kernel version"))
             return None
 
+        # MIPS, PowerPC and LoongArch resolve the page size from the page tables, which may fail
+        if Kernel.slab_page_size() is None:
+            self.meta.append(("err", "Failed to resolve the page size"))
+            return None
+
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
@@ -163096,7 +164176,8 @@ class KernelSlab(KernelSlabAllocator):
             if kversion < "6.1":
                 offset_freelist_size = offset_freelist_cache + current_arch.ptrsize
             else:
-                offset_freelist_size = offset_freelist_cache
+                # v6.1~ has no freelist_cache, so freelist_size follows colour_off without the pointer alignment
+                offset_freelist_size = offset_colour + current_arch.ptrsize + 4
             if kversion < "3.7":
                 offset_ctor = align_to_ptrsize(offset_freelist_size + 8)
             else:
@@ -163261,7 +164342,8 @@ class KernelSlab(KernelSlabAllocator):
         offset = GefUtil.offsetof("array_cache", "entry")
         if offset is not None:
             return offset - 16
-        for entry in self.parse_kmem_caches_for_initialize()[:8]:
+        # the newest caches at the head of the list are rarely used, and all their arrays may be empty
+        for entry in self.parse_kmem_caches_for_initialize():
             cache = entry - self.kmem_cache_offset_list
             array = self.get_array_cache_cpu(cache, 0)
             avail = read_int32_from_memory(array, safe=True)
@@ -163374,6 +164456,31 @@ class KernelSlab(KernelSlabAllocator):
                 yield from KernelListHead(node + offset).iter_entries()
 
     def resolve_kmem_cache_offset_node(self):
+
+        def has_node_lists(offset):
+            # node[0] has slabs_partial, slabs_full and slabs_free after list_lock
+            valid = 0
+            for entry in self.parse_kmem_caches_for_initialize()[:8]:
+                cache = entry - self.kmem_cache_offset_list
+                # `nodelists[MAX_NUMNODES]` (~v3.0) and `node[MAX_NUMNODES]` (v3.18~) are in kmem_cache,
+                # while `**node` (v3.1 ~ v3.17) points to the array
+                if Kernel.version() < "3.1" or "3.18" <= Kernel.version():
+                    array = cache + offset
+                else:
+                    array = read_int_from_memory(cache + offset, safe=True)
+                if array:
+                    node = read_int_from_memory(array, safe=True)
+                else:
+                    node = None
+                if not node:
+                    continue
+                for start in range(0, 0x80, current_arch.ptrsize):
+                    head = node + start
+                    if all(is_double_link_list(head + i * current_arch.ptrsize * 2) for i in range(3)):
+                        valid += 1
+                        break
+            return valid >= 3
+
         # fast path
         self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "node")
         if self.kmem_cache_offset_node is not None:
@@ -163382,31 +164489,14 @@ class KernelSlab(KernelSlabAllocator):
         self.kmem_cache_offset_node = GefUtil.offsetof("kmem_cache", "nodelists")
         if self.kmem_cache_offset_node is not None:
             return
+        search_range = range(
+            self.kmem_cache_offset_list + current_arch.ptrsize * 2,
+            self.kmem_cache_offset_list + 0x100, current_arch.ptrsize
+        )
         if Kernel.version() < "4.16":
             self.kmem_cache_offset_node = None
-            for offset in range(
-                self.kmem_cache_offset_list + current_arch.ptrsize * 2,
-                self.kmem_cache_offset_list + 0x100, current_arch.ptrsize
-            ):
-                valid = 0
-                for entry in self.parse_kmem_caches_for_initialize()[:8]:
-                    cache = entry - self.kmem_cache_offset_list
-                    if Kernel.version() < "3.1":
-                        array = cache + offset
-                    else:
-                        array = read_int_from_memory(cache + offset, safe=True)
-                    if array:
-                        node = read_int_from_memory(array, safe=True)
-                    else:
-                        node = None
-                    if not node:
-                        continue
-                    for start in range(0, 0x80, current_arch.ptrsize):
-                        head = node + start
-                        if all(is_double_link_list(head + i * current_arch.ptrsize * 2) for i in range(3)):
-                            valid += 1
-                            break
-                if valid >= 3:
+            for offset in search_range:
+                if has_node_lists(offset):
                     self.kmem_cache_offset_node = offset
                     return
             return
@@ -163428,7 +164518,9 @@ class KernelSlab(KernelSlabAllocator):
                 if user_offset != 0 and user_size == 0:
                     found = False
                     break
-                if object_size < user_size:
+                # the usercopy region is in the object. On 32-bit PPC, a pointer of kobj and kobj.kref (1)
+                # satisfy the check of the size alone.
+                if object_size < user_offset + user_size:
                     found = False
                     break
                 node_addr_ptr = kmem_cache_top + candidate_offset + 4 + 4
@@ -163438,8 +164530,14 @@ class KernelSlab(KernelSlabAllocator):
                     found = False
                     break
 
-            if found:
+            if found and has_node_lists(align_to_ptrsize(candidate_offset + 4 * 2)):
                 self.kmem_cache_offset_node = align_to_ptrsize(candidate_offset + 4 * 2)
+                return
+
+        # useroffset and usersize do not exist without CONFIG_HARDENED_USERCOPY since v6.2
+        for offset in search_range:
+            if has_node_lists(offset):
+                self.kmem_cache_offset_node = offset
                 return
         return
 
@@ -164009,7 +165107,10 @@ class SlabDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.hexdump_used < 0 or args.hexdump_freed < 0:
@@ -164105,6 +165206,11 @@ class KernelSlob(KernelSlabAllocator):
             self.meta.append(("err", "Failed to resolve kernel version"))
             return None
 
+        # MIPS, PowerPC and LoongArch resolve the page size from the page tables, which may fail
+        if Kernel.slab_page_size() is None:
+            self.meta.append(("err", "Failed to resolve the page size"))
+            return None
+
         # resolve slab_caches
         self.slab_caches = KernelAddressHeuristicFinder.get_slab_caches()
         if self.slab_caches is None:
@@ -164116,7 +165222,10 @@ class KernelSlob(KernelSlabAllocator):
         # resolve global freelists
         free_lists = {name: Ksym.get_addr("free_slob_" + name) for name in ("large", "medium", "small")}
         if not all(free_lists.values()):
-            free_lists = self.resolve_free_slob_lists() or free_lists
+            if is_x86() or is_arm32() or is_arm64() or is_riscv32() or is_riscv64():
+                free_lists = self.resolve_free_slob_lists() or free_lists
+            else:
+                free_lists = self.resolve_free_slob_lists_from_code() or free_lists
         self.free_slob_large = free_lists["large"]
         if self.free_slob_large is None:
             self.meta.append(("err", "Failed to resolve `free_slob_large`"))
@@ -164259,6 +165368,134 @@ class KernelSlob(KernelSlabAllocator):
         if len(set(free_lists.values())) != 3:
             return None
         return free_lists
+
+    def resolve_free_slob_lists_from_code(self):
+        """Resolve the free lists from `slob_free` (and `slob_alloc` unless it is inlined), which chooses
+        free_slob_small if `size < 256`, free_slob_medium if `size < 1024`, or free_slob_large.
+        The three list heads are adjacent and medium is the middle, but which end is small depends on the compiler.
+        So follow both sides of the branch after the compare with 256 (or 1024) up to the next branch.
+        If one side builds medium, the other side builds small (or large)."""
+        if is_mips32() or is_mips64():
+            gen = KernelAddressHeuristicFinderUtil.mips_lui_use
+        elif is_ppc32() or is_ppc64():
+            gen = functools.partial(KernelAddressHeuristicFinderUtil.ppc_addis_use, follow_addi=True)
+        elif is_s390x():
+            gen = KernelAddressHeuristicFinderUtil.s390x_larl_use
+        elif is_loongarch64():
+            gen = functools.partial(KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use, follow_addi=True)
+        elif is_sparc32():
+            gen = KernelAddressHeuristicFinderUtil.sparc32_sethi_use
+        else:
+            return None
+
+        def slots(insn):
+            """Return the numbers of the delay slots run when the branch is taken and when not."""
+            if is_mips32() or is_mips64():
+                # a compact branch of R6 has no delay slot
+                if insn.mnemonic.endswith("c"):
+                    return 0, 0
+                return 1, 1
+            elif is_sparc32():
+                # an annulled branch runs the delay slot only if taken
+                if ",a" in insn.mnemonic:
+                    return 1, 0
+                return 1, 1
+            return 0, 0
+
+        def walk(i, path):
+            """Return the addresses built on the path from insns[i], following the direct jumps."""
+            # a side of the branch is a few instructions
+            for _ in range(32):
+                if i is None or i >= len(insns):
+                    break
+                insn = insns[i]
+                path.append(lines[i])
+                if not insn.is_branch:
+                    i += 1
+                    continue
+                # stop at a conditional branch, a call or a return
+                if current_arch.is_conditional_branch(insn):
+                    break
+                if not current_arch.is_jump(insn):
+                    break
+                _, fall_slots = slots(insn)
+                path.extend(lines[i + 1:i + 1 + fall_slots])
+                i = index.get(ContextCodeCommand.get_branch_addr(insn))
+            return list(gen("\n".join(path)))
+
+        found = set()
+        for addr in Ksym.get_addrs("slob_free", match="split") + Ksym.get_addrs("slob_alloc", match="split"):
+            end = Ksym.get_next_addr(addr)
+            if end is None:
+                continue
+            insns = list(Disasm.gdb_disassemble(addr, end_pc=end - 1) or [])
+            lines = ["{:#x}: {:s} {:s}".format(x.address, x.mnemonic, ", ".join(x.operands)) for x in insns]
+            index = {x.address: i for i, x in enumerate(insns)}
+            candidates = set(gen("\n".join(lines)))
+            branches = []
+            for i, insn in enumerate(insns):
+                # `size < 256` or `size <= 255` (SLOB_BREAK1), and `size < 1024` or `size <= 1023` (SLOB_BREAK2).
+                # The target of a branch is not an immediate to compare.
+                if insn.is_branch:
+                    ops = ", ".join(insn.operands[:-1])
+                else:
+                    ops = ", ".join(insn.operands)
+                m = re.search(r"(?:^|[\s,])(255|256|1023|1024|0xff|0x100|0x3ff|0x400)(?:$|[\s,])", ops)
+                if not m:
+                    continue
+                # the branch after the compare. A compare and branch of s390x has the immediate itself.
+                # clang chooses them without a branch (`movn`, `isel`, `locgr`), which is not supported.
+                j = None
+                for k in range(i, min(i + 5, len(insns))):
+                    if current_arch.is_conditional_branch(insns[k]):
+                        j = k
+                        break
+                if j is None:
+                    continue
+                taken_slots, fall_slots = slots(insns[j])
+                target = index.get(ContextCodeCommand.get_branch_addr(insns[j]))
+                # what runs between the compare and the branch is on both sides
+                sides = (
+                    walk(target, lines[i:j] + lines[j + 1:j + 1 + taken_slots]),
+                    walk(j + 1 + taken_slots, lines[i:j] + lines[j + 1:j + 1 + fall_slots]),
+                )
+                # a list head may be built only on a side, such as by `lui` in the delay slot of the branch
+                candidates.update(sides[0] + sides[1])
+                branches.append((int(m.group(1), 0) < 0x200, sides))
+
+            heads = set()
+            for v in candidates:
+                if KernelAddressHeuristicFinderUtil.is_in_kernel_image(v) and is_double_link_list(v):
+                    heads.add(v)
+            heads = sorted(heads)
+            if len(heads) != 3:
+                continue
+            # the three are adjacent
+            size = current_arch.ptrsize * 2 # sizeof(struct list_head)
+            if heads[1] - heads[0] != size or heads[2] - heads[1] != size:
+                continue
+
+            for is_small, sides in branches:
+                taken = [v for v in sides[0] if v in heads]
+                fall = [v for v in sides[1] if v in heads]
+                # the side of `size >= 256` can build medium, and then the other side builds small.
+                # The side of `size < 1024` can build medium, and then the other side builds large.
+                # The last one built counts. PowerPC builds one before the branch and the other after it, and
+                # PowerPC and LoongArch build the others from the first one (the section anchor).
+                for one, other in ((taken, fall), (fall, taken)):
+                    if not one or one[-1] == heads[1]:
+                        continue
+                    if heads[1] not in other or other[-1] == one[-1]:
+                        continue
+                    if is_small:
+                        small = one[-1]
+                    else:
+                        small = heads[0] + heads[2] - one[-1]
+                    found.add((small, heads[1], heads[0] + heads[2] - small))
+        if len(found) != 1:
+            return None
+        small, medium, large = found.pop()
+        return {"small": small, "medium": medium, "large": large}
 
     def get_kmem_caches(self, target_names=()):
         """Return the parsed caches, or None if initialization fails."""
@@ -164539,7 +165776,10 @@ class SlobDumpCommand(GenericCommand, BufferingOutput, SlabDumpCommandMixin):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -164720,8 +165960,7 @@ class KernelSlabContains:
                 else:
                     red_left_pad = 0
                 color_offset = 0
-                x = read_int_from_memory(page + self.page_offset_inuse_objects_frozen)
-                objects = (x >> 16) & 0x7fff
+                _, objects, _ = KernelSlabAllocator.read_inuse_objects_frozen(page + self.page_offset_inuse_objects_frozen)
                 pages_needed = (slab_cache_size * objects + (pagesize - 1)) // pagesize
                 # Round the required page count up to 2^n.
                 if pages_needed:
@@ -171561,9 +172800,12 @@ class Ksym:
             # kallsyms_markers are monotonically increasing, and it doesn't increase very dramatically.
             num_markers = 1
             position = markers + element_size
-            while position + element_size <= token_table and Ksym.kernel_img[position + (element_size - 1)] == 0:
+            while position + element_size <= token_table:
                 a = u32(bytes(Ksym.kernel_img[position - element_size:position])) # prev
                 b = u32(bytes(Ksym.kernel_img[position:position + element_size])) # current
+                # the top byte is 0 (it is the first byte on big-endian)
+                if b >> 24:
+                    break
                 if a > b or b - a > 0x10_0000:
                     break
                 num_markers += 1
@@ -172287,6 +173529,15 @@ class Ksym:
             address_byte_size = current_arch.ptrsize
 
             if Ksym.kernel_version < (7, 0, 0):
+                # The relative base is the lowest symbol. It is `_text`, but `_stext` on MIPS, whose head.S reserves
+                # 0x400 bytes for the exception handlers before it, and the boot code at 0x200 on old s390x (e.g., v4.9).
+                if is_mips32() or is_mips64():
+                    relative_base_mask = 0x3ff
+                elif is_s390x():
+                    relative_base_mask = 0x1ff
+                else:
+                    relative_base_mask = get_pagesize_mask_low()
+
                 # get relative_base_address
                 if Ksym.kernel_version < (6, 4, 0):
                     # ignore the 0 immediately above offset_kallsyms_num_syms.
@@ -172313,7 +173564,7 @@ class Ksym:
                     gef> x/16xg 0xffffafc5c1750000
                     0xffffafc5c1750000:     Cannot access memory at address 0xffffafc5c1750000
                     """
-                    if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
+                    if not (relative_base_address and (relative_base_address & relative_base_mask) == 0):
                         Ksym.verbose_err(verbose, "Could not find kallsyms_relative_base")
                         return False
 
@@ -172334,7 +173585,7 @@ class Ksym:
                         Ksym.verbose_err(verbose, "kernel_img is not long enough.")
                         return False
                     relative_base_address = int.from_bytes(relative_base_address_data, endian_str)
-                    if not (relative_base_address and (relative_base_address & get_pagesize_mask_low()) == 0):
+                    if not (relative_base_address and (relative_base_address & relative_base_mask) == 0):
                         Ksym.verbose_err(verbose, "Could not find kallsyms_relative_base")
                         return False
 
@@ -197837,7 +199088,7 @@ class AddrMap:
             if phys_base is None:
                 return []
             # Linux x86_64 __pa_symbol() uses the fixed __START_KERNEL_map with the live phys_base.
-            image_offset = KernelConstsX86.START_KERNEL_MAP - phys_base
+            image_offset = KernelConstsX64.START_KERNEL_MAP - phys_base
             linear_offset = page_offset
         elif is_arm64():
             image_offset_addr = Symbol.resolve_address("kimage_voffset")
@@ -198593,7 +199844,8 @@ class PageTable(BufferingOutput):
                 return False
         return True
 
-    def execute_monitor(self, command):
+    @staticmethod
+    def execute_monitor(command):
         """The monitor shows the CPU selected in it, not the thread selected in gdb."""
         gdb.execute("monitor cpu {:d}".format(gdb.selected_thread().num - 1), to_string=True)
         try:
@@ -206465,13 +207717,17 @@ class KernelPage:
     def initialize(self):
         self.meta = []
 
-        if is_riscv64() or is_riscv32():
-            layout = self.get_riscv_page_layout()
+        # FLATMEM and SPARSEMEM_VMEMMAP place the page array linearly by PFN
+        if (
+            is_riscv64() or is_riscv32() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64()
+            or is_s390x() or is_loongarch64() or is_sparc32()
+        ):
+            layout = self.get_linear_page_layout()
             if layout is None:
-                self.meta.append(("err", "Could not resolve the RISC-V page array"))
+                self.meta.append(("err", "Could not resolve the page array"))
                 return None
-            self.PAGE_SHIFT = 12
-            self.mode = "RISCV_LINEAR"
+            self.PAGE_SHIFT = Kernel.slab_page_size().bit_length() - 1
+            self.mode = "LINEAR"
             self.page_base, self.sizeof_struct_page = layout
             return True
 
@@ -206586,9 +207842,11 @@ class KernelPage:
         return True
 
     @staticmethod
-    def get_riscv_page_layout():
+    def get_linear_page_layout():
         allocator = Kernel.get_slab_type()
         names = ["kmalloc-8", "kmalloc-16", "kmalloc-32", "kmalloc-64", "kmalloc-128", "kmalloc-256"]
+        # MIPS starts at kmalloc-128 (ARCH_DMA_MINALIGN), and the sheaves of v7.0~ leave few slabs in the lists
+        names += ["kmalloc-512", "kmalloc-1k", "kmalloc-1024", "kmalloc-2k", "kmalloc-2048"]
         if allocator == "SLUB":
             resolver = Kernel.slub()
             if not resolver.initialize():
@@ -206716,7 +207974,7 @@ class KernelPage:
             else:
                 return None
 
-        elif is_riscv64() or is_riscv32():
+        elif self.mode == "LINEAR":
             delta = page - self.page_base
             if delta < 0 or delta % self.sizeof_struct_page:
                 return None
@@ -206794,7 +208052,7 @@ class KernelPage:
             else:
                 return None
 
-        elif is_riscv64() or is_riscv32():
+        elif self.mode == "LINEAR":
             page = AddressUtil.normalize_address(self.page_base + pfn * self.sizeof_struct_page)
 
         else:
