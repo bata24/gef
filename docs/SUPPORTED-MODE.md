@@ -8,7 +8,7 @@
 - Supported architectures
     - Debugger (GDB) host (= Debuggee (ELF) host)
         - x86 and x64
-        - Possibly ARM and ARM64
+        - Possibly ARM32/64
 - Notes
     - The following instructions assume that you are the `root` user. Add `sudo` commands as needed.
     - The instructions also assume that you use `gdb-multiarch`. Of course, you can use `gdb`.
@@ -19,7 +19,7 @@
 - Supported architectures
     - Debugger (GDB) host (= Debuggee (ELF) host)
         - x86 and x64
-        - Possibly ARM and ARM64
+        - Possibly ARM32/64
 
 ## With Docker
 - Usage
@@ -28,7 +28,7 @@
 - Supported architectures
     - Debugger (GDB) host (= Debuggee (Docker, ELF) host)
         - x86 and x64
-        - Possibly ARM and ARM64
+        - Possibly ARM32/64
 - Notes
     - You can also install and use GEF inside Docker.
     - For debugging inside Docker, use `--privileged` when running `docker run` or `docker exec`, or configure equivalent ptrace permissions.
@@ -40,10 +40,10 @@
 - Supported architectures
     - Debugger (GDB) host
         - x86 and x64
-        - Possibly ARM and ARM64
+        - Possibly ARM32/64
     - Debugger stub (Gdbserver) host (= Debuggee (ELF) host)
         - x86 and x64
-        - Possibly ARM and ARM64
+        - Possibly ARM32/64
 
 ## With Qemu-system
 - Usage
@@ -57,7 +57,7 @@
     - Debugger stub (Qemu-system) host
         - x64
     - Debuggee (Qemu-system guest)
-        - x86, x64, ARM, ARM64, RISCV32 and RISCV64
+        - x86, x64, ARM32/64, RISCV32/64, MIPS32/64, PPC32/64, s390x, LoongArch and SPARC32
         - i8086 (16-bit) is supported experimentally.
 - Notes
     - Most commands should work fine unless `CONFIG_RANDSTRUCT=y`.
@@ -125,7 +125,7 @@
     - Debugger stub (Qiling framework) host
         - x64
     - Debuggee (ELF)
-        - x86, x64, ARM and ARM64
+        - x86, x64 and ARM32/64
 - Notes
     - When debugging ARM64 binaries, the flag register is not available, so branch taken/not taken detection may be incorrect.
     - This is experimental support, so some commands may not work.
@@ -151,7 +151,7 @@
     - Debugger (GDB) host
         - x64
     - Debuggee (debugged kernel)
-        - x64, ARM64
+        - x64 and ARM64
 - Notes
     - You need `gdb` version 12.x or later.
     - This runs very slowly over a serial interface; without a vmlinux with symbols, debugging is effectively impractical.
@@ -217,7 +217,7 @@
         - x64
     - Debuggee (Qemu-system guest)
         - x64
-        - Possibly x86, ARM and ARM64
+        - Possibly x86 and ARM32/64
 - Notes
     - This method sometimes fails.
         - For more information, see [docs/FAQ.md](FAQ.md).
@@ -241,7 +241,7 @@
         - x64
     - Debugger stub (Gdbserver) host (= Debuggee (ELF) host)
         - x64
-        - Possibly x86, ARM and ARM64
+        - Possibly x86 and ARM32/64
 - Notes
     - To connect from another machine, you can forward the port further.
         - Run `socat TCP-LISTEN:9998,fork,reuseaddr TCP-CONNECT:localhost:9999` on the `Android Studio` host machine.

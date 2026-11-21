@@ -9812,7 +9812,7 @@ Dump page tables for LoongArch 64.
 ### Syntax
 
 ```text
-usage: pagewalk loongarch [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-i] [-D] [-c] [-n] [-q]
+usage: pagewalk loongarch [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--pgdl USER_SPECIFIED_PGDL] [-i] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9825,6 +9825,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
+  --pgdl USER_SPECIFIED_PGDL
+                        use specified value as PGDL.
   -i, --include-aliased-pages
                         include aliased pages such as KASAN shadow (heavy memory use).
   -D, --disable-color   disable RWX colored output
@@ -9842,7 +9844,7 @@ Dump Linux page tables for MIPS 32/64, whose layout is read from the TLB refill 
 ### Syntax
 
 ```text
-usage: pagewalk mips [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+usage: pagewalk mips [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--pgd USER_SPECIFIED_PGD] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9855,6 +9857,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
+  --pgd USER_SPECIFIED_PGD
+                        use specified physical address as PGD.
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -9870,7 +9874,7 @@ Dump page tables for PowerPC 32/64.
 ### Syntax
 
 ```text
-usage: pagewalk ppc [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+usage: pagewalk ppc [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--pgd USER_SPECIFIED_PGD] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9883,6 +9887,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
+  --pgd USER_SPECIFIED_PGD
+                        use specified physical address as PGD of Linux (the root table of the user).
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -9928,7 +9934,7 @@ Dump page tables for s390x.
 ### Syntax
 
 ```text
-usage: pagewalk s390x [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+usage: pagewalk s390x [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--asce USER_SPECIFIED_ASCE] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9941,6 +9947,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
+  --asce USER_SPECIFIED_ASCE
+                        walk only the specified ASCE as the user space.
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -9956,7 +9964,7 @@ Dump page tables for SPARC 32 (SPARC Reference MMU).
 ### Syntax
 
 ```text
-usage: pagewalk sparc [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [-D] [-c] [-n] [-q]
+usage: pagewalk sparc [-h] [-L] [-N] [-P] [-Q] [-f REGEX] [-v VADDR] [-p PADDR] [-t VADDR] [--pgd USER_SPECIFIED_PGD] [-D] [-c] [-n] [-q]
 
 options:
   -h, --help            show this help message and exit
@@ -9969,6 +9977,8 @@ options:
   -v, --vrange VADDR    filter by map included specified virtual address.
   -p, --prange PADDR    filter by map included specified physical address.
   -t, --trace VADDR     show all level pagetables only associated specified address.
+  --pgd USER_SPECIFIED_PGD
+                        use specified physical address as PGD (the level 3 table) instead of the current context.
   -D, --disable-color   disable RWX colored output
   -c, --use-cache       use previous result.
   -n, --no-pager        do not use the pager.
@@ -11047,8 +11057,9 @@ kbt -t -f ssh  # include threads and filter by comm
                           | saved pt_regs   |
                           +-----------------+
 
-ARM uses thread_info.cpu_context.sp, and ARM64 uses thread.cpu_context.sp.
-The saved pc/ra is also shown on ARM and RISC-V. Running tasks are skipped because their saved
+ARM uses thread_info.cpu_context.sp, ARM64 thread.cpu_context.sp, MIPS thread.reg29, PPC and s390x
+thread.ksp, LoongArch thread.reg03, and SPARC32 thread_info.ksp. The saved pc/ra is also shown on
+ARM, RISC-V, MIPS, LoongArch and SPARC32. Running tasks are skipped because their saved
 context is stale. Text addresses are candidates, including stale values and function pointers;
 this is a stack scan, not a frame unwinder. User registers are available with `ktask -r`.
 This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
@@ -11177,7 +11188,7 @@ kmem-task -t 1337 /16 0x7ffd12345000    # like `telescope`
 
 ```text
 Reads the user-land memory of a task other than current through the page table of its mm->pgd.
-The page table is walked by `pagewalk` with the root register specified (--cr3, --ttbr0 or --satp).
+The page table is walked by `pagewalk` with its root specified (--cr3, --ttbr0, --satp, --pgd, --asce or --pgdl).
 Pages that are not present (not faulted in yet, or swapped out) cannot be read.
 Without debug information, mm->pgd is the field whose page table maps the task's own VMAs.
 This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
@@ -12545,7 +12556,7 @@ the head or member offset it references. A head that no dispatcher pointed at is
 shown as `hook[NN]`. On v6.12 and later, names are read from generated static-call
 symbols such as `__SCK__lsm_static_call_<hook>_<N>`.
 
-When CONFIG_KALLSYMS_ALL=n removes these data symbols, x86 decodes the trampolines
+When CONFIG_KALLSYMS_ALL=n removes these data symbols, x86 and PPC32 decode the trampolines
 `__SCT__lsm_static_call_<hook>_<N>` (text symbols), and the other architectures take
 the keys each `security_*` dispatcher loads. The latter names a hook point after its
 dispatcher and misses the ones no dispatcher calls (e.g., inode_free_security_rcu).
