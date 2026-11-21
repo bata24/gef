@@ -16375,7 +16375,7 @@ List command availability, with the reasons and requirements for unavailable com
 ### Syntax
 
 ```text
-usage: gef avail-comm-list [-h] [-s] [-a] [-u] [-v] [-n]
+usage: gef avail-comm-list [-h] [-s] [-a] [-u] [-v] [-A] [-M] [-n]
 
 options:
   -h, --help            show this help message and exit
@@ -16384,6 +16384,8 @@ options:
   -u, --only-unavailable
                         show only unavailable commands.
   -v, --verbose         show full reasons and deferred checks.
+  -A, --arch-table      show the table of supported architectures. (-a and -v are ignored)
+  -M, --mode-table      show the table of supported GDB modes. (-a and -v are ignored)
   -n, --no-pager        do not use the pager.
 ```
 

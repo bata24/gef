@@ -231321,6 +231321,10 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-a", "--only-available", action="store_true", help="show only available commands.")
     parser.add_argument("-u", "--only-unavailable", action="store_true", help="show only unavailable commands.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show full reasons and deferred checks.")
+    parser.add_argument("-A", "--arch-table", action="store_true",
+                        help="show the table of supported architectures. (-a and -v are ignored)")
+    parser.add_argument("-M", "--mode-table", action="store_true",
+                        help="show the table of supported GDB modes. (-a and -v are ignored)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -231502,12 +231506,52 @@ class GefAvailableCommandListCommand(GenericCommand, BufferingOutput):
             self.add_out(cmdline, available, reason)
         return
 
+    def listup_table(self, title, columns, only_name, exclude_name):
+        """Add the table of commands and columns, judged statically from the decorators only_name and exclude_name."""
+        self.out.append(titlify(title))
+        # The column names are stacked from the center to both sides to halve the height.
+        mid = len(columns) // 2
+        for i, right in enumerate(columns[mid:]):
+            left = ""
+            if i < mid:
+                left = columns[mid - 1 - i]
+            self.out.append("{:>{:d}s}{:s} {:s}".format(left, 33 + (mid - i) * 2, " |" * (i * 2), right))
+
+        instances = __gef_command_instances__.items()
+        if self.args.sort:
+            instances = sorted(instances)
+        for cmdline, instance in instances:
+            supported = set(columns)
+            for name, args in self.get_decorators(instance.do_invoke):
+                if name == only_name:
+                    supported &= set(args)
+                elif name == exclude_name:
+                    supported -= set(args)
+            if self.args.only_unavailable and len(supported) == len(columns):
+                continue
+            marks = []
+            for column in columns:
+                if column in supported:
+                    marks.append(Color.colorify("O", "bold green"))
+                else:
+                    marks.append(Color.grayify("."))
+            self.out.append("{:<34s}{:s}".format(cmdline, " ".join(marks)))
+        return
+
     @Decorator.parse_args
     def do_invoke(self, args):
         self.out = []
-        self.listup_avail_comms()
-        if args.sort:
-            self.out = sorted(self.out)
+        if args.arch_table:
+            archs = list(ARCH_CHECKERS)
+            self.listup_table("Architecture", archs, "Decorator.only_if_specific_arch", "Decorator.exclude_specific_arch")
+        if args.mode_table:
+            # kdb is a sub-mode of kgdb. normal is none of the others (e.g., run, attach and gdbserver).
+            modes = [mode for mode in GDB_MODE_CHECKERS if mode != "kdb"] + ["normal"]
+            self.listup_table("GDB mode", modes, "Decorator.only_if_specific_gdb_mode", "Decorator.exclude_specific_gdb_mode")
+        if not args.arch_table and not args.mode_table:
+            self.listup_avail_comms()
+            if args.sort:
+                self.out = sorted(self.out)
         self.print_output(check_terminal_size=True)
         return
 
