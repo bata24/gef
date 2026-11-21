@@ -818,6 +818,41 @@ class MemoryCache:
             return bytes(out)
         return
 
+    @staticmethod
+    def is_mips_mapped(addr):
+        """Return whether `addr` is in a mapped kernel segment of MIPS under QEMU, i.e., KSEG2 and KSEG3 (XKSEG, CKSSEG
+        and CKSEG3 on 64-bit), which `read_mips_mapped` can read."""
+        if not is_qemu_system() or MemoryCache.default_namespace != "virtual":
+            return False
+        if is_mips32():
+            return addr >= 0xc000_0000
+        if is_mips64():
+            # XKPHYS, CKSEG0 and CKSEG1 are unmapped
+            if 0xc000_0000_0000_0000 <= addr < 0xffff_ffff_8000_0000:
+                return True
+            return addr >= 0xffff_ffff_c000_0000
+        return False
+
+    @staticmethod
+    def read_mips_mapped(vaddr, length):
+        """Read MIPS virtual memory through the kernel page tables.
+        This is the cache reader used only after the ordinary virtual read has failed. The kernel fills the TLB by software,
+        and QEMU's gdbstub translates an address only by the TLB, so a page of a module or vmalloc is unreadable until the
+        kernel accesses it. Each page is translated by pagewalk, which reads the page tables in the physical memory."""
+        out = bytearray()
+        while len(out) < length:
+            current = vaddr + len(out)
+            paddr = AddrMap.v2p(current)
+            if paddr is None:
+                raise gdb.MemoryError("The page tables do not map address {:#x}".format(current))
+            # 4KB is in a page of any size
+            size = min(0x1000 - (current & 0xfff), length - len(out))
+            data = read_physmem(paddr, size)
+            if data is None:
+                raise gdb.MemoryError("Cannot access physical memory at address {:#x}".format(paddr))
+            out += data
+        return bytes(out)
+
 
 class Config:
     """Manage gef configurations. Most configs are tied to specific commands.
@@ -13321,6 +13356,9 @@ def read_memory(addr, length, safe=False):
             # authoritative, so retry through it before reporting an unreadable address.
             if MemoryCache.get_arm32_lpae_root() is not None:
                 return MemoryCache.read(addr, length, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+            # QEMU translates a mapped address of MIPS only by the TLB
+            if MemoryCache.is_mips_mapped(addr):
+                return MemoryCache.read(addr, length, reader=MemoryCache.read_mips_mapped, namespace="mips-page-table")
             raise
     except (gdb.MemoryError, MemoryError, OverflowError, ValueError, TypeError, struct.error):
         if safe:
@@ -13638,6 +13676,12 @@ def is_valid_addr(addr):
         if MemoryCache.get_arm32_lpae_root() is not None:
             try:
                 MemoryCache.read(addr, 1, reader=MemoryCache.read_arm32_lpae, namespace="arm32-lpae-swapper")
+                return True
+            except gdb.MemoryError:
+                pass
+        if MemoryCache.is_mips_mapped(addr):
+            try:
+                MemoryCache.read(addr, 1, reader=MemoryCache.read_mips_mapped, namespace="mips-page-table")
                 return True
             except gdb.MemoryError:
                 pass
@@ -75620,6 +75664,17 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    # GCC may load `modules.next` from the section anchor of the file (e.g., `lwz r9, 8(r10)`)
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res, follow_addi=True)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 else:
                     g = []
                 for x in g:
@@ -83295,7 +83350,9 @@ class KernelLayout:
                     for r in re.finditer(rb"swapper(?:/0)?\0", data):
                         comm = addr + r.start()
                         head_start = (comm - 0x2000) & ~(current_arch.ptrsize - 1)
-                        head = read_memory(head_start, comm - head_start, safe=True)
+                        # another "swapper" (e.g., in the strings of BTF) may be unaligned
+                        head_size = (comm - head_start) & ~(current_arch.ptrsize - 1)
+                        head = read_memory(head_start, head_size, safe=True)
                         if head is None:
                             continue
                         words = slice_unpack(head, current_arch.ptrsize)
@@ -94068,11 +94125,11 @@ class KernelModule:
             if typetab is not None:
                 sym_type = chr(read_int8_from_memory(typetab + i))
             elif "5.0" <= kversion:
-                # st_size
+                # st_size; the low byte is the last one on big-endian
                 if is_64bit():
-                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 16))
+                    sym_type = chr(read_int64_from_memory(symtab + sizeof_symtab_entry * i + 16) & 0xff)
                 else:
-                    sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 8))
+                    sym_type = chr(read_int32_from_memory(symtab + sizeof_symtab_entry * i + 8) & 0xff)
             else:
                 # st_info
                 if is_64bit():
@@ -103593,7 +103650,10 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -103694,8 +103754,20 @@ class KernelModuleLoadCommand(GenericCommand):
             machine = Elf.EM_AARCH64
         elif is_arm32():
             machine = Elf.EM_ARM
-        else:
+        elif is_riscv32() or is_riscv64():
             machine = Elf.EM_RISCV
+        elif is_mips32() or is_mips64():
+            machine = Elf.EM_MIPS
+        elif is_ppc32():
+            machine = Elf.EM_PPC
+        elif is_ppc64():
+            machine = Elf.EM_PPC64
+        elif is_s390x():
+            machine = Elf.EM_S390
+        elif is_loongarch64():
+            machine = Elf.EM_LOONGARCH
+        else:
+            machine = Elf.EM_SPARC
         mismatches = []
         if elf.e_type != Elf.ET_REL:
             mismatches.append("e_type is {:#x}, not ET_REL".format(elf.e_type))
@@ -103790,6 +103862,12 @@ class KernelModuleLoadCommand(GenericCommand):
         if not sections:
             self.quiet_err("module->sect_attrs of {:s} is NULL or invalid".format(self.args.name))
             return
+        # PPC64 renames ".init" in the section names to "_init" (e.g., `_init.text`) in module_frob_arch_sections()
+        if is_ppc64():
+            elf = Elf.get_elf(self.args.path)
+            if elf is not None and elf.is_valid() and elf.shdrs:
+                names = {s.sh_name.replace(".init", "_init"): s.sh_name for s in elf.shdrs}
+                sections = [(names.get(name, name), addr) for name, addr in sections]
         for name, addr in sections:
             self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
             # unneeded, but for convenience
@@ -103836,7 +103914,10 @@ class KernelModuleLoadCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if not os.path.exists(args.path):
@@ -112286,7 +112367,10 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.max_range and args.max_range % current_arch.ptrsize:
@@ -112300,13 +112384,17 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
         self.quiet_info("Wait for memory scan")
 
         self.klayout = Kernel.layout()
-        riscv_data_range = (
-            self.klayout.is_complete and (is_riscv32() or is_riscv64()) and
-            self.klayout.ro_end <= self.klayout.rw_base < self.klayout.rw_end
-        )
-        if not self.klayout.is_complete or (self.klayout.rwx and not riscv_data_range):
+        if not self.klayout.is_complete:
             err("Unsupported environment which has RWX data area")
             return
+        # The other arches may map the whole image as RWX (e.g., the KSEG0 of MIPS), where .data is resolved apart from .rodata
+        if self.klayout.rwx:
+            if is_x86() or is_arm32() or is_arm64():
+                err("Unsupported environment which has RWX data area")
+                return
+            if not self.klayout.ro_end <= self.klayout.rw_base < self.klayout.rw_end:
+                err("Unsupported environment which has RWX data area")
+                return
 
         maps = sorted(self.klayout.maps, key=lambda entry: entry.vstart)
         self.map_starts = [entry.vstart for entry in maps]
@@ -112337,14 +112425,14 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             else:
                 chunks = [(start, data)]
             for chunk_start, chunk in chunks:
-                if is_riscv32() or is_riscv64():
-                    chunk_end = chunk_start + len(chunk)
-                    aligned_start = align(chunk_start, current_arch.ptrsize)
-                    aligned_end = chunk_end - chunk_end % current_arch.ptrsize
-                    if aligned_start >= aligned_end:
-                        continue
-                    chunk = chunk[aligned_start - chunk_start:aligned_end - chunk_start]
-                    chunk_start = aligned_start
+                # the data range may end at an unaligned symbol (e.g., `_end`)
+                chunk_end = chunk_start + len(chunk)
+                aligned_start = align(chunk_start, current_arch.ptrsize)
+                aligned_end = chunk_end - chunk_end % current_arch.ptrsize
+                if aligned_start >= aligned_end:
+                    continue
+                chunk = chunk[aligned_start - chunk_start:aligned_end - chunk_start]
+                chunk_start = aligned_start
                 for i, rw_d in enumerate(slice_unpack(chunk, current_arch.ptrsize)):
                     rw_data.append((chunk_start + i * current_arch.ptrsize, rw_d))
         if not rw_data:
@@ -172597,7 +172685,10 @@ class KtypesCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -172643,6 +172734,27 @@ class KtypesLoadCommand(KtypesCommand):
                     return GefUtil.which("riscv32-linux-gnu-gcc"), []
                 except FileNotFoundError:
                     return GefUtil.which("riscv64-linux-gnu-gcc"), ["-march=rv32imac", "-mabi=ilp32"]
+            if is_mips32() and Endian.is_big_endian():
+                return GefUtil.which("mips-linux-gnu-gcc"), []
+            if is_mips32():
+                return GefUtil.which("mipsel-linux-gnu-gcc"), []
+            if is_mips64() and Endian.is_big_endian():
+                return GefUtil.which("mips64-linux-gnuabi64-gcc"), []
+            if is_mips64():
+                return GefUtil.which("mips64el-linux-gnuabi64-gcc"), []
+            if is_ppc32():
+                return GefUtil.which("powerpc-linux-gnu-gcc"), []
+            if is_ppc64() and Endian.is_big_endian():
+                return GefUtil.which("powerpc64-linux-gnu-gcc"), []
+            if is_ppc64():
+                return GefUtil.which("powerpc64le-linux-gnu-gcc"), []
+            if is_s390x():
+                return GefUtil.which("s390x-linux-gnu-gcc"), []
+            if is_loongarch64():
+                return GefUtil.which("loongarch64-linux-gnu-gcc"), []
+            if is_sparc32():
+                # there is no cross compiler for 32-bit SPARC in Debian
+                return GefUtil.which("sparc64-linux-gnu-gcc"), ["-m32"]
         except FileNotFoundError as e:
             err("{}".format(e))
         return None
@@ -172687,7 +172799,10 @@ class KtypesLoadCommand(KtypesCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         if not self.check_command():
             return
@@ -172897,9 +173012,14 @@ class Ksym:
                 return None
             if current_arch.ptrsize == 8:
                 x86_machine = Elf.EM_X86_64
+                ppc_machine = Elf.EM_PPC64
             else:
                 x86_machine = Elf.EM_386
-            machines = {"X86": x86_machine, "ARM": Elf.EM_ARM, "ARM64": Elf.EM_AARCH64, "RISCV": Elf.EM_RISCV}
+                ppc_machine = Elf.EM_PPC
+            machines = {
+                "X86": x86_machine, "ARM": Elf.EM_ARM, "ARM64": Elf.EM_AARCH64, "RISCV": Elf.EM_RISCV, "MIPS": Elf.EM_MIPS,
+                "PPC": ppc_machine, "S390X": Elf.EM_S390, "LOONGARCH": Elf.EM_LOONGARCH, "SPARC": Elf.EM_SPARC,
+            }
             if Endian.is_big_endian():
                 endian = Elf.BIG_ENDIAN
             else:
@@ -172992,6 +173112,11 @@ class Ksym:
                 targets = ("vectors",)
             elif is_riscv32() or is_riscv64():
                 targets = ("handle_exception",)
+            elif is_loongarch64():
+                targets = ("exception_handlers",)
+            elif is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_sparc32():
+                # the exception entry is not resolved, so only linux_banner is used
+                targets = ()
             else:
                 err("Unsupported architecture for {:s}".format(source))
                 return None
@@ -174675,7 +174800,10 @@ class KsymaddrRemoteCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         if args.print_saved_config:
             self.print_saved_config()
@@ -174721,6 +174849,9 @@ class VmlinuxToElfApplyCommand(GenericCommand):
             return None
 
         # resolve text_base, ro_base
+        # The mapping may start before `_text` (e.g., KERNBASE of SPARC32, where QEMU leaves the ELF header of zImage that
+        # vmlinux-to-elf takes for the input ELF). The layout is refined by kallsyms, which is reset by a new symbol file.
+        Ksym.get_kallsyms(quiet=True)
         klayout = Kernel.layout()
         if None in (klayout.text_base, klayout.text_size, klayout.ro_base, klayout.ro_size):
             err("Failed to resolve")
@@ -174732,8 +174863,9 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         # rodata size detection may be inaccurate on kernels with RWX attribute regions.
         # Since they tend to be very large, we put a size cap on the rodata to make it faster.
         if klayout.rwx:
-            # The number 0x400000 has no basis.
-            fixed_ro_base_size = min(0x40_0000, klayout.ro_size)
+            # The number 0x400000 has no basis. It covers kallsyms, which is found within `Ksym.ro_size` (e.g., after 11MB
+            # of .rodata on LoongArch).
+            fixed_ro_base_size = min(max(0x40_0000, Ksym.ro_size), klayout.ro_size)
         else:
             fixed_ro_base_size = klayout.ro_size
 
@@ -174797,8 +174929,25 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         cmd = "{:s} {:s} {:s} --base-address={:#x}".format(
             shlex.quote(vmlinux2elf), shlex.quote(dumped_mem_file), shlex.quote(symboled_vmlinux_file), klayout.text_base,
         )
+        # vmlinux-to-elf guesses the architecture from the function prologues, but it does not know RISC-V, s390x
+        # and LoongArch, and takes PPC64 for 32-bit PPC
+        e_machine = None
         if is_riscv32() or is_riscv64():
-            cmd += " --e-machine=243 --bit-size={:d}".format(current_arch.ptrsize * 8)
+            e_machine = Elf.EM_RISCV
+        elif is_mips32() or is_mips64():
+            e_machine = Elf.EM_MIPS
+        elif is_ppc32():
+            e_machine = Elf.EM_PPC
+        elif is_ppc64():
+            e_machine = Elf.EM_PPC64
+        elif is_s390x():
+            e_machine = Elf.EM_S390
+        elif is_loongarch64():
+            e_machine = Elf.EM_LOONGARCH
+        elif is_sparc32():
+            e_machine = Elf.EM_SPARC
+        if e_machine is not None:
+            cmd += " --e-machine={:d} --bit-size={:d}".format(e_machine, current_arch.ptrsize * 8)
         warn("Execute `{:s}`".format(cmd))
         if GefUtil.os_system(cmd):
             if os.path.exists(symboled_vmlinux_file):
@@ -174848,20 +174997,20 @@ class VmlinuxToElfApplyCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         info("Wait for memory scan")
-
-        text_base = Kernel.layout().text_base
-        if text_base is None:
-            err("Failed to resolve kbase")
-            return
 
         symboled_vmlinux_file = self.dump_kernel_elf(args.rescan)
         if symboled_vmlinux_file is None:
             err("Failed to create kernel ELF")
             return
+        # the same base as the dump, which is refined by kallsyms
+        text_base = Kernel.layout().text_base
 
         # load symbol
         info("Adding symbol")
@@ -217364,7 +217513,10 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         try:
