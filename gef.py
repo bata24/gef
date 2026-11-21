@@ -71346,6 +71346,7 @@ class KernelAddressHeuristicFinderUtil:
             else:
                 pointer_access = ("lw", "sw")
             bases = {}
+            call_pending = False
             for line in res.splitlines():
                 insn = KernelAddressHeuristicFinderUtil.parse_insn_line(line, "#")
                 if insn is None:
@@ -71363,10 +71364,14 @@ class KernelAddressHeuristicFinderUtil:
                             yield bases[m.group(2)] + int(m.group(1))
                 except ValueError:
                     pass
+                # the callee keeps s0-s7 and fp (s8), but the instruction in the delay slot
+                # (e.g., `jal seq_puts` + `lw a1,8200(v0)`) runs before it
+                if call_pending:
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"s[0-8]|fp", k)}
+                    call_pending = False
                 # a store, a branch and a trap write no register; anything else overwrites the first operand
                 if mnemonic in ("jal", "jalr", "bal"):
-                    # the callee keeps s0-s7 and fp (s8)
-                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"s[0-8]|fp", k)}
+                    call_pending = True
                 elif not re.fullmatch(no_write, mnemonic):
                     bases.pop(ops[0], None)
             return
@@ -71490,6 +71495,7 @@ class KernelAddressHeuristicFinderUtil:
 
         def gen():
             bases = {}
+            call_pending = False
             for line in res.splitlines():
                 insn = KernelAddressHeuristicFinderUtil.parse_insn_line(line, "!")
                 if insn is None:
@@ -71512,12 +71518,16 @@ class KernelAddressHeuristicFinderUtil:
                             yield bases[m.group(1)] + offset
                 except ValueError:
                     pass
+                # the callee keeps the locals and the ins of this window, but the instruction in the delay slot
+                # (e.g., `call f` + `ld [ %g1 + 0x3b4 ], %o1`) runs before it
+                if call_pending:
+                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"%[li]\d", k)}
+                    call_pending = False
                 # the destination is the last operand. `save` and `restore` switch the register window.
                 if mnemonic in ("save", "restore"):
                     bases.clear()
                 elif mnemonic in ("call", "jmpl"):
-                    # the callee keeps the locals and the ins of this window
-                    bases = {k: v for k, v in bases.items() if re.fullmatch(r"%[li]\d", k)}
+                    call_pending = True
                 elif not re.fullmatch(r"st\w*|clr|b\w*|cmp|tst|ret|retl|jmp|nop|t\w+|unimp", mnemonic):
                     bases.pop(ops[-1], None)
             return
@@ -74813,6 +74823,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
+                elif is_mips32() or is_mips64():
+                    g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
+                elif is_ppc32() or is_ppc64():
+                    g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
+                elif is_s390x():
+                    g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
+                elif is_loongarch64():
+                    g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(res)
+                elif is_sparc32():
+                    g = KernelAddressHeuristicFinderUtil.sparc32_sethi_use(res)
                 for x in g:
                     return x
         return None
@@ -75025,6 +75045,94 @@ class KernelAddressHeuristicFinder:
                     return None
                 return task
             return r
+        elif is_mips32() or is_mips64() or is_sparc32() or is_loongarch64():
+            # The kernel keeps the thread_info of the current task in $28 (gp) on MIPS, in %g6 on SPARC32 and in $tp
+            # on LoongArch (e.g., v6.6). It is at the bottom of the kernel stack, and has `task` at the top (after
+            # `uwinmask` on SPARC32). The user has its own value there.
+            if not is_in_kernel():
+                return None
+            if is_sparc32():
+                current_thread_info = get_register("$g6")
+                offset_task = current_arch.ptrsize
+            elif is_loongarch64():
+                current_thread_info = get_register("$tp")
+                offset_task = 0
+            else:
+                current_thread_info = get_register("$gp")
+                offset_task = 0
+            if not current_thread_info or not KernelAddressHeuristicFinderUtil.is_kernel_space(current_thread_info):
+                return None
+            # The exception entry from the user sets the register after the kernel mode starts. A candidate is
+            # accepted only if its task links back to it by `task_struct.stack`, which follows `state` at the top
+            # of task_struct, unless the layout is randomized.
+            try:
+                v = read_int_from_memory(current_thread_info + offset_task)
+                head = None
+                if v and KernelAddressHeuristicFinderUtil.is_kernel_space(v) and is_valid_addr(v):
+                    head = slice_unpack(read_memory(v, current_arch.ptrsize * 0x10), current_arch.ptrsize)
+            except gdb.MemoryError:
+                return None
+            if head is not None and current_thread_info in head:
+                return v
+            # LoongArch with CONFIG_THREAD_INFO_IN_TASK (e.g., v7.2) keeps the task itself in $tp
+            if is_loongarch64() and is_valid_addr(current_thread_info):
+                return current_thread_info
+        elif is_ppc32():
+            # The kernel keeps the current task in r2. The user has its own value there, and the exception entry
+            # from the user sets it after the kernel mode starts.
+            if not is_in_kernel():
+                return None
+            r = get_register("$r2")
+            if r and KernelAddressHeuristicFinderUtil.is_kernel_space(r) and is_valid_addr(r):
+                return r
+        elif is_ppc64() or is_s390x():
+            # The per-CPU area has the current task followed by the kernel stack pointer of the task,
+            # i.e., `paca_struct.__current` and `kstack` on PPC64, and `lowcore.current_task` and `kernel_stack`
+            # on s390x (`thread_info` is between them ~v4.9). Their offsets depend on the version and the config.
+            if is_ppc64():
+                # The kernel keeps the paca in r13, and in SPRG1 also while the user runs (HSPRG0 too as the HV).
+                if is_in_kernel():
+                    candidates = [get_register("$r13"), get_register("$sprg1"), get_register("$hsprg0")]
+                else:
+                    candidates = [get_register("$sprg1"), get_register("$hsprg0")]
+                data = None
+                for paca in dict.fromkeys(candidates):
+                    if paca and AddressUtil.is_msb_on(paca):
+                        data = read_memory(paca, 0x1000, safe=True)
+                        if data is not None:
+                            break
+            else:
+                # The user runs in its own address space (the primary space), where the kernel is not readable.
+                if not is_in_kernel():
+                    return None
+                # The lowcore is at the prefix of the CPU in the absolute address.
+                prefix = get_register("$prefix")
+                if prefix is None:
+                    return None
+                data = read_physmem(prefix + 0x300, 0x100)
+            if not data:
+                return None
+            # A pair is accepted only if its task has the base of the stack in `task_struct.stack`, which follows
+            # thread_info (THREAD_INFO_IN_TASK, 0x108 bytes on PPC64 v6.6) and `state` at the top of task_struct,
+            # unless the layout is randomized. THREAD_SIZE is 8 KiB to 64 KiB (e.g., CONFIG_KASAN=y).
+            words = slice_unpack(data, 8)
+            for i, task in enumerate(words):
+                if not task or task & 0x7:
+                    continue
+                if not KernelAddressHeuristicFinderUtil.is_kernel_space(task):
+                    continue
+                for kstack in words[i + 1:i + 3]:
+                    if not kstack or kstack & 0x7 or not KernelAddressHeuristicFinderUtil.is_kernel_space(kstack):
+                        continue
+                    head = read_memory(task, 8 * 0x40, safe=True)
+                    if head is None:
+                        break
+                    head = slice_unpack(head, 8)
+                    for thread_size in [0x2000, 0x4000, 0x8000, 0x10000]:
+                        stack = kstack & ~(thread_size - 1)
+                        # `thread_info` of s390x ~v4.9 is the base itself, not a stack pointer
+                        if stack != kstack and stack in head:
+                            return task
         return None
 
     @staticmethod
@@ -75147,7 +75255,8 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (from current)
         current = None
-        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64():
+        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or \
+                is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
             current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
         elif is_x86_64() or is_x86_32():
             current_task = KernelAddressHeuristicFinder.get_current_task()
@@ -75163,8 +75272,9 @@ class KernelAddressHeuristicFinder:
         if init_task is not None:
             return init_task
 
-        # On ARM and RISC-V, another CPU may have a readable current task and a complete task list.
-        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64():
+        # Except on x86, another CPU may have a readable current task and a complete task list.
+        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or \
+                is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
             orig_thread = gdb.selected_thread()
             threads = (thread for thread in KernelPerCpu.get_cpu_threads() if thread != orig_thread)
             with ContextManager.threads(threads) as threads:
@@ -83172,6 +83282,105 @@ class KernelLayout:
             dic["rw_base"] = 0
             dic["rw_end"] = 0
 
+            # MIPS, LoongArch and SPARC32 start .data right after .rodata with the stack of the boot task
+            # (init_thread_union), so .rodata ends there. `init_task.stack` points to it.
+            # init_task is the only task whose comm is "swapper/0" (or "swapper" when CONFIG_SMP=n),
+            # and it points to itself through real_parent, parent and group_leader, which are before comm.
+            stack = None
+            if is_mips32() or is_mips64() or is_loongarch64() or is_sparc32():
+                for addr in range(ro_base, dic["ro_end"], chunk_size):
+                    data = read_memory(addr, min(chunk_size, dic["ro_end"] - addr), safe=True)
+                    if data is None:
+                        continue
+                    for r in re.finditer(rb"swapper(?:/0)?\0", data):
+                        comm = addr + r.start()
+                        head_start = (comm - 0x2000) & ~(current_arch.ptrsize - 1)
+                        head = read_memory(head_start, comm - head_start, safe=True)
+                        if head is None:
+                            continue
+                        words = slice_unpack(head, current_arch.ptrsize)
+                        tasks = {x for x in words if head_start <= x < comm and words.count(x) >= 3}
+                        if not tasks:
+                            continue
+                        # the window may reach the static object before init_task (e.g., initramfs_domain), so the
+                        # object that has comm is the nearest one
+                        task = max(tasks)
+                        task_head = slice_unpack(read_memory(task, current_arch.ptrsize * 0x40), current_arch.ptrsize)
+                        # the stack is page aligned, and is before init_task in .data
+                        stacks = {x for x in task_head if ro_base < x < task and x % get_pagesize() == 0}
+                        if len(stacks) == 1:
+                            stack = stacks.pop()
+                            break
+                    if stack is not None:
+                        break
+                if stack is not None:
+                    dic["ro_end"] = stack
+
+            # SPARC32 has no "Kernel data" in the iomem resource tree, but the header for the boot loaders ("HdrS"),
+            # which follows the trap table at the top of .text, has `_end`.
+            #   "HdrS", LINUX_VERSION_CODE, HdrS version (2), root_flags (2), root_dev (2), ram_flags (2),
+            #   sparc_ramdisk_image, sparc_ramdisk_size, reboot_command, 0, 0, 0, _end
+            if is_sparc32() and stack is not None:
+                data = read_memory(dic["text_base"], 0x20000, safe=True) or b""
+                pos = data.find(b"HdrS")
+                if pos != -1 and pos + 0x2c <= len(data):
+                    image_end = u32(data[pos + 0x28:pos + 0x2c])
+                    if dic["ro_end"] < image_end < end and is_valid_addr(image_end - 1):
+                        dic["rw_base"] = dic["ro_end"]
+                        dic["rw_end"] = image_end
+
+            # PPC has no "Kernel data" in the iomem resource tree either. setup_arch() sets init_mm.start_code,
+            # end_code, end_data and brk to `_stext`, `_etext`, `_edata` and `_end` (`klimit` ~v5.x), and
+            # start_data and start_brk stay 0. init_mm is in .data, which is in the capped .rodata here.
+            # .data starts at `__init_end` after the init sections, which free_initmem() passes to
+            # free_reserved_area() with `__init_begin` (= `_sinittext`). It needs kallsyms, which is parsed with
+            # `use_iomem=False`.
+            if (is_ppc32() or is_ppc64()) and use_iomem:
+                ptrsize = current_arch.ptrsize
+                if ptrsize == 8:
+                    key = p64(dic["text_base"])
+                else:
+                    key = p32(dic["text_base"])
+                image_end = None
+                for addr in range(ro_base, dic["ro_end"], chunk_size):
+                    data = read_memory(addr, min(chunk_size + ptrsize * 6, dic["ro_end"] - addr), safe=True)
+                    if data is None:
+                        continue
+                    pos = -1
+                    while True:
+                        pos = data.find(key, pos + 1)
+                        if pos == -1 or pos >= chunk_size:
+                            break
+                        if pos % ptrsize or pos + ptrsize * 6 > len(data):
+                            continue
+                        start_code, end_code, start_data, end_data, start_brk, brk = slice_unpack(
+                            data[pos:pos + ptrsize * 6], ptrsize,
+                        )
+                        if start_data != 0 or start_brk != 0:
+                            continue
+                        if start_code < end_code <= ro_base < end_data <= brk:
+                            image_end = brk
+                            break
+                    if image_end is not None:
+                        break
+                init_begin = Ksym.get_addr("_sinittext")
+                free_initmem = Ksym.get_addr("free_initmem")
+                if image_end is not None and init_begin and free_initmem:
+                    res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(free_initmem, 40)
+                    candidates = []
+                    for x in KernelAddressHeuristicFinderUtil.ppc_addis_use(res):
+                        # PPC64 may load them from the TOC (e.g., `ld r4,-32640(r2)`)
+                        for y in (x, read_int_from_memory(x, safe=True)):
+                            if y and init_begin < y < image_end and y % get_pagesize() == 0:
+                                candidates.append(y)
+                    # the smallest one, since `ppc_md`, which free_initmem() also writes, is in .data
+                    if candidates:
+                        dic["rw_base"] = min(candidates)
+                        dic["rw_end"] = image_end
+                # .rodata ends before the init sections. `__end_rodata` is in kallsyms only if it is `_sinittext`.
+                if init_begin and ro_base < init_begin < dic["ro_end"]:
+                    dic["ro_end"] = init_begin
+
         else:
             # 3. Search for the kernel RW base.
             # If ro_base can be detected, the RW area is searched starting after ro_base.
@@ -83230,9 +83439,10 @@ class KernelLayout:
 
             # The page-table mapping of ARM32 (and x86_32 without NX) may start before `_text`,
             # e.g. at PAGE_OFFSET with swapper_pg_dir. "Kernel code" starts at `_text` there.
+            # MIPS runs in the whole unmapped segment, which starts with the exception vectors.
             # ARM64 is excluded since its "Kernel code" starts at `_stext` on newer kernels.
             code = next((x for x in resources if x[2] == "code"), None)
-            if code and (is_arm32() or is_x86()):
+            if code and (is_arm32() or is_x86() or is_mips32() or is_mips64()):
                 phys_text_base = AddrMap.v2p(self.text_base)
                 if phys_text_base is not None:
                     text_base = AddressUtil.normalize_address(self.text_base + code[0] - phys_text_base)
@@ -83257,6 +83467,10 @@ class KernelLayout:
             elif not self.rw_base and rw_base < self.ro_end:
                 # "Kernel data" of old x86 kernels starts at `_etext`, so it contains .rodata
                 rw_base = self.ro_end
+            elif is_s390x() and self.rw_base and rw_base < self.ro_end:
+                # "Kernel data" of s390x starts at `_etext` too. The image (e.g., v6.1) is in the linear map, where the RW
+                # mapping after .rodata continues to the end of the RAM, so only the end is taken from it.
+                rw_base = self.rw_base
             if klayout.ro_end <= rw_base < rw_end and is_valid_addr(rw_end - 1):
                 return klayout.replace(rw_base=rw_base, rw_end=rw_end)
         except (gdb.error, gdb.MemoryError, StopIteration, ValueError):
@@ -83289,8 +83503,8 @@ class KernelLayout:
             return base
 
         klayout = base
-        # The mapping of LoongArch starts at the DMW, i.e., physical address 0
-        if is_arm32() or is_x86() or is_loongarch64():
+        # The mapping of LoongArch starts at the DMW, i.e., physical address 0, and that of SPARC32 at KERNBASE
+        if is_arm32() or is_x86() or is_loongarch64() or is_sparc32():
             text_base = lookup(("_text",), base.text_base, base.text_end)
             # `_text` is not in kallsyms of ARM32 without CONFIG_KALLSYMS_ALL. Then `_stext`
             # is better than PAGE_OFFSET, but not than `_text` from the iomem.
@@ -98731,7 +98945,10 @@ class KernelbaseCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
@@ -98784,7 +99001,10 @@ class KernelVersionCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
@@ -98851,7 +99071,10 @@ class KernelCmdlineCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.rescan:
@@ -98901,7 +99124,10 @@ class KernelCurrentCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -99115,7 +99341,10 @@ class KernelTask:
         If the selected CPU cannot resolve it (e.g., it is halted in userland), it is retried on the other CPUs
         in the kernel, except on x86. This must not be called while another thread is temporarily selected."""
         offset_comm = KernelTask.resolve_offset_comm()
-        if offset_comm is None and (is_arm32() or is_arm64() or is_riscv32() or is_riscv64()):
+        if offset_comm is None and (
+            is_arm32() or is_arm64() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or
+            is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
+        ):
             orig_thread = gdb.selected_thread()
             threads = (thread for thread in KernelPerCpu.get_cpu_threads() if thread != orig_thread)
             with ContextManager.threads(threads) as threads:
@@ -100608,6 +100837,25 @@ class KernelTask:
             priv = get_register("priv")
             if priv == 3:
                 return "hart is in M-mode; tp belongs to the SBI firmware" # codespell:ignore
+        elif is_mips32() or is_mips64():
+            if not is_in_kernel():
+                return "CPU is in user mode; gp holds a user pointer"
+            # Status.EXL is set from the exception entry, which switches gp later if it comes from the user
+            sr = get_register("$sr")
+            if sr is not None and sr & 0b10:
+                return "CPU is at the exception entry; gp may hold a user pointer"
+        elif is_sparc32():
+            if not is_in_kernel():
+                return "CPU is in user mode; %g6 holds a user value"
+        elif is_ppc32():
+            if not is_in_kernel():
+                return "CPU is in problem state; r2 holds a user value"
+        elif is_s390x():
+            if not is_in_kernel():
+                return "CPU is in problem state; the kernel address space is not readable"
+        elif is_loongarch64():
+            if not is_in_kernel():
+                return "CPU is in PLV3; tp holds a user pointer"
         return "failed to resolve current task"
 
 
@@ -194601,8 +194849,13 @@ class XphysAddrCommand(GenericCommand):
     ]).format(_cmdline_)
 
     @staticmethod
+    @ModuleLoader.load_capstone
     def print_fmt_i(target, data, count):
         if count <= 0 or not data:
+            return ""
+        # e.g., LoongArch needs capstone v6.x~
+        if not current_arch.capstone_support:
+            err("capstone does not support {:s}".format(current_arch.arch))
             return ""
 
         kwargs = {}
@@ -194680,6 +194933,10 @@ class XphysAddrCommand(GenericCommand):
                 else:
                     err("Unsupported odd address: {}".format(target))
                     return None
+            # s390x opcode is at most 6byte
+            if is_s390x():
+                dump_size = dump_count * 6
+                return dump_size, target
             # ARM opcode is at most 4byte
             dump_size = dump_count * 4
             return dump_size, target
@@ -194710,7 +194967,10 @@ class XphysAddrCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         # arg parse
         ret = XphysAddrCommand.parse_type_unit_count(args.format)
@@ -199496,7 +199756,10 @@ class Virt2PhysCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         force_secure = None
         if is_arm32() or is_arm64():
@@ -199538,7 +199801,10 @@ class Phys2VirtCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         force_secure = None
         if is_arm32() or is_arm64():
@@ -209090,7 +209356,10 @@ class PageCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         self.usage(simple=True)
@@ -209123,7 +209392,10 @@ class PageToVirtCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         resolver = self.prepare(args.rescan)
@@ -209171,7 +209443,10 @@ class PageFromVirtCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         resolver = self.prepare(args.rescan)
@@ -209222,7 +209497,10 @@ class PageToPhysCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         resolver = self.prepare(args.rescan)
@@ -209264,7 +209542,10 @@ class PhysToPageCommand(PageCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_64", "x86_32", "ARM64", "ARM32", "RISCV64", "RISCV32", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         resolver = self.prepare(args.rescan)
