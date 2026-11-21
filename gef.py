@@ -21082,15 +21082,24 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             return False
         if is_arm32():
             address &= ~1
+        if is_hppa32() and address < get_pagesize():
+            return False # the gateway page mapped at address 0 has no virtual function
         return ProcessMap.lookup(address).is_in_text_segment()
 
     def dump_functions(self, table, count):
         table_symbol = Symbol.lookup_gdb(table["vptr"])
+        # gdb may name another symbol at the same address, e.g. the TLS section start in a static MIPS binary.
+        # The SH4 one is like `ZTV7Derived`, since gdb strips its leading underscore.
+        if table_symbol and not table_symbol[0].startswith(("vtable for ", "_ZTV", "ZTV")):
+            table_symbol = None
         for i in range(count):
             slot = table["vptr"] + i * self.ptrsize
-            slot_symbol = Symbol.lookup_gdb(slot)
-            if table_symbol and slot_symbol and slot_symbol[0] != table_symbol[0]:
-                break
+            if table_symbol:
+                slot_symbol = Symbol.lookup_gdb(slot)
+                if slot_symbol is None: # past the end of the symbol of the table
+                    break
+                if slot_symbol[0] != table_symbol[0]:
+                    break
             function = read_int_from_memory(slot, safe=True)
             if function is None:
                 self.warn_add_out("Unreadable vtable entry at {:#x}".format(slot))
@@ -21116,9 +21125,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
-    @Decorator.only_if_specific_arch(
-        arch=("x86_32", "x86_64", "ARM32", "ARM64", "MIPS32", "MIPS64", "MIPSN32", "RISCV32", "RISCV64")
-    )
+    @Decorator.exclude_specific_arch(arch=("x86_16",))
     def do_invoke(self, args):
         if args.count <= 0:
             err("--count must be positive")
