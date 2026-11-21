@@ -10378,8 +10378,19 @@ options:
 ### Notes
 
 ```text
+Each finder is run twice, and the results are compared.
+  direct   : the value resolved from the symbol of the target in kallsyms.
+  heuristic: the value that the finder finds without that symbol (USE_DIRECTLY=False).
 False means explicitly unsupported; None means not found; '-' means unavailable or not run.
-Candidate lists pass when they include the symbol-backed address; source labels are ignored.
+
+Verdicts:
+  OK      : heuristic equals direct.
+            Candidate lists pass when they include the symbol-backed address; source labels are ignored.
+  MISS    : heuristic is None.
+  MISMATCH: heuristic differs from direct.
+  ERROR   : either run raised an exception. The messages are listed under `errors`.
+  n/a     : not compared, because direct is '-', False or None, or heuristic is False.
+MISS, MISMATCH and ERROR are failures. They are highlighted, and `--failures-only` shows only them.
 $ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.
 ```
 

@@ -98393,8 +98393,19 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
+        "Each finder is run twice, and the results are compared.",
+        "  direct   : the value resolved from the symbol of the target in kallsyms.",
+        "  heuristic: the value that the finder finds without that symbol (USE_DIRECTLY=False).",
         "False means explicitly unsupported; None means not found; '-' means unavailable or not run.",
-        "Candidate lists pass when they include the symbol-backed address; source labels are ignored.",
+        "",
+        "Verdicts:",
+        "  OK      : heuristic equals direct.",
+        "            Candidate lists pass when they include the symbol-backed address; source labels are ignored.",
+        "  MISS    : heuristic is None.",
+        "  MISMATCH: heuristic differs from direct.",
+        "  ERROR   : either run raised an exception. The messages are listed under `errors`.",
+        "  n/a     : not compared, because direct is '-', False or None, or heuristic is False.",
+        "MISS, MISMATCH and ERROR are failures. They are highlighted, and `--failures-only` shows only them.",
         "$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.",
     ])
 
@@ -98538,14 +98549,9 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             )
         return str(value)
 
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
-    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
-    @Decorator.only_if_in_kernel_or_kpti_disabled
-    def do_invoke(self, args):
-        self.quiet_info("Wait for kallsyms and heuristic scans")
-
+    def run_finders(self):
+        """Return the direct results, the heuristic results and the error messages of all finders.
+        Return None, None, None if kallsyms is not available."""
         direct_results = {}
         heuristic_results = {}
         errors = []
@@ -98555,71 +98561,11 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             KernelAddressHeuristicFinder.USE_DIRECTLY = True
             Cache.reset_gef_caches(all=True)
             if Ksym.get_kallsyms() is None:
-                self.quiet_err("Could not read kallsyms")
-                return
+                return None, None, None
 
             for name, finder in self.finders():
-                if (is_riscv32() or is_riscv64()) and name in self.unsupported_riscv:
-                    direct_results[name] = (None, None, False, ())
-                    continue
-                symbol_name = self.direct_symbol_name(name)
-                if symbol_name is not None:
-                    symbol_address = Ksym.get_addr(symbol_name)
-                else:
-                    symbol_address = None
-                if symbol_address is None:
-                    direct_results[name] = (None, None, False, ())
-                    continue
-
-                finder_args = ()
-                try:
-                    if name == "get_current_clocksource":
-                        current_clocksource = read_int_from_memory(symbol_address)
-                        finder_args = ((current_clocksource,),)
-                    elif name == "get_log_buffer":
-                        length_address = Ksym.get_addr("log_buf_len")
-                        if length_address is None:
-                            direct_results[name] = (None, None, False, ())
-                            continue
-                        finder_args = (read_int32_from_memory(length_address),)
-                    elif name in ("find_per_cpu_static_range", "find_per_cpu_unit_size"):
-                        start = Ksym.get_addr("__per_cpu_start")
-                        end = Ksym.get_addr("__per_cpu_end")
-                        if start is None or end is None:
-                            direct_results[name] = (None, None, False, ())
-                            continue
-                        offsets = Kernel.per_cpu().offsets
-                        if not offsets:
-                            direct_results[name] = (None, None, False, ())
-                            continue
-                        finder_args = (offsets,)
-                        if name == "find_per_cpu_unit_size":
-                            finder_args = (offsets, align_to_pagesize(end - start))
-
-                    if name in ("get_saved_command_line", "get_node_data0", "get_loadpin_enabled", "get_loadpin_enforce"):
-                        value, error = symbol_address, None
-                    elif name in ("get_PAGE_OFFSET", "get_VMALLOC_START", "get_VMEMMAP_START", "get_printk_ring_candidates"):
-                        value, error = read_int_from_memory(symbol_address), None
-                    elif name == "find_per_cpu_static_range":
-                        value, error = (start, end), None
-                    elif name == "find_per_cpu_unit_size":
-                        value, error = read_int32_from_memory(symbol_address), None
-                    elif name == "get_printk_text_ring_symbols":
-                        length_address = Ksym.get_addr("log_buf_len")
-                        buffer_address = Ksym.get_addr("log_buf")
-                        if length_address is None or buffer_address is None:
-                            direct_results[name] = (None, None, False, ())
-                            continue
-                        value, error = (symbol_address, length_address, buffer_address), None
-                    else:
-                        value, error = self.invoke_finder(finder, finder_args, name)
-                except (gdb.MemoryError, MemoryError) as exception:
-                    message = "{:s}: {:s}".format(type(exception).__name__, str(exception))
-                    direct_results[name] = (None, message, True, ())
-                    errors.append("{:s} direct: {:s}".format(name, message))
-                    continue
-
-                direct_results[name] = (value, error, True, finder_args)
+                value, error, available, finder_args = self.get_direct_result(name, finder)
+                direct_results[name] = (value, error, available, finder_args)
                 if error is not None:
                     errors.append("{:s} direct: {:s}".format(name, error))
 
@@ -98638,27 +98584,97 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         finally:
             KernelAddressHeuristicFinder.USE_DIRECTLY = original_use_directly
             Cache.reset_gef_caches(all=True)
+        return direct_results, heuristic_results, errors
+
+    def get_direct_result(self, name, finder):
+        """Return (value, error, available, finder_args) of the finder resolved from the symbol in kallsyms."""
+        if (is_riscv32() or is_riscv64()) and name in self.unsupported_riscv:
+            return None, None, False, ()
+        symbol_name = self.direct_symbol_name(name)
+        if symbol_name is None:
+            return None, None, False, ()
+        symbol_address = Ksym.get_addr(symbol_name)
+        if symbol_address is None:
+            return None, None, False, ()
+
+        finder_args = ()
+        try:
+            if name == "get_current_clocksource":
+                current_clocksource = read_int_from_memory(symbol_address)
+                finder_args = ((current_clocksource,),)
+            elif name == "get_log_buffer":
+                length_address = Ksym.get_addr("log_buf_len")
+                if length_address is None:
+                    return None, None, False, ()
+                finder_args = (read_int32_from_memory(length_address),)
+            elif name in ("find_per_cpu_static_range", "find_per_cpu_unit_size"):
+                start = Ksym.get_addr("__per_cpu_start")
+                end = Ksym.get_addr("__per_cpu_end")
+                if start is None or end is None:
+                    return None, None, False, ()
+                offsets = Kernel.per_cpu().offsets
+                if not offsets:
+                    return None, None, False, ()
+                finder_args = (offsets,)
+                if name == "find_per_cpu_unit_size":
+                    finder_args = (offsets, align_to_pagesize(end - start))
+
+            if name in ("get_saved_command_line", "get_node_data0", "get_loadpin_enabled", "get_loadpin_enforce"):
+                value, error = symbol_address, None
+            elif name in ("get_PAGE_OFFSET", "get_VMALLOC_START", "get_VMEMMAP_START", "get_printk_ring_candidates"):
+                value, error = read_int_from_memory(symbol_address), None
+            elif name == "find_per_cpu_static_range":
+                value, error = (start, end), None
+            elif name == "find_per_cpu_unit_size":
+                value, error = read_int32_from_memory(symbol_address), None
+            elif name == "get_printk_text_ring_symbols":
+                length_address = Ksym.get_addr("log_buf_len")
+                buffer_address = Ksym.get_addr("log_buf")
+                if length_address is None or buffer_address is None:
+                    return None, None, False, ()
+                value, error = (symbol_address, length_address, buffer_address), None
+            else:
+                value, error = self.invoke_finder(finder, finder_args, name)
+        except (gdb.MemoryError, MemoryError) as exception:
+            return None, "{:s}: {:s}".format(type(exception).__name__, str(exception)), True, ()
+        return value, error, True, finder_args
+
+    @staticmethod
+    def get_verdict(name, direct, direct_error, available, heuristic, heuristic_error):
+        # nothing to compare with, or the finder does not support this kernel
+        if not available or direct is False or heuristic is False:
+            return "n/a"
+        if direct is None and direct_error is None:
+            return "n/a"
+        if direct_error is not None or heuristic_error is not None:
+            return "ERROR"
+        if direct == heuristic:
+            return "OK"
+        # the heuristic returns the candidates, so it is enough that they include the symbol-backed address
+        if name == "get_printk_ring_candidates" and heuristic is not None and direct in heuristic:
+            return "OK"
+        if heuristic is None:
+            return "MISS"
+        return "MISMATCH"
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for kallsyms and heuristic scans")
+        direct_results, heuristic_results, errors = self.run_finders()
+        if direct_results is None:
+            self.quiet_err("Could not read kallsyms")
+            return
 
         rows = []
         verdict_counts = collections.Counter()
         for name, _ in self.finders():
             direct, direct_error, available, _ = direct_results[name]
             heuristic, heuristic_error = heuristic_results[name]
-            if (
-                not available or direct is False or heuristic is False or
-                (direct is None and direct_error is None)
-            ):
-                verdict = "n/a"
-            elif direct_error is not None or heuristic_error is not None:
-                verdict = "ERROR"
-            elif direct == heuristic:
-                verdict = "OK"
-            elif name == "get_printk_ring_candidates" and heuristic is not None and direct in heuristic:
-                verdict = "OK"
-            elif heuristic is None:
-                verdict = "MISS"
-            else:
-                verdict = "MISMATCH"
+            verdict = self.get_verdict(name, direct, direct_error, available, heuristic, heuristic_error)
             verdict_counts[verdict] += 1
             rows.append((
                 name,
