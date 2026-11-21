@@ -173,7 +173,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
 - `idtinfo`: pretty prints IDT entries. If userland, show sample entries.
     - ![](images/idtinfo.png)
 - `read-system-register-for-qemu-arm`: reads system register for old `qemu-system-arm`.
-- `read-system-register-for-kgdb`: reads system register for kgdb (x64/ARM64 only).
+- `read-system-register-for-kgdb`: reads system register for kgdb (x86/x64/ARM64/RISC-V only).
 - `switch-el`: switches EL (Exception Level).
     - Supported on ARM64.
 
@@ -884,7 +884,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `timeout`: aborts the GDB command if it does not finish within the specified seconds.
 - `multi-line`: executes multiple GDB commands in sequence.
     - ![](images/multi-line.png)
-- `stepi-for-kgdb`: is wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers.
+- `stepi-for-kgdb`: is wrapper for ARM32/AArch64 KGDB that avoids stepping into pending IRQ handlers.
 
 </details>
 

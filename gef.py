@@ -15071,7 +15071,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False, full_width=Fal
         if r:
             return int(r.group(1), 16)
 
-    if use_mbed_exec and is_kgdb() and (is_x86_64() or is_arm64() or is_riscv32() or is_riscv64()):
+    if use_mbed_exec and is_kgdb() and (is_x86_32() or is_x86_64() or is_arm64() or is_riscv32() or is_riscv64()):
         if ReadSystemRegisterForKgdbCommand.is_supported_reg(regname):
             try:
                 r = gdb.execute("read-system-register-for-kgdb {:s}".format(regname), to_string=True)
@@ -18951,25 +18951,29 @@ class ContinueForQemuUserCommand(GenericCommand):
 
 @register_command
 class StepiForKGDBCommand(GenericCommand):
-    """`si` wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers."""
+    """`si` wrapper for ARM32/AArch64 KGDB that avoids stepping into pending IRQ handlers."""
 
     _cmdline_ = "stepi-for-kgdb"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
-    irq_mask_bit = 0x80 # DAIF.I
+    irq_mask_bit = 0x80 # DAIF.I on AArch64, CPSR.I on ARM32
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
-        "Only for AArch64 + kgdb.",
+        "Only for ARM32/AArch64 + kgdb.",
         "Temporarily masks IRQ before `stepi`, then restores the original state",
-        "unless the stepped instruction intentionally modified DAIF.I or entered an exception.",
+        "unless the stepped instruction intentionally modified DAIF.I/CPSR.I or entered an exception.",
+        "On ARM32, gdb steps by temporary breakpoints, which a pending IRQ handler may hit first.",
+        "On ARM32, Thumb code is stepped without the mask.",
     ])
 
     @staticmethod
     def get_exception_registers():
         """Return readable ELR/SPSR values for detecting exception transitions."""
         registers = {}
+        if is_arm32():
+            return registers # the KGDB target description of ARM32 has no banked registers
         for name in ["$elr_el1", "$elr_el2", "$elr_el3", "$spsr_el1", "$spsr_el2", "$spsr_el3"]:
             value = get_register(name)
             if value is not None:
@@ -19019,6 +19023,49 @@ class StepiForKGDBCommand(GenericCommand):
         return None, 0
 
     @staticmethod
+    def get_cpsr_update(instruction):
+        """Return the ARM32 instruction's CPSR action and intended IRQ bit, like get_daif_update."""
+        if (instruction & 0xfff1_fe20) == 0xf100_0000 and (instruction & 0x8_0080) == 0x8_0080: # CPSID/CPSIE i
+            if instruction & 0x4_0000:
+                return "write", 1
+            else:
+                return "write", 0
+
+        if (instruction & 0x0ff0_fff0) == 0x0120_f000 and instruction & 0x1_0000: # MSR CPSR_c, Rn
+            source = get_register(current_arch.all_registers[instruction & 0xf])
+            if source is None:
+                raise gdb.error("Could not read the source register for `msr cpsr_c`")
+            return "write", (source >> 7) & 1
+
+        if (instruction & 0x0ff0_f000) == 0x0320_f000 and instruction & 0x1_0000: # MSR CPSR_c, #imm
+            rotation = ((instruction >> 8) & 0xf) * 2
+            immediate = instruction & 0xff
+            source = ((immediate >> rotation) | (immediate << (32 - rotation))) & 0xffff_ffff
+            return "write", (source >> 7) & 1
+
+        # Exception-generating instructions are not listed here; a firmware call like SMC returns to the next
+        # instruction and looks like an ordinary step, since gdb steps ARM32 by temporary breakpoints.
+        if (instruction & 0x0c10_f000) == 0x0010_f000: # MOVS/SUBS PC, ...
+            return "preserve", None
+        if (instruction & 0x0e50_8000) == 0x0850_8000: # LDM {..., PC}^
+            return "preserve", None
+        if (instruction & 0xfe50_ffff) == 0xf810_0a00: # RFE
+            return "preserve", None
+
+        return None, 0
+
+    @staticmethod
+    def get_mask_reader(instruction):
+        """Return the register into which the instruction reads the IRQ mask, or None."""
+        if is_arm64():
+            if (instruction & 0xffff_ffe0) == 0xd53b_4220 and (instruction & 0x1f) != 31: # MRS Xt, DAIF
+                return "$x{:d}".format(instruction & 0x1f)
+        elif is_arm32():
+            if (instruction & 0x0fff_0fff) == 0x010f_0000: # MRS Rd, CPSR
+                return current_arch.all_registers[(instruction >> 12) & 0xf]
+        return None
+
+    @staticmethod
     def is_branch_instruction(instruction):
         """Identify ordinary branches for the post-step PC check.
         Matching the saved opcode avoids disassembly and Instruction creation,
@@ -19036,13 +19083,19 @@ class StepiForKGDBCommand(GenericCommand):
             return True
         if instruction in (0xd65f_0bff, 0xd65f_0fff): # RETAA/RETAB
             return True
+        if (instruction & 0x3fc0_0000) == 0x0840_0000: # LDXR and its family, from which gdb steps the whole sequence
+            return True
         return False
 
     @staticmethod
     def exception_state_changed(old_pc, instruction, new_pc, old_cpsr, new_cpsr, old_registers):
         """Detect exception transitions from PC, processor mode and ELR/SPSR changes."""
-        if new_pc != old_pc + 4 and not StepiForKGDBCommand.is_branch_instruction(instruction):
-            return True
+        # ARM32 is stepped by temporary breakpoints, so it never stops at an exception vector.
+        # Its new PC is not checked, since gdb also steps over a whole LDREX/STREX sequence at once.
+        # The same happens with LDXR/STXR on ARM64, which is_branch_instruction accepts.
+        if is_arm64():
+            if new_pc != old_pc + 4 and not StepiForKGDBCommand.is_branch_instruction(instruction):
+                return True
         if (old_cpsr & 0x1f) != (new_cpsr & 0x1f):
             return True
 
@@ -19067,9 +19120,9 @@ class StepiForKGDBCommand(GenericCommand):
             gdb.execute("set $cpsr = {:#x}".format(masked_cpsr), to_string=True)
             if get_register("$cpsr") == masked_cpsr:
                 return True
-            message = "The target did not accept the temporary DAIF.I mask; `stepi` was not run"
+            message = "The target did not accept the temporary {:s} mask; `stepi` was not run".format(self.irq_mask_name)
         except (gdb.error, KeyboardInterrupt) as e:
-            message = "Could not temporarily set DAIF.I: {}".format(e)
+            message = "Could not temporarily set {:s}: {}".format(self.irq_mask_name, e)
         try:
             if get_register("$cpsr") != cpsr:
                 gdb.execute("set $cpsr = {:#x}".format(cpsr), to_string=True)
@@ -19123,7 +19176,9 @@ class StepiForKGDBCommand(GenericCommand):
             else:
                 cpsr = None
             if pc is None or cpsr is None:
-                warn("Could not inspect the original KGDB CPU after `stepi`; its DAIF.I state was left unchanged")
+                warn("Could not inspect the original KGDB CPU after `stepi`; its {:s} state was left unchanged".format(
+                    self.irq_mask_name,
+                ))
                 return
 
             signal = getattr(event, "stop_signal", None)
@@ -19152,8 +19207,16 @@ class StepiForKGDBCommand(GenericCommand):
                 return
             elif not step_verified and pc != state["pc"] and state["action"] is None:
                 if cpsr & self.irq_mask_bit:
-                    warn("Could not verify a normal single-step stop; DAIF.I was left masked")
+                    warn("Could not verify a normal single-step stop; {:s} was left masked".format(self.irq_mask_name))
                 return
+
+            # MRS read the temporary mask, so give its register the original unmasked state,
+            # or a later restore like `msr cpsr_c, r12` would keep IRQ masked
+            reader = state["mask_reader"]
+            if reader and pc != state["pc"]:
+                value = get_register(reader)
+                if value is not None:
+                    gdb.execute("set {:s} = {:#x}".format(reader, value & ~self.irq_mask_bit), to_string=True)
 
             if irq:
                 restored_cpsr = cpsr | self.irq_mask_bit
@@ -19165,9 +19228,9 @@ class StepiForKGDBCommand(GenericCommand):
                 gdb.execute("set $cpsr = {:#x}".format(restored_cpsr), to_string=True)
                 verified_cpsr = get_register("$cpsr")
                 if verified_cpsr is None or (verified_cpsr & self.irq_mask_bit) != (restored_cpsr & self.irq_mask_bit):
-                    warn("The target did not confirm the restored DAIF.I value")
+                    warn("The target did not confirm the restored {:s} value".format(self.irq_mask_name))
             except gdb.error as e:
-                warn("Could not restore DAIF.I on the original KGDB CPU: {}".format(e))
+                warn("Could not restore {:s} on the original KGDB CPU: {}".format(self.irq_mask_name, e))
         finally:
             if result_thread is not None and not result_matches:
                 try:
@@ -19180,7 +19243,7 @@ class StepiForKGDBCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("kgdb",))
-    @Decorator.only_if_specific_arch(arch=("ARM64",))
+    @Decorator.only_if_specific_arch(arch=("ARM32", "ARM64"))
     def do_invoke(self, args):
         """Step once with a temporary IRQ mask and restore it when appropriate."""
         pc = get_register("$pc")
@@ -19191,10 +19254,25 @@ class StepiForKGDBCommand(GenericCommand):
         if cpsr & self.irq_mask_bit:
             gdb.execute("stepi", from_tty=True)
             return
+        if is_arm32() and cpsr & 0x20: # Thumb instructions are not decoded
+            gdb.execute("stepi", from_tty=True)
+            return
+
+        if is_arm64():
+            self.irq_mask_name = "DAIF.I"
+        elif is_arm32():
+            self.irq_mask_name = "CPSR.I"
 
         try:
             instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
-            action, irq = self.get_daif_update(instruction)
+            if is_arm64() and instruction == 0xd420_8020: # BRK #0x401, the compiled break of KGDB
+                # KGDB skips it and steps the next instruction
+                pc += 4
+                instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
+            if is_arm64():
+                action, irq = self.get_daif_update(instruction)
+            elif is_arm32():
+                action, irq = self.get_cpsr_update(instruction)
         except gdb.error as e:
             err("Could not prepare the KGDB step: {}".format(e))
             return
@@ -19203,7 +19281,7 @@ class StepiForKGDBCommand(GenericCommand):
         state = {
             "thread": thread, "thread_num": thread.num, "ptid": thread.ptid,
             "pc": pc, "cpsr": cpsr, "instruction": instruction, "action": action,
-            "exception_registers": self.get_exception_registers(),
+            "exception_registers": self.get_exception_registers(), "mask_reader": self.get_mask_reader(instruction),
         }
         if not self.mask_irq(cpsr):
             return
@@ -26222,6 +26300,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                     "__native_read_cr3",
                     "paranoid_entry",
                     "error_entry",
+                    "save_processor_state",
                 ],
                 "insn": [
                     ["$rax", b"\x0f\x20\xd8"], # mov rax, cr3
@@ -26231,6 +26310,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 "sym": [
                     "native_read_cr4",
                     "cr4_init",
+                    "save_processor_state",
                 ],
                 "insn": [
                     ["$rax", b"\x0f\x20\xe0"], # mov rax, cr4
@@ -26316,6 +26396,12 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
         },
     }
 
+    # x86_32 uses the same symbols and instructions, which load eax
+    REGISTER_DICT["x86"] = {
+        name: {"sym": entry["sym"], "insn": [["$eax", code] for _, code in entry["insn"]]}
+        for name, entry in REGISTER_DICT["x64"].items()
+    }
+
     @staticmethod
     def get_supported_regs():
         if not is_alive():
@@ -26323,6 +26409,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
 
         if is_x86_64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x64"]
+        elif is_x86_32():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x86"]
         elif is_arm64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
         elif is_riscv32() or is_riscv64():
@@ -26352,6 +26440,8 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             return None
         if is_x86_64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x64"]
+        elif is_x86_32():
+            dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x86"]
         elif is_arm64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
         elif is_riscv32() or is_riscv64():
@@ -26437,7 +26527,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("kgdb",))
-    @Decorator.only_if_specific_arch(arch=("x86_64", "ARM64", "RISCV32", "RISCV64"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM64", "RISCV32", "RISCV64"))
     def do_invoke(self, args):
         if current_arch is None:
             err("current_arch is not set")

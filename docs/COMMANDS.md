@@ -653,7 +653,7 @@ Target architecture:
 
 ## `stepi-for-kgdb`
 
-`si` wrapper for AArch64 KGDB that avoids stepping into pending IRQ handlers.
+`si` wrapper for ARM32/AArch64 KGDB that avoids stepping into pending IRQ handlers.
 
 
 ### Syntax
@@ -668,9 +668,11 @@ options:
 ### Notes
 
 ```text
-Only for AArch64 + kgdb.
+Only for ARM32/AArch64 + kgdb.
 Temporarily masks IRQ before `stepi`, then restores the original state
-unless the stepped instruction intentionally modified DAIF.I or entered an exception.
+unless the stepped instruction intentionally modified DAIF.I/CPSR.I or entered an exception.
+On ARM32, gdb steps by temporary breakpoints, which a pending IRQ handler may hit first.
+On ARM32, Thumb code is stepped without the mask.
 ```
 
 ## `stepi-for-qemu-user`
