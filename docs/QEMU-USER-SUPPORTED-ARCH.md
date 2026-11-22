@@ -273,12 +273,6 @@ If you find it, please let me know in the issue page.
 - [ ] qemu: not found.
 - [x] gdb: build from latest. See [docs/FAQ](FAQ.md#how-to-build-gdb).
 
-## hppa64
-- [x] toolchain: `gcc-hppa64-linux` via apt.
-- [ ] lib: not found.
-- [ ] qemu: not found.
-- [ ] gdb: not found.
-
 ## loongarch32
 - [x] toolchain: [loongson-gnu-toolchain-8.3-x86_64-loongarch32r-linux-gnusf-v2.0.tar.xz](https://gitee.com/loongson-edu/la32r-toolchains/releases/download/v0.0.3/loongson-gnu-toolchain-8.3-x86_64-loongarch32r-linux-gnusf-v2.0.tar.xz)
 - [ ] qemu: https://gitee.com/loongson-edu/la32r-QEMU

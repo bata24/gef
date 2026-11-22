@@ -7090,7 +7090,6 @@ class ModuleLoader:
                     LOONGARCH64.capstone_support = True
                     ALPHA.capstone_support = True
                     HPPA.capstone_support = True
-                    HPPA64.capstone_support = True
                 return f(*args, **kwargs)
             except ImportError as err:
                 msg = "Missing `capstone` package for Python, try installing with `pip install capstone`"
@@ -11711,21 +11710,6 @@ class HPPA(Architecture):
         return value
 
 
-class HPPA64(HPPA):
-    """GEF representation of HP-PA-64 architecture."""
-
-    arch = "HPPA"
-    mode = "64"
-
-    # qemu does not support hppa64, so this could not be tested.
-
-    load_condition = [
-        "HPPA2.0W",
-    ]
-
-    bit_length = 64
-
-
 class OR1K(Architecture):
     """GEF representation of OpenRISC 1000 architecture."""
 
@@ -15078,7 +15062,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False, full_width=Fal
         else:
             return int(value)
     except gdb.error:
-        if (is_hppa32() or is_hppa64()) and regname == "$r0":
+        if is_hppa32() and regname == "$r0":
             return 0
         try:
             value = gdb.selected_frame().read_register(regname[1:])
@@ -17332,11 +17316,6 @@ def is_hppa32():
     return current_arch and current_arch.arch == "HPPA" and current_arch.mode == "32"
 
 
-def is_hppa64():
-    """Architecture determination function for HP-PA 64 bit."""
-    return current_arch and current_arch.arch == "HPPA" and current_arch.mode == "64"
-
-
 def is_or1k():
     """Architecture determination function for OpenRISC 1000."""
     return current_arch and current_arch.arch == "OR1K"
@@ -17418,7 +17397,6 @@ ARCH_CHECKERS = {
     "M68K": is_m68k,
     "ALPHA": is_alpha,
     "HPPA32": is_hppa32,
-    "HPPA64": is_hppa64,
     "OR1K": is_or1k,
     "NIOS2": is_nios2,
     "MICROBLAZE": is_microblaze,
@@ -23275,7 +23253,7 @@ class HijackFdCommand(GenericCommand):
             # /usr/alpha-linux-gnu/include/bits/fcntl.h
             self.O_APPEND = 0o0010
             self.O_CREAT = 0o1000
-        elif is_hppa32() or is_hppa64():
+        elif is_hppa32():
             # /usr/hppa-linux-gnu/include/bits/fcntl.h
             self.O_APPEND = 0o0010
             self.O_CREAT = 0o0400
@@ -26225,7 +26203,7 @@ class MmapMemoryCommand(GenericCommand):
         if is_alpha():
             flags = 0x12
             map_fixed = 0x100
-        elif is_hppa32() or is_hppa64():
+        elif is_hppa32():
             flags = 0x12
             map_fixed = 0x04
         if args.location:
@@ -54571,7 +54549,6 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
         '{0:s} -a M68K -m 32      "^writev?"  # m68k',
         '{0:s} -a ALPHA           "^writev?"  # alpha',
         '{0:s} -a HPPA -m 32      "^writev?"  # hppa32',
-        '{0:s} -a HPPA -m 64      "^writev?"  # hppa64',
         '{0:s} -a OR1K            "^writev?"  # or1k',
         '{0:s} -a NIOS2           "^writev?"  # nios2',
         '{0:s} -a MICROBLAZE      "^writev?"  # microblaze',
@@ -64037,11 +64014,6 @@ class Syscall:
             args_register = HPPA.syscall_parameters
             syscall_list = SyscallHPPA32.make_syscall_list()
 
-        elif arch == "HPPA" and mode == "64":
-            return_register = HPPA64.return_register
-            args_register = HPPA64.syscall_parameters
-            syscall_list = SyscallHPPA64.make_syscall_list()
-
         elif arch == "OR1K" and mode == "OR1K":
             return_register = OR1K.return_register
             args_register = OR1K.syscall_parameters
@@ -65650,80 +65622,6 @@ class SyscallHPPA32(Syscall):
         return syscall_list
 
 
-class SyscallHPPA64(Syscall):
-    arch_specific_dic = {
-        "sys_fork_wrapper": [], # arch/parisc/kernel/entry.S (fork_like macro)
-        "sys_mmap2": [
-            "unsigned long addr", "unsigned long len", "unsigned long prot",
-            "unsigned long flags", "unsigned long fd", "unsigned long pgoff",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "sys_mmap": [
-            "unsigned long addr", "unsigned long len", "unsigned long prot",
-            "unsigned long flags", "unsigned long fd", "unsigned long offset",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "sys_vfork_wrapper": [], # arch/parisc/kernel/entry.S (fork_like macro)
-        "sys_clone_wrapper": [
-            "unsigned long clone_flags", "unsigned long newsp", "int __user *parent_tidptr",
-            "unsigned long tls", "int *child_tidptr",
-        ], # arch/parisc/kernel/entry.S (fork_like macro, CONFIG_CLONE_BACKWARDS)
-        "sys_rt_sigreturn_wrapper": [], # arch/parisc/kernel/entry.S
-        "parisc_timerfd_create": [
-            "int clockid", "int flags",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "parisc_signalfd4": [
-            "int ufd", "sigset_t __user *user_mask", "size_t sizemask", "int flags",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "parisc_eventfd2": [
-            "unsigned int count", "int flags",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "parisc_pipe2": [
-            "int __user *fildes", "int flags",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "parisc_inotify_init1": [
-            "int flags",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "parisc_userfaultfd": [
-            "int flags",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "sys_clone3_wrapper": [
-            "struct clone_args __user *uargs", "size_t size",
-        ], # arch/parisc/kernel/entry.S (fork_like macro)
-        "parisc_madvise": [
-            "unsigned long start", "size_t len_in", "int behavior",
-        ], # arch/parisc/kernel/sys_parisc.c
-        "sys_cacheflush": [
-            "unsigned long addr", "unsigned long bytes", "unsigned int cache",
-        ], # arch/parisc/kernel/cache.c
-        "sys_fanotify_mark": [
-            "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
-            "const char __user *pathname",
-        ], # fs/notify/fanotify/fanotify_user.c
-
-    }
-
-    @classmethod
-    def make_syscall_list(cls):
-        sc_def = cls.parse_common_syscall_defs()
-        tbl = cls.parse_syscall_table_defs(hppa_syscall_tbl)
-        syscall_list = []
-        for entry in tbl:
-            nr, abi, name, func = entry[:4] # don't use compat
-            if abi not in ["common", "64"]:
-                continue
-            # special case
-            if func in cls.arch_specific_dic:
-                syscall_list.append([nr, name, cls.arch_specific_dic[func]])
-                continue
-            # common case
-            if func == "sys_ni_syscall":
-                continue
-            if func not in sc_def:
-                err("Not found: {:s}".format(func))
-                raise KeyError("Not found: {:s}".format(func))
-            syscall_list.append([nr, name, sc_def[func]])
-        return syscall_list
-
-
 class SyscallOR1K(Syscall):
     arch_specific_dic = {
         "sys_rt_sigreturn": [], # arch/openrisc/kernel/entry.S
@@ -66124,7 +66022,7 @@ class SyscallArgsCommand(GenericCommand):
             syscall_register = "$eax"
 
         # hppa specific. hppa syscall instruction has a delay slot and _NR may be set there.
-        if is_hppa32() or is_hppa64():
+        if is_hppa32():
             next_insn = Disasm.gef_instruction_n(current_arch.pc, 1)
             if next_insn and next_insn.mnemonic == "ldi" and next_insn.operands[1] == "r20":
                 nr = int(next_insn.operands[0], 16)
@@ -68701,7 +68599,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 #
                 1133: ["EDQUOT",          "Quota exceeded"],
             }
-        elif is_hppa32() or is_hppa64():
+        elif is_hppa32():
             ERRNO_DICT = {
                 35 :  ["ENOMSG",          "No message of desired type"],
                 36 :  ["EIDRM",           "Identifier removed"],
@@ -105258,7 +105156,7 @@ class KernelCharDevice:
         elif major == 11: # 11 are duplicates
             if is_sparc32() or is_sparc32plus() or is_sparc64():
                 return "/dev/kbd"
-            elif is_hppa32() or is_hppa64():
+            elif is_hppa32():
                 return "/dev/ttyB{:d}".format(minor)
         elif major == 13:
             if 0 <= minor < 32:
@@ -114292,9 +114190,11 @@ class ExecAsm:
         finally:
             # reg
             for reg, v in d["reg"].items():
+                # writing a pc register (e.g., $pcoqh) may leave an outer frame selected
+                gdb.newest_frame().select()
                 if get_register(reg) == v:
                     continue
-                if (is_hppa32() or is_hppa64()) and reg == "$pc":
+                if is_hppa32() and reg == "$pc":
                     continue
                 if is_sh4() and reg in ["$r0", "$r1", "$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]:
                     reg = reg + "b0" # since r0-r7 cannot be changed directly, use bank 0
@@ -114361,7 +114261,7 @@ class ExecAsm:
             dst = pc + len(current_arch.infloop_insn)
             if current_arch.has_delay_slot:
                 dst += len(current_arch.nop_insn)
-            if is_hppa32() or is_hppa64():
+            if is_hppa32():
                 gdb.execute("set $pcoqh = {:#x}".format(dst), to_string=True)
                 dst2 = dst + len(current_arch.syscall_insn)
                 gdb.execute("set $pcoqt = {:#x}".format(dst2), to_string=True)
@@ -114592,7 +114492,7 @@ class ExecSyscall(ExecAsm):
         self.syscall_nr = nr
         self.syscall_args = args
 
-        if is_hppa32() or is_hppa64():
+        if is_hppa32():
             step = 3 # syscall, delay slot, trampoline
         else:
             step = 1
@@ -211625,7 +211525,7 @@ class XSkipCommand(GenericCommand):
         pc = current_arch.pc
         for _ in range(args.count):
             pc = Disasm.gef_instruction_n(pc, 1).address
-        if is_hppa32() or is_hppa64():
+        if is_hppa32():
             gdb.execute("set $pcoqh = {:#x}".format(pc))
             gdb.execute("set $pcoqt = {:#x}".format(Disasm.gef_instruction_n(pc, 1).address))
         elif is_sparc32() or is_sparc32plus() or is_sparc64():
@@ -231755,11 +231655,6 @@ class GefArchListCommand(GenericCommand, BufferingOutput):
     def dump_arch_info(self, arch):
         """Display detailed architecture information, including bit length, endianness,
         registers, and feature support."""
-        if arch.arch == "HPPA" and arch.mode == "64":
-            # Currently, HPPA-64 is unsupported.
-            # A definition for displaying syscalls is provided, but it is provisional.
-            return
-
         # title
         if arch.arch == "ARM":
             arch_name = "ARM (ARM/THUMB)"

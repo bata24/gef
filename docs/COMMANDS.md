@@ -2090,7 +2090,6 @@ syscall-search -a SH4             "^writev?"  # sh4
 syscall-search -a M68K -m 32      "^writev?"  # m68k
 syscall-search -a ALPHA           "^writev?"  # alpha
 syscall-search -a HPPA -m 32      "^writev?"  # hppa32
-syscall-search -a HPPA -m 64      "^writev?"  # hppa64
 syscall-search -a OR1K            "^writev?"  # or1k
 syscall-search -a NIOS2           "^writev?"  # nios2
 syscall-search -a MICROBLAZE      "^writev?"  # microblaze
