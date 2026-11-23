@@ -19944,6 +19944,7 @@ class CanaryCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # Refresh on explicit `canary`; keep implicit reads cached across stops for slow targets such as Pin.
@@ -20248,7 +20249,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16"))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_core_file():
@@ -20375,6 +20376,7 @@ class AuxvCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         auxval = Auxv.get_auxiliary_values(args.force_heuristic)
@@ -20566,6 +20568,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
@@ -20715,6 +20718,7 @@ class EnvpCommand(ArgvCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
@@ -20815,6 +20819,7 @@ class VdsoCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # get map entry
@@ -21180,7 +21185,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
-    @Decorator.exclude_specific_arch(arch=("x86_16",))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.count <= 0:
             err("--count must be positive")
@@ -21709,6 +21714,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # get map entry
@@ -22397,6 +22403,7 @@ class FileDescriptorsCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.fd_dump()
@@ -23257,7 +23264,7 @@ class HijackFdCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if not 0 <= args.old_fd <= 0x7fff_ffff:
@@ -25281,7 +25288,7 @@ class PtrDemangleCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
@@ -25328,7 +25335,7 @@ class PtrMangleCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
@@ -25446,7 +25453,7 @@ class SearchMangledPtrCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.length is not None and (args.start is None or args.length <= 0):
@@ -26007,7 +26014,7 @@ class KillThreadsCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # print tid list and exit
@@ -26080,7 +26087,7 @@ class CallSyscallCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16"))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if current_arch is None:
@@ -26169,7 +26176,7 @@ class MmapMemoryCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # syscall name (mmap or mmap2 or arch-specific)
@@ -26296,7 +26303,7 @@ class MunmapMemoryCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_core_file():
@@ -26380,7 +26387,7 @@ class MprotectCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS",))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # location
@@ -30657,6 +30664,7 @@ class GlibcHeapTopCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -30692,6 +30700,7 @@ class GlibcHeapArenasCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # main_arena
@@ -30874,6 +30883,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -30923,6 +30933,7 @@ class GlibcHeapChunkCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # An mmap chunk can exist before the first arena allocation.
@@ -31084,6 +31095,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.nb_byte is not None:
@@ -31258,6 +31270,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -31444,6 +31457,7 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -31817,6 +31831,7 @@ class GlibcHeapBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -31904,6 +31919,7 @@ class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOut
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -31987,6 +32003,7 @@ class GlibcHeapFastbinsYCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -32040,6 +32057,7 @@ class GlibcHeapUnsortedBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingO
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -32097,6 +32115,7 @@ class GlibcHeapSmallBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.dump_indexed_bins(args, "small_bins", range(1, 63))
@@ -32128,6 +32147,7 @@ class GlibcHeapLargeBinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOutp
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.dump_indexed_bins(args, "large_bins", range(63, 126))
@@ -32632,6 +32652,7 @@ class GlibcHeapTcacheIndexHelperCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -32823,6 +32844,7 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         MIN_SIZE = GlibcHeap.HeapInfo.MIN_SIZE()
@@ -32866,6 +32888,7 @@ class GlibcHeapExtractHeapAddrCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.source:
@@ -32908,6 +32931,7 @@ class GlibcHeapCalcProtectedFdCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         loc = args.location
@@ -33104,6 +33128,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -33329,6 +33354,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if not math.isfinite(args.scale) or args.scale <= 0:
@@ -33526,6 +33552,7 @@ class GlibcHeapSnapshotCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         # parse arena
@@ -35323,6 +35350,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         """Control recording and capture manual timeline marks."""
         action = args.action
@@ -35723,6 +35751,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
         return
 
     @Decorator.parse_args
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.file_path is not None and args.file_path2 is not None:
             ret1 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
@@ -46574,7 +46603,7 @@ class LoadFileMmapCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16"))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         data_size = LoadFileCommand.get_load_size(args)
@@ -49035,8 +49064,11 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 gdb.execute("xfiles")
                 return
             if is_in_kernel():
-                # `kvmmap` supports x86, ARM and RISC-V
-                if is_x86() or is_arm() or is_riscv():
+                # `kvmmap` supports the same architectures as the other kernel commands (not x86_16)
+                if (
+                    is_x86_32() or is_x86_64() or is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x()
+                    or is_loongarch64() or is_sparc32()
+                ):
                     info("Redirect to `kvmmap` (args are ignored; use `pagewalk` to show phys addr)")
                     gdb.execute("kvmmap")
                     return
@@ -51396,6 +51428,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
@@ -51834,6 +51867,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         dynamic_size = args.dynamic_size
@@ -52478,7 +52512,7 @@ class DestructorDumpCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
-    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS"))
+    @Decorator.exclude_specific_arch(arch=("SPARC32", "XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         Cache.reset_gef_caches(all=True)
@@ -52549,6 +52583,7 @@ class FpChainCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.address is None:
             io_list_all = self.get_io_list_all()
@@ -52820,6 +52855,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         libc = GefUtil.get_libc()
         if libc is not None and libc != "glibc":
@@ -53369,6 +53405,7 @@ class GotCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             GefUtil.which(Config.get("gef.objdump_command"))
@@ -53487,6 +53524,7 @@ class GotAllCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.remote and not is_remote_debug():
             err("-r option is allowed only remote debug")
@@ -54575,6 +54613,7 @@ class GlibcHeapTracerCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.dump_current_list:
             self.dump_tracked_allocations()
@@ -66524,6 +66563,7 @@ class HeapBaseCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -66610,6 +66650,7 @@ class LibcBaseCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -66685,6 +66726,7 @@ class LdBaseCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
@@ -66936,6 +66978,7 @@ class MagicCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("wine", "kgdb"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if is_qemu_system() or is_vmware():
@@ -105126,6 +105169,10 @@ class KernelLoadCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     def do_invoke(self, args):
         if not os.path.exists(args.path):
             err("Invalid path")
@@ -114567,6 +114614,7 @@ class KernelDiffCommand(GenericCommand, BufferingOutput):
         return
 
     @Decorator.parse_args
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.action == "save":
             self.save_current_snapshot(args)
@@ -116689,6 +116737,7 @@ class TlsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if not current_arch.tls_supported:
@@ -172709,6 +172758,10 @@ class KernelDeviceIOCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -177803,6 +177856,7 @@ class TcmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.out = []
         if not self.initialize() or not self.get_size_classes():
@@ -178162,6 +178216,7 @@ class GoHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.mheap is not None and not is_valid_addr(args.mheap):
             err("Cannot read mheap at {:#x}".format(args.mheap))
@@ -178706,6 +178761,7 @@ class ZigHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.out = []
         self.scanning = False
@@ -179013,6 +179069,7 @@ class TlsfHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.pool is not None:
             pool_addr = args.pool
@@ -179230,6 +179287,7 @@ class HoardHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.superblock:
             super_blocks = args.superblock
@@ -180277,6 +180335,7 @@ class MimallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.mi_heap_main is not None:
             mi_heap_main = args.mi_heap_main
@@ -180859,6 +180918,7 @@ class SnmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.out = []
         if not self.initialize():
@@ -182601,6 +182661,7 @@ class V8Command(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.load_v8_gdbinit:
             try:
@@ -185949,6 +186010,7 @@ class RpmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.heap is not None:
             heap = self.read_heap(args.heap)
@@ -186548,6 +186610,7 @@ class TbbmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.tls is not None:
             try:
@@ -190107,6 +190170,7 @@ class DlmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         addr = args.mstate
         if addr is None:
@@ -191253,6 +191317,7 @@ class JemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if not self.initialize():
             return
@@ -191887,6 +191952,7 @@ class MozjemallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if not self.initialize():
             return
@@ -192870,6 +192936,7 @@ class MuslHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.out = []
 
@@ -193399,6 +193466,7 @@ class BmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.initialize()
         if args.meta:
@@ -194311,6 +194379,7 @@ class ZendHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.ptrsize = current_arch.ptrsize
         if args.heap is None:
@@ -194797,6 +194866,7 @@ class ObmallocHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.ptrsize = current_arch.ptrsize
         self.maps = sorted((m.page_start, m.page_end) for m in ProcessMap.get_process_maps() if m.is_writable())
@@ -195821,6 +195891,7 @@ class UclibcNgHeapDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         self.out = []
 
@@ -196031,6 +196102,7 @@ class UclibcNgVisualHeapCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.max_count is not None and args.max_count <= 0:
             err("Invalid maximum count")
@@ -196078,6 +196150,7 @@ class UclibcNgTopCommand(UclibcNgHeapDumpCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
@@ -196124,6 +196197,7 @@ class UclibcNgChunkCommand(UclibcNgHeapDumpCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
@@ -196200,6 +196274,7 @@ class UclibcNgChunksCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.nb_byte < 0:
             err("Invalid number of bytes to peek")
@@ -196303,6 +196378,7 @@ class UclibcNgParseCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
@@ -196403,6 +196479,7 @@ class UclibcNgBinsSimpleCommand(UclibcNgHeapDumpCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
@@ -196478,6 +196555,7 @@ class UclibcNgArenaCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
@@ -196557,6 +196635,7 @@ class UclibcNgSnapshotCommand(UclibcNgHeapDumpCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         try:
             malloc_state = self.read_malloc_state(args.malloc_state)
@@ -196627,6 +196706,7 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
     ])
 
     @Decorator.parse_args
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if args.file_path is not None and args.file_path2 is not None:
             ret1 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path)
@@ -196701,6 +196781,7 @@ class UclibcNgDumpImageCommand(UclibcNgHeapDumpCommand, GlibcHeapDumpImageComman
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
         if not math.isfinite(args.scale) or args.scale <= 0:
             err("Invalid scale")
@@ -212421,6 +212502,10 @@ class PageInfoCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system",))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel
     def do_invoke(self, args):
         if KernelPage.get_page_layout() is None:
@@ -213530,6 +213615,7 @@ class QemuMemoryRegionDumpCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         self.out = []
@@ -214721,6 +214807,7 @@ class ExecUntilLibcCodeCommand(ExecUntilCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         maps = ProcessMap.get_process_maps()
@@ -220120,6 +220207,10 @@ class KernelWalkRadixTreeCommand(KernelWalkCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
@@ -220196,6 +220287,10 @@ class KernelWalkXArrayCommand(KernelWalkCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
@@ -220265,6 +220360,10 @@ class KernelWalkMapleTreeCommand(KernelWalkCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         kversion = Kernel.version()
@@ -220511,6 +220610,10 @@ class KernelPerCpuCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         self.quiet_info("Wait for memory scan")
@@ -220846,6 +220949,10 @@ class KernelRefsCommand(GenericCommand, BufferingOutput):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=(
+        "x86_32", "x86_64", "ARM32", "ARM64", "RISCV32", "RISCV64", "MIPS32", "MIPS64", "PPC32", "PPC64",
+        "S390X", "LOONGARCH64", "SPARC32",
+    ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
         if args.tolerance < 0:
