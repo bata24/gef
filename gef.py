@@ -7111,7 +7111,7 @@ class ModuleLoader:
                     except ImportError:
                         pass
 
-                if is_riscv32() or is_riscv64():
+                if is_riscv():
                     try:
                         __import__("unicorn.riscv_const")
                     except ImportError:
@@ -15102,7 +15102,7 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False, full_width=Fal
         if r:
             return int(r.group(1), 16)
 
-    if use_mbed_exec and is_kgdb() and (is_x86_32() or is_x86_64() or is_arm64() or is_riscv32() or is_riscv64()):
+    if use_mbed_exec and is_kgdb() and (is_x86() or is_arm64() or is_riscv()):
         if ReadSystemRegisterForKgdbCommand.is_supported_reg(regname):
             try:
                 r = gdb.execute("read-system-register-for-kgdb {:s}".format(regname), to_string=True)
@@ -15267,7 +15267,7 @@ def is_kgdb():
         return True
     if not is_alive():
         return None
-    return bool((is_x86_64() or is_arm64() or is_riscv32() or is_riscv64()) and is_over_serial())
+    return bool((is_x86_64() or is_arm64() or is_riscv()) and is_over_serial())
 
 
 @Cache.cache_this_session
@@ -15379,12 +15379,12 @@ def is_in_kernel():
         if cpsr is None:
             return False
         return ((cpsr >> 2) & 0b11) == 1
-    elif is_riscv64() or is_riscv32():
+    elif is_riscv():
         priv = get_register("priv")
         if priv is None:
             return False
         return priv == 1
-    elif is_mips32() or is_mips64():
+    elif is_mips():
         sr = get_register("$sr")
         if sr is None:
             return False
@@ -15392,7 +15392,7 @@ def is_in_kernel():
         if sr & 0b110 != 0:
             return True
         return (sr >> 3) & 0b11 == 0 # Status.KSU (0 is the kernel)
-    elif is_ppc32() or is_ppc64():
+    elif is_ppc():
         msr = get_register("$msr")
         if msr is None:
             return False
@@ -17226,7 +17226,7 @@ def is_x86_16():
 
 def is_x86():
     """Architecture determination function for x86-32 or x86-64 or x86_16."""
-    return is_x86_32() or is_x86_64() or is_x86_16()
+    return current_arch and current_arch.arch == "X86"
 
 
 def is_arm32():
@@ -17244,6 +17244,11 @@ def is_arm64():
     return current_arch and current_arch.arch == "ARM64"
 
 
+def is_arm():
+    """Architecture determination function for ARM 32 bit (Cortex-A) or ARM 32 bit (Cortex-M) or ARM 64 bit."""
+    return current_arch and current_arch.arch in ["ARM", "ARM64"]
+
+
 def is_mips32():
     """Architecture determination function for mips 32 bit (o32 ABI)."""
     return current_arch and current_arch.arch == "MIPS" and current_arch.mode == "32"
@@ -17259,6 +17264,11 @@ def is_mipsn32():
     return current_arch and current_arch.arch == "MIPS" and current_arch.mode == "n32"
 
 
+def is_mips():
+    """Architecture determination function for mips 32 bit (o32 ABI) or mips 32 bit (n32 ABI) or mips 64 bit."""
+    return current_arch and current_arch.arch == "MIPS"
+
+
 def is_ppc32():
     """Architecture determination function for powerpc 32 bit."""
     return current_arch and current_arch.arch == "PPC" and current_arch.mode == "32"
@@ -17267,6 +17277,11 @@ def is_ppc32():
 def is_ppc64():
     """Architecture determination function for powerpc 64 bit."""
     return current_arch and current_arch.arch == "PPC" and current_arch.mode == "64"
+
+
+def is_ppc():
+    """Architecture determination function for powerpc 32 bit or powerpc 64 bit."""
+    return current_arch and current_arch.arch == "PPC"
 
 
 def is_sparc32():
@@ -17284,6 +17299,11 @@ def is_sparc64():
     return current_arch and current_arch.arch == "SPARC" and current_arch.mode == "64"
 
 
+def is_sparc():
+    """Architecture determination function for sparc 32 bit or sparc 32 bit (v8+) or sparc 64 bit."""
+    return current_arch and current_arch.arch == "SPARC"
+
+
 def is_riscv32():
     """Architecture determination function for RISC-V 32 bit."""
     return current_arch and current_arch.arch == "RISCV" and current_arch.mode == "32"
@@ -17292,6 +17312,11 @@ def is_riscv32():
 def is_riscv64():
     """Architecture determination function for RISC-V 64 bit."""
     return current_arch and current_arch.arch == "RISCV" and current_arch.mode == "64"
+
+
+def is_riscv():
+    """Architecture determination function for RISC-V 32 bit or RISC-V 64 bit."""
+    return current_arch and current_arch.arch == "RISCV"
 
 
 def is_s390x():
@@ -20171,7 +20196,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
     def get_layout():
         # the kernel struct sigaction, whose layout compat_sigaction of a 32-bit process shares
         ptrsize = current_arch.ptrsize
-        if is_mips32() or is_mips64() or is_mipsn32():
+        if is_mips():
             # the 32-bit flags come first (__ARCH_HAS_IRIX_SIGACTION), and the mask has 128 signals
             return {"size": ptrsize * 2 + 16, "flags": 0, "flags_size": 4, "handler": ptrsize, "mask": ptrsize * 2, "nsig": 128}
         layout = {"handler": 0, "flags": ptrsize, "flags_size": ptrsize, "mask": ptrsize * 2, "nsig": 64}
@@ -20185,7 +20210,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         sigsetsize = layout["nsig"] // 8
         if is_alpha():
             args = [signal_number, 0, address, sigsetsize, 0] # the restorer follows sigsetsize
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             args = [signal_number, 0, address, 0, sigsetsize] # the restorer precedes sigsetsize
         else:
             args = [signal_number, 0, address, sigsetsize]
@@ -23244,7 +23269,7 @@ class HijackFdCommand(GenericCommand):
         self.O_CREAT = 0o100
         self.O_RDWR = 0o2
         # some architecture use different consts.
-        if is_mips32() or is_mips64() or is_mipsn32():
+        if is_mips():
             # /usr/mipsel-linux-gnu/include/bits/socket_type.h
             # /usr/mips64el-linux-gnuabi64/include/bits/socket_type.h
             self.SOCK_STREAM = 2
@@ -23252,7 +23277,7 @@ class HijackFdCommand(GenericCommand):
             # /usr/mips64el-linux-gnuabi64/include/bits/fcntl.h
             self.O_APPEND = 0x0008
             self.O_CREAT = 0x0100
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             # sparcv8--uclibc--stable-2022.08-1/sparc-buildroot-linux-uclibc/sysroot/usr/include/bits/fcntl.h
             # sparc64--glibc--stable-2022.08-1/sparc64-buildroot-linux-gnu/sysroot/usr/include/bits/fcntl.h
             self.O_APPEND = 0x0008
@@ -23498,7 +23523,7 @@ class XtapCommand(GenericCommand):
             return "$orig_rax"
         if is_x86_32():
             return "$orig_eax"
-        if is_arm32() or is_arm64():
+        if is_arm():
             return current_arch.syscall_register # r7 and x8 survive the syscall
         return None
 
@@ -23557,7 +23582,7 @@ class XtapCommand(GenericCommand):
         entry_marker = False
         if name in self.hooked_set:
             # the kernel leaves a mark of the entry stop in the registers
-            if is_x86_32() or is_x86_64():
+            if is_x86():
                 ret_reg = self.syscall_table.name_table[name].ret_regs[0]
                 retval = get_register(ret_reg)
                 if retval is not None:
@@ -26216,7 +26241,7 @@ class MmapMemoryCommand(GenericCommand):
             map_fixed = 0x04
         if args.location:
             flags |= map_fixed
-        if is_mips32() or is_mips64() or is_mipsn32():
+        if is_mips():
             flags |= 0x800 # MAP_DENYWRITE (why?)
 
         # doit
@@ -26575,7 +26600,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x86"]
         elif is_arm64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["riscv"]
         else:
             return []
@@ -26606,7 +26631,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["x86"]
         elif is_arm64():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["arm64"]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             dic = ReadSystemRegisterForKgdbCommand.REGISTER_DICT["riscv"]
         else:
             return None
@@ -26628,7 +26653,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             return None
         if is_arm64():
             alignment = 4
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             alignment = 2
         else:
             alignment = 1
@@ -26641,7 +26666,7 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 address = Ksym.get_addr(symbol)
             if address is None:
                 continue
-            if is_riscv32() or is_riscv64():
+            if is_riscv():
                 data = read_memory(address, 0x300, safe=True)
             else:
                 data = read_memory(address, 0x100, safe=True)
@@ -27682,7 +27707,7 @@ class UnicornEmulator:
                                         pass
                 except AttributeError:
                     pass
-            if is_arm32() or is_arm64():
+            if is_arm():
                 self.write_reg("$cpsr", self.read_gdb_register("$cpsr"))
             if is_arm32():
                 fpexc = self.read_gdb_register("$fpexc")
@@ -28104,7 +28129,7 @@ class UnicornEmulator:
                 return True
             if is_arm32() and reg.startswith("$c13_c0_"):
                 return True
-            if (is_arm32() or is_arm64()) and reg == "$cpsr":
+            if is_arm() and reg == "$cpsr":
                 return True
             return False
 
@@ -28628,7 +28653,7 @@ class UnicornEmulator:
             self.current_segment = None
             mnemonic = insn.mnemonic.lower()
             op_str = insn.op_str.lower()
-            if is_x86_32() or is_x86_64():
+            if is_x86():
                 if "gs:" in op_str:
                     self.current_segment = "gs"
                 elif "fs:" in op_str:
@@ -28736,7 +28761,7 @@ class UnicornEmulator:
             self.last_map_error = None
             self.last_map_source = None
             self.current_segment = None
-            if is_x86_32() or is_x86_64():
+            if is_x86():
                 operands = " ".join(insn.operands).lower()
                 if "gs:" in operands:
                     self.current_segment = "gs"
@@ -29092,9 +29117,9 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "import collections\n"
         content += "import capstone\n"
         content += "import unicorn\n"
-        if is_ppc64() or is_ppc32():
+        if is_ppc():
             content += "import unicorn.ppc_const\n"
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             content += "import unicorn.riscv_const\n"
         elif is_s390x():
             content += "import unicorn.s390x_const\n"
@@ -29547,7 +29572,7 @@ class UnicornEmulateScriptCommand(GenericCommand):
         if is_x86():
             # If TLS is not initialized, the fixed address 0x2000 is used.
             content += "    set_tls(emu, {:#x})\n".format(current_arch.get_tls() or 0x2000)
-        if is_arm32() or is_arm64():
+        if is_arm():
             cpsr = get_register("$cpsr")
             if cpsr is not None:
                 content += "    # need first. because other register values may be broken when $cpsr is set.\n"
@@ -29579,7 +29604,7 @@ class UnicornEmulateScriptCommand(GenericCommand):
             # On x86, writing to the segment register somehow fails, so skip it.
             if is_x86_32() and reg in X86.special_registers:
                 continue
-            if (is_arm32() or is_arm64()) and reg == "$cpsr":
+            if is_arm() and reg == "$cpsr":
                 continue
             regvalue = get_register(reg)
             if regvalue is None:
@@ -35297,6 +35322,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
                 raise RuntimeError("Cannot restore current memory: {!s}".format(rollback_error))
 
     @Decorator.parse_args
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         """Control recording and capture manual timeline marks."""
         action = args.action
@@ -35309,7 +35335,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
             return
         state = self.get_state()
         if action in ("start", "mark"):
-            if not is_alive() or not (is_x86_32() or is_x86_64() or is_arm32() or is_arm64()):
+            if not is_alive() or not (is_x86() or is_arm()):
                 err("A running x86_32, x86_64, ARM32, or ARM64 process is required")
                 return
         if action == "clear":
@@ -38403,7 +38429,7 @@ class KernelChecksecCommand(GenericCommand):
                 "kaslr_get_random_long", "init_trampoline_kaslr", "kernel_randomize_memory", # x86 4.8~
                 "kaslr_early_init", "__pi_kaslr_early_init", "kaslr_init", # ARM64 4.6~
             ]
-            if is_riscv32() or is_riscv64():
+            if is_riscv():
                 kaslr_only_symbols.extend(("__pi_get_kaslr_seed", "__pi_set_nokaslr_from_cmdline"))
             elif is_loongarch64():
                 # the handler of early_param("nokaslr")
@@ -38425,7 +38451,7 @@ class KernelChecksecCommand(GenericCommand):
                     build = None
                 elif is_s390x():
                     build = None
-                elif (is_mips32() or is_mips64()) and Ksym.get_addr("relocate_kernel") is not None:
+                elif is_mips() and Ksym.get_addr("relocate_kernel") is not None:
                     build = None
                 else:
                     build = False
@@ -38573,10 +38599,7 @@ class KernelChecksecCommand(GenericCommand):
 
     def check_kpti(self):
         # s390x has the separate address spaces of the kernel and the user
-        if (
-            is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x()
-            or is_loongarch64() or is_sparc32()
-        ):
+        if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             gef_print("{:<40s}: {:s}".format("KPTI", Color.colorify("Unsupported", "bold red")))
             return
         kversion = Kernel.version()
@@ -44316,17 +44339,17 @@ class ContextRegistersCommand(GenericCommand):
         if not current_arch.is_syscall(insn_prev):
             return
 
-        if is_mips32() or is_mips64() or is_mipsn32() or is_alpha():
+        if is_mips() or is_alpha():
             failed = get_register("$a3")
             val = regvalue
         elif is_nios2():
             failed = get_register("$r7")
             val = regvalue
-        elif (is_ppc32() or is_ppc64()) and insn_prev.mnemonic != "scv":
+        elif is_ppc() and insn_prev.mnemonic != "scv":
             flags = get_register("$cr")
             failed = flags is not None and flags & (1 << 28)
             val = regvalue
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             flags = get_register(current_arch.flag_register)
             if is_sparc64():
                 mask = (1 << 32) | (1 << 36)
@@ -44721,7 +44744,7 @@ class ContextCodeCommand(GenericCommand):
 
         # bctr?
         #   ppc: bctr
-        if is_ppc32() or is_ppc64():
+        if is_ppc():
             if insn.mnemonic == "bctr":
                 addr = get_register("ctr")
                 if addr is None:
@@ -44975,7 +44998,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         return code_orig, code
 
     def context_memory_access1(self, redirect):
-        if not (is_x86() or is_arm32() or is_arm32_cortex_m() or is_arm64()):
+        if not (is_x86() or is_arm()):
             return
 
         insn_here = next(Disasm.gef_disassemble(current_arch.pc, 1), None)
@@ -49013,7 +49036,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                 return
             if is_in_kernel():
                 # `kvmmap` supports x86, ARM and RISC-V
-                if is_x86() or is_arm32() or is_arm64() or is_riscv32() or is_riscv64():
+                if is_x86() or is_arm() or is_riscv():
                     info("Redirect to `kvmmap` (args are ignored; use `pagewalk` to show phys addr)")
                     gdb.execute("kvmmap")
                     return
@@ -49750,7 +49773,7 @@ class SigreturnCommand(GenericCommand):
         else:
             base = current_arch.sp
 
-        if not (is_x86_64() or is_x86_32() or is_arm32() or is_arm64()):
+        if not (is_x86() or is_arm()):
             # LOCATION is the ucontext_t; the default sp points at the frame start,
             # whose ucontext begins after an architecture-specific header.
             if not explicit:
@@ -49947,9 +49970,9 @@ class SigreturnCommand(GenericCommand):
 
     def frame_to_ucontext(self):
         # bytes from the frame start (= default sp) to the embedded ucontext_t
-        if is_riscv32() or is_riscv64() or is_loongarch64():
+        if is_riscv() or is_loongarch64():
             return 128
-        if is_mips32() or is_mipsn32() or is_mips64():
+        if is_mips():
             return 152
         if is_s390x():
             return 296
@@ -51624,7 +51647,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 DT_THISPROCNUM = 6
         elif is_alpha():
             DT_THISPROCNUM = 1
-        elif is_mips32() or is_mips64() or is_mipsn32():
+        elif is_mips():
             if get_libc_version() >= (2, 31):
                 DT_THISPROCNUM = 0x37
             elif get_libc_version() >= (2, 22):
@@ -51638,7 +51661,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 DT_THISPROCNUM = 1
         elif is_ppc64():
             DT_THISPROCNUM = 4
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             DT_THISPROCNUM = 2
         elif is_x86_64():
             if get_libc_version() >= (2, 39):
@@ -51653,7 +51676,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["arm64"]
         elif is_alpha():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["alpha"]
-        elif is_mips32() or is_mips64() or is_mipsn32():
+        elif is_mips():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["mips"]
         elif is_nios2():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["nios2"]
@@ -51661,9 +51684,9 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["ppc32"]
         elif is_ppc64():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["ppc64"]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["riscv"]
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["sparc"]
         elif is_x86_64():
             ARCH_SPECIFIC_DT_TABLE = DynamicCommand.ARCH_SPECIFIC_DT_TABLE["x86-64"]
@@ -67207,7 +67230,7 @@ class KernelMagicCommand(GenericCommand):
         self.resolve_and_print_kernel(
             "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END, value_only=True,
         )
-        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64() or is_ppc64() or is_s390x() or is_loongarch64():
+        if is_x86_64() or is_arm64() or is_riscv() or is_ppc64() or is_s390x() or is_loongarch64():
             self.resolve_and_print_kernel(
                 "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
             )
@@ -67524,7 +67547,7 @@ class SysregCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def get_non_generic_regs(self):
-        if is_riscv64() or is_riscv32():
+        if is_riscv():
             res = gdb.execute("info registers system", to_string=True)
         else:
             res = gdb.execute("info registers", to_string=True)
@@ -68284,7 +68307,7 @@ class FpuCommand(GenericCommand):
     def do_invoke(self, args):
         if is_x86():
             self.print_fpu_x86()
-        elif is_arm32() or is_arm64():
+        elif is_arm():
             self.print_fpu_arm()
 
         if args.verbose:
@@ -68564,7 +68587,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 138 : ["ERFKILL",         "Operation not possible due to RF-kill"],
                 139 : ["EHWPOISON",       "Memory page has hardware error"],
             }
-        elif is_mips32() or is_mips64() or is_mipsn32():
+        elif is_mips():
             ERRNO_DICT = {
                 35  : ["ENOMSG",          "No message of desired type"],
                 36  : ["EIDRM",           "Identifier removed"],
@@ -68786,7 +68809,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 256 : ["ERFKILL",         "Operation not possible due to RF-kill"],
                 257 : ["EHWPOISON",       "Memory page has hardware error"],
             }
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             ERRNO_DICT = {
                 36  : ["EINPROGRESS",     "Operation now in progress"],
                 37  : ["EALREADY",        "Operation already in progress"],
@@ -68890,7 +68913,7 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
                 135 : ["EHWPOISON",       "Memory page has hardware error"],
             }
 
-        if is_ppc32() or is_ppc64():
+        if is_ppc():
             ERRNO_DICT[58] = ["EDEADLOCK", "File locking deadlock error"]
 
         return {**ERRNO_BASE_DICT, **ERRNO_DICT}
@@ -71779,7 +71802,7 @@ class KernelAddressHeuristicFinderUtil:
         for addr in Ksym.get_addrs(prefix, match="prefix"):
             # KCOV builds interleave __sanitizer_cov_trace_* calls, pushing the idr past 40 insns
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
-            if is_x86_64() or is_x86_32():
+            if is_x86():
                 g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
             elif is_arm64():
                 # gcc splits the page offset into two adds in some builds
@@ -71793,14 +71816,14 @@ class KernelAddressHeuristicFinderUtil:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use_anchored(res)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -74873,11 +74896,11 @@ class KernelAddressHeuristicFinder:
             return KernelConstsArm64()
         elif is_arm32():
             return KernelConstsArm32()
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             return KernelConstsRiscv()
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             return KernelConstsMips()
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             return KernelConstsPpc()
         elif is_s390x():
             return KernelConstsS390x()
@@ -74913,15 +74936,15 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     # auipc/lui + ld/lw, or a gp-relative load after linker relaxation
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -75089,7 +75112,7 @@ class KernelAddressHeuristicFinder:
                     return None
                 if current_thread_info in head:
                     return v
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             # plan 1 (from tp or sscratch)
             # The kernel keeps the current task in tp, and in sscratch while the hart is in U-mode. # codespell:ignore
             # Around the swap at the exception entry, either of them may hold the user tp or 0.
@@ -75141,7 +75164,7 @@ class KernelAddressHeuristicFinder:
                     return None
                 return task
             return r
-        elif is_mips32() or is_mips64() or is_sparc32() or is_loongarch64():
+        elif is_mips() or is_sparc32() or is_loongarch64():
             # The kernel keeps the thread_info of the current task in $28 (gp) on MIPS, in %g6 on SPARC32 and in $tp
             # on LoongArch (e.g., v6.6). It is at the bottom of the kernel stack, and has `task` at the top (after
             # `uwinmask` on SPARC32). The user has its own value there.
@@ -75263,7 +75286,7 @@ class KernelAddressHeuristicFinder:
 
         # plan 2 (available v3.4 or later)
         if kversion and "3.4" <= kversion:
-            if is_x86_64() or is_x86_32():
+            if is_x86():
                 for addr in Ksym.get_addrs("do_exit", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 600)
                     if is_x86_64():
@@ -75351,10 +75374,9 @@ class KernelAddressHeuristicFinder:
 
         # plan 3 (from current)
         current = None
-        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or \
-                is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+        if is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             current = KernelAddressHeuristicFinder.get_current_task_for_current_thread()
-        elif is_x86_64() or is_x86_32():
+        elif is_x86():
             current_task = KernelAddressHeuristicFinder.get_current_task()
             if current_task:
                 p = KernelAddressHeuristicFinder.get_per_cpu_offset()
@@ -75369,8 +75391,7 @@ class KernelAddressHeuristicFinder:
             return init_task
 
         # Except on x86, another CPU may have a readable current task and a complete task list.
-        if is_arm64() or is_arm32() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or \
-                is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+        if is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             orig_thread = gdb.selected_thread()
             threads = (thread for thread in KernelPerCpu.get_cpu_threads() if thread != orig_thread)
             with ContextManager.threads(threads) as threads:
@@ -75541,11 +75562,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -75576,11 +75597,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res)
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -75600,7 +75621,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "2.6.35" <= kversion:
             for addr in Ksym.get_addrs("alloc_netdev_mqs", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 200)
-                if is_x86_64() or is_x86_32():
+                if is_x86():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
                 elif is_arm64():
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
@@ -75609,11 +75630,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -75665,11 +75686,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -75750,15 +75771,15 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     # auipc/lui + addi/lw, or a gp-relative addi after linker relaxation
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -75839,7 +75860,7 @@ class KernelAddressHeuristicFinder:
                     # Older ARM32 kernels load a section anchor 8 bytes before chrdevs.
                     (x + 8 for x in KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)),
                 )
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 mnemonic = "lw"
                 if is_riscv64():
                     mnemonic = "ld"
@@ -75850,9 +75871,9 @@ class KernelAddressHeuristicFinder:
                         res, mnemonic=mnemonic, include_lui=is_riscv32(), follow_index=True,
                     ),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 return KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 # clang adds the index to a section anchor before the displacement of chrdevs
                 # 0xc0000000004f6bcc <chrdev_show+108>: addis r4,r2,187
                 # 0xc0000000004f6bd4 <chrdev_show+116>: addi  r4,r4,-20256    <-- cdev_lock (the anchor)
@@ -75947,14 +75968,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76024,14 +76045,14 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                 )
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76332,7 +76353,7 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_sys_call_table_riscv(compat=False):
-        if not (is_riscv32() or is_riscv64()):
+        if not is_riscv():
             return None
         if compat and is_riscv32():
             return None
@@ -76435,7 +76456,7 @@ class KernelAddressHeuristicFinder:
             pattern = b"".join(pack(address) for address in addresses)
             # MIPS puts the tables in .text
             ranges = [(layout.ro_base, layout.ro_size), (layout.rw_base, layout.rw_size)]
-            if is_mips32() or is_mips64():
+            if is_mips():
                 ranges.append((layout.text_base, layout.text_size))
             for base, size in ranges:
                 if base is None or size is None:
@@ -76541,11 +76562,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=True)
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76586,7 +76607,7 @@ class KernelAddressHeuristicFinder:
         for name in ["__is_kernel_percpu_address", "is_kernel_percpu_address"]:
             for anchor in Ksym.get_addrs(name, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(anchor, 60)
-                if is_x86_64() or is_x86_32():
+                if is_x86():
                     # x86-64 links the section at 0 before v6.15, so the usual msb filter
                     # would throw both constants away
                     g = (int(m.group(1), 16) for m in re.finditer(r"(?:mov|sub)\s+\w+\s*,\s*(0x\w+)\s*$", res, re.MULTILINE))
@@ -76600,11 +76621,11 @@ class KernelAddressHeuristicFinder:
                     zero_regs = set(re.findall(r"\bmovw\s+(\w+),\s*#0[ \t]*$", res, re.MULTILINE))
                     matches = re.finditer(r"\bmovt\s+(\w+),\s*#(\d+)", res)
                     g.extend(int(m.group(2)) << 16 for m in matches if m.group(1) in zero_regs)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     # PPC64 may load `__per_cpu_start` from the TOC (e.g., `ld r28,-32080(r2)`)
                     g = []
                     for x in KernelAddressHeuristicFinderUtil.ppc_addis_use(res):
@@ -76760,7 +76781,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_use(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_const_use(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     # A section anchor shared by several variables is built once and the bitmap is at an offset from it
                     # (`lui s1, 0xc16dc; addi s1, s1, -1712` for cpu_mitigations, then `addi a0, s1, 8`), so try such
                     # addresses before the ones built directly.
@@ -76773,10 +76794,10 @@ class KernelAddressHeuristicFinder:
                         direct,
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     # init_cpu_*() loads nr_cpu_ids for the length of memcpy() and builds the address of the bitmap
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use_built_first(res)
-                elif is_ppc32() or is_ppc64() or is_loongarch64():
+                elif is_ppc() or is_loongarch64():
                     # The same as RISC-V: the bitmap may be at an offset from a section anchor
                     # (`addi r31,r31,-8032` and `stw r9,12(r31)` of PPC32, `addi.d $a0,$s0,8` of LoongArch).
                     ints = collections.Counter()
@@ -76856,14 +76877,14 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, skip=1)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76887,14 +76908,14 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_add(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76919,14 +76940,14 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76954,14 +76975,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -76985,14 +77006,14 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, skip=1)
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -77021,14 +77042,14 @@ class KernelAddressHeuristicFinder:
                             KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                             KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                         )
-                    elif is_riscv64() or is_riscv32():
+                    elif is_riscv():
                         g = itertools.chain(
                             KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                             KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                         )
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                     elif is_s390x():
                         g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -77053,14 +77074,14 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -77106,14 +77127,14 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -77480,9 +77501,9 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_VMEMMAP_START():
-        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
+        if is_x86_64() or is_arm64() or is_riscv():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_START
-        if is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+        if is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_START
         return None
 
@@ -77512,9 +77533,9 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_VMEMMAP_END():
-        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
+        if is_x86_64() or is_arm64() or is_riscv():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_END
-        if is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+        if is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             return KernelAddressHeuristicFinder.consts().VMEMMAP_END
         return None
 
@@ -78071,14 +78092,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78095,8 +78116,7 @@ class KernelAddressHeuristicFinder:
                         continue
                     if looks_like_clocksource_list(x):
                         return x
-                    if is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                            is_s390x() or is_loongarch64() or is_sparc32():
+                    if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                         continue
 
                     # ARM compilers may materialize a nearby base address and use an immediate offset for
@@ -78156,9 +78176,9 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=True),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 return KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 return KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
             elif is_s390x():
                 return KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78309,9 +78329,9 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use_anchored(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78371,9 +78391,9 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78453,11 +78473,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     # a section anchor (`addi r9,r9,-9856` and `addi r3,r9,36`)
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                 elif is_s390x():
@@ -78523,7 +78543,7 @@ class KernelAddressHeuristicFinder:
         # proc_fill_super() passes &proc_root to proc_get_inode(), at about 300th instruction with KASAN and KCOV
         for addr in Ksym.get_addrs("proc_fill_super", match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 600)
-            if is_x86_64() or is_x86_32():
+            if is_x86():
                 g = KernelAddressHeuristicFinderUtil.x64_x86_mov_reg_const(res)
             elif is_arm64():
                 g = itertools.chain(
@@ -78535,11 +78555,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78593,12 +78613,12 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_ldr_reg_const(res, "r0")
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     # show_sid() loads __stack_chk_guard first
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use_built_first(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use_anchored(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78632,11 +78652,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu", include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lbu",))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lbz",))
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -78684,17 +78704,17 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrb")
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     if kversion < "5.1":
                         g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu")
                     else:
                         g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw")
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     if kversion < "5.1":
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lbu",))
                     else:
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     if kversion < "5.1":
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lbz",))
                     else:
@@ -78732,17 +78752,17 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrb")
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res)
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 if kversion and kversion < "5.1":
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu")
                 else:
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw")
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 if kversion and kversion < "5.1":
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lbu",))
                 else:
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 if kversion and kversion < "5.1":
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lbz",))
                 else:
@@ -78797,17 +78817,17 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res, skip=1)
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip=1)
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 g = KernelAddressHeuristicFinderUtil.riscv_load(res, skip=1)
-            elif is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_loongarch64() or is_sparc32():
+            elif is_mips() or is_ppc() or is_loongarch64() or is_sparc32():
                 # the preceding `apparmor_enabled` is bool before v5.1, and is not an int access
                 if kversion and kversion < "5.1":
                     skip = 0
                 else:
                     skip = 1
-                if is_mips32() or is_mips64():
+                if is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, skip=skip, access=("lw", "lwu"))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, skip=skip, access=("lwz",))
                 elif is_loongarch64():
                     g = KernelAddressHeuristicFinderUtil.loongarch_pcalau12i_use(
@@ -78847,11 +78867,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw", include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lwz",))
                 elif is_s390x():
                     # clang compares it in place (e.g., `clrl %r2,kernel_locked_down`)
@@ -78882,11 +78902,11 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldr(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw", include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lwz",))
                 elif is_s390x():
                     # clang compares it in place (e.g., `clrl %r2,kernel_locked_down`)
@@ -78915,11 +78935,11 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.aarch64_adrp_ldrb(res)
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lbu", include_lui=is_riscv32())
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lbu",))
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lbz",))
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, access=("larl", "lrl", "llgfrl", "lgfrl"))
@@ -79009,9 +79029,9 @@ class KernelAddressHeuristicFinder:
                 g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lwu")
             elif is_riscv32():
                 g = KernelAddressHeuristicFinderUtil.riscv_load(res, mnemonic="lw")
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, access=("lwz", "lwa"))
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, access=("larl", "lgfrl", "lrl", "llgfrl"))
@@ -80000,11 +80020,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, read_valid=True),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res, read_valid=True),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, read_valid=True, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, read_valid=True)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, read_valid=True, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, read_valid=True)
@@ -80025,9 +80045,9 @@ class KernelAddressHeuristicFinder:
         or None. log_buf is not always next to log_buf_len (e.g., s390x v5.4)."""
         for addr in Ksym.get_addrs("log_buf_addr_get", match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
-            if is_mips32() or is_mips64():
+            if is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, read_valid=True)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, read_valid=True, follow_addi=True)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, read_valid=True)
@@ -80226,14 +80246,14 @@ class KernelAddressHeuristicFinder:
                 )
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, read_valid=True)
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, read_valid=True),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, read_valid=True)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, read_valid=True)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, read_valid=True)
@@ -80297,7 +80317,7 @@ class KernelAddressHeuristicFinder:
                     seqs = list(KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, mnemonic="ldrd"))
                     if seqs:
                         g.sort(key=lambda x: min(abs(x - s) for s in seqs))
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     stores = KernelAddressHeuristicFinderUtil.riscv_load_store(res)
                     idx_offset = GefUtil.member_offset("struct devkmsg_user", "idx")
                     seq_offset = GefUtil.member_offset("struct devkmsg_user", "seq")
@@ -80331,11 +80351,10 @@ class KernelAddressHeuristicFinder:
                     if value is not None and length and value < length:
                         return x
                     continue
-                elif is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or \
-                        is_sparc32():
-                    if is_mips32() or is_mips64():
+                elif is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
+                    if is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lwz",))
                     elif is_s390x():
                         # `larl` and `l` (~v4.x) or `lrl`, whose loads follow the addresses for a tie (below)
@@ -80401,8 +80420,7 @@ class KernelAddressHeuristicFinder:
         if kversion and "3.5" <= kversion:
             addr = Ksym.get_addr("kmsg_dump_rewind_nolock")
             if addr:
-                if is_riscv64() or is_riscv32() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                        is_s390x() or is_loongarch64() or is_sparc32():
+                if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                     size = 40
                 else:
                     size = 20
@@ -80457,7 +80475,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res, skip=1),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res, skip=1),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     stores = KernelAddressHeuristicFinderUtil.riscv_load_store(res, base_register="a0")
                     offset = GefUtil.member_offset("struct kmsg_dumper", "next_idx")
                     if offset is None:
@@ -80476,11 +80494,10 @@ class KernelAddressHeuristicFinder:
                         return x
                     else:
                         return None
-                elif is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or \
-                        is_sparc32():
-                    if is_mips32() or is_mips64():
+                elif is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
+                    if is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lwz",))
                     elif is_s390x():
                         # cur_idx and next_idx may be stored at once by `rosbg` and `stg`
@@ -80611,11 +80628,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res)
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw", "lwu"))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lwz",))
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, access=("larl", "lrl", "llgfrl", "lgfrl"))
@@ -80647,11 +80664,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt_ldr(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                     )
-                elif is_riscv64() or is_riscv32():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_load(res)
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, access=("lw",))
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True, access=("lwz",))
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, access=("larl", "lrl", "llgfrl", "lgfrl"))
@@ -80742,14 +80759,14 @@ class KernelAddressHeuristicFinder:
                 elif is_arm32():
                     # Upstream ARM32 uses contig_page_data rather than a NUMA node_data array.
                     g = []
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -80839,14 +80856,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -80957,9 +80974,9 @@ class KernelAddressHeuristicFinder:
                     """
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = ()
-                elif is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+                elif is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                     g = ()
                 for x in g:
                     if is_x86():
@@ -80996,14 +81013,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use_anchored(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81030,14 +81047,14 @@ class KernelAddressHeuristicFinder:
                         g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add_add(res, read_valid=True)
                     elif is_arm32():
                         g = KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res)
-                    elif is_riscv32() or is_riscv64():
+                    elif is_riscv():
                         g = itertools.chain(
                             KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                             KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                         )
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                     elif is_s390x():
                         g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81065,14 +81082,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81167,14 +81184,14 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81212,10 +81229,7 @@ class KernelAddressHeuristicFinder:
             return None
 
         # the entries are checked, since the list may be accessed from a neighbor (e.g., MIPS)
-        if (
-            is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or
-            is_loongarch64() or is_sparc32()
-        ):
+        if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             if "5.4" <= kversion:
                 list_offset = current_arch.ptrsize * 5
             else:
@@ -81253,14 +81267,14 @@ class KernelAddressHeuristicFinder:
             for name in ("__purge_vmap_area_lazy", "alloc_vmap_area", "free_vmap_area_noflush"):
                 for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 1000)
-                    if is_riscv32() or is_riscv64():
+                    if is_riscv():
                         g = itertools.chain(
                             KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                             KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                         )
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         # the section anchor is another list (e.g., vmap_area_list)
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use_anchored(res)
                     elif is_s390x():
@@ -81275,11 +81289,11 @@ class KernelAddressHeuristicFinder:
             if "6.9" <= kversion:
                 for addr in Ksym.get_addrs("free_vmap_area_noflush", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
-                    if is_riscv32() or is_riscv64():
+                    if is_riscv():
                         g = KernelAddressHeuristicFinderUtil.riscv_auipc_use(res)
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                     elif is_s390x():
                         g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81295,7 +81309,7 @@ class KernelAddressHeuristicFinder:
             return None
 
         # insert_vmap_area_augment also references the busy list on ARM.
-        if is_arm32() or is_arm64():
+        if is_arm():
             busy_list = KernelAddressHeuristicFinder.get_vmap_area_list()
         else:
             busy_list = None
@@ -81309,7 +81323,7 @@ class KernelAddressHeuristicFinder:
             for addr in Ksym.get_addrs(name, match="split"):
                 # ARM keeps the constant in a literal pool and reads it ~210 instructions in (~600 with KASAN)
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 1000)
-                if is_x86_64() or is_x86_32():
+                if is_x86():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
                 elif is_arm64():
                     g = itertools.chain(
@@ -81362,7 +81376,7 @@ class KernelAddressHeuristicFinder:
             elif is_arm32():
                 g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
             for x in g:
-                if is_arm32() or is_arm64():
+                if is_arm():
                     if kversion and kversion < "6.9":
                         count = 2
                     else:
@@ -81391,10 +81405,7 @@ class KernelAddressHeuristicFinder:
         if kversion is None or not "4.7" <= kversion < "5.11":
             return None
 
-        if (
-            is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or
-            is_loongarch64() or is_sparc32()
-        ):
+        if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             if "5.4" <= kversion:
                 offset_purge_list = current_arch.ptrsize * 7
             elif "5.2" <= kversion:
@@ -81404,14 +81415,14 @@ class KernelAddressHeuristicFinder:
             for name in ("__purge_vmap_area_lazy", "free_vmap_area_noflush"):
                 for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
-                    if is_riscv32() or is_riscv64():
+                    if is_riscv():
                         g = itertools.chain(
                             KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                             KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                         )
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                     elif is_s390x():
                         g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81514,22 +81525,19 @@ class KernelAddressHeuristicFinder:
             return None
 
         # get_free_vmap_area_list() of these arches calls this, so plan 2 is not used
-        if (
-            is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or
-            is_loongarch64() or is_sparc32()
-        ):
+        if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             ulong_max = (1 << (current_arch.ptrsize * 8)) - 1
             for name in ("free_vmap_area_noflush", "__purge_vmap_area_lazy"):
                 for addr in Ksym.get_addrs(name, match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
-                    if is_riscv32() or is_riscv64():
+                    if is_riscv():
                         g = itertools.chain(
                             KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                             KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                         )
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                     elif is_s390x():
                         g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81555,7 +81563,7 @@ class KernelAddressHeuristicFinder:
         for name in ("free_vmap_area_noflush", "__purge_vmap_area_lazy"):
             for addr in Ksym.get_addrs(name, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 300)
-                if is_x86_64() or is_x86_32():
+                if is_x86():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
                 elif is_arm64():
                     g = itertools.chain(
@@ -81636,7 +81644,7 @@ class KernelAddressHeuristicFinder:
                 "freeze_workqueues_begin", "freeze_workqueues_busy", "thaw_workqueues"):
             for address in Ksym.get_addrs(anchor, match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 500)
-                if is_x86_64() or is_x86_32():
+                if is_x86():
                     g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
                 elif is_arm64():
                     g = itertools.chain(
@@ -81648,15 +81656,15 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     # `workqueues.next` may be loaded directly (e.g. `auipc a5, ...` then `lw s0, ...(a5)`)
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81669,7 +81677,7 @@ class KernelAddressHeuristicFinder:
                 for x in g:
                     if looks_like_workqueues(x):
                         return x
-                    if (is_arm32() or is_arm64()) and KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
+                    if is_arm() and KernelAddressHeuristicFinderUtil.is_in_kernel_image(x):
                         for offset in range(-0x400, 0x404, current_arch.ptrsize):
                             if looks_like_workqueues(x + offset):
                                 return x + offset
@@ -81720,7 +81728,7 @@ class KernelAddressHeuristicFinder:
         candidates = []
         for address in Ksym.get_addrs(call_func, match="split"):
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(address, 200)
-            if is_x86_64() or is_x86_32():
+            if is_x86():
                 g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
             elif is_arm64():
                 g = itertools.chain(
@@ -81733,14 +81741,14 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     KernelAddressHeuristicFinderUtil.arm32_const_use(res),
                 )
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 g = itertools.chain(
                     KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                     KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                 )
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -81881,15 +81889,13 @@ class KernelAddressHeuristicFinder:
                 # 0x802c7e24 <run_timer_softirq+116>: movw r2,#0xc500
                 # 0x802c7e34 <run_timer_softirq+132>: movt r2,#0x81e9    <-- timer_bases
                 count = 100
-            elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                    is_s390x() or is_loongarch64() or is_sparc32():
+            elif is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                 count = 40
             else:
                 count = 20
             for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, count)
-                if is_arm32() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                        is_sparc32():
+                if is_arm32() or is_riscv() or is_mips() or is_ppc() or is_sparc32():
                     # v6.19: `run_timer_softirq()` only passes the index to `__run_timer_base()`,
                     # so `timer_bases` is referenced in the callee.
                     # 0xc04052ec <run_timer_softirq+4>: mov r0,#0
@@ -81927,17 +81933,17 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                     g2 = []
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     # the per-cpu symbol is a linked address, which is also `&timer_bases` with CONFIG_SMP=n
                     g = list(itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True, include_lui=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     ))
                     g2 = g
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = list(KernelAddressHeuristicFinderUtil.mips_lui_use(res, skip_msb_check=True))
                     g2 = g
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = list(KernelAddressHeuristicFinderUtil.ppc_addis_use(res, skip_msb_check=True, follow_addi=True))
                     g2 = g
                 elif is_s390x():
@@ -82142,7 +82148,7 @@ class KernelAddressHeuristicFinder:
         if kversion and kversion < "4.8":
             for addr in Ksym.get_addrs("run_timer_softirq", match="split"):
                 res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
-                if is_x86_64() or is_x86_32():
+                if is_x86():
                     # 0xffffffff8106ab4d <run_timer_softirq+13>: mov rbx,QWORD PTR gs:0xd780 <-- tvec_bases (~v4.1)
                     # 0xffffffff810913e1 <run_timer_softirq+17>: mov rbx,QWORD PTR gs:[rip+0x7ef7bf97] # 0xd380
                     # 0xffffffff810b7e13 <run_timer_softirq+3>:  mov rbx,0xe740                <-- tvec_bases (v4.2~)
@@ -82159,14 +82165,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, skip_msb_check=True)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, skip_msb_check=True, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, skip_msb_check=True)
@@ -82259,16 +82265,16 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
                     g2 = []
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = list(itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, skip_msb_check=True, include_lui=True),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     ))
                     g2 = g
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = list(KernelAddressHeuristicFinderUtil.mips_lui_use(res, skip_msb_check=True))
                     g2 = g
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = list(KernelAddressHeuristicFinderUtil.ppc_addis_use(res, skip_msb_check=True, follow_addi=True))
                     g2 = g
                 elif is_s390x():
@@ -82379,14 +82385,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_use(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -82426,14 +82432,14 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res, read_valid=True)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res, read_valid=True)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, read_valid=True, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res, read_valid=True)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, read_valid=True, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res, read_valid=True)
@@ -82474,7 +82480,7 @@ class KernelAddressHeuristicFinder:
                     g = KernelAddressHeuristicFinderUtil.aarch64_adrp_add(res)
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
                 else:
                     g = []
@@ -82596,14 +82602,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -82639,17 +82645,14 @@ class KernelAddressHeuristicFinder:
             # after the mutex. dma_buf_debug_show() references the list head itself when iterating.
             # MIPS, PPC, s390x, LoongArch and SPARC32 use only it, as the order of the two depends on whether
             # the compiler uses the section anchors.
-            if (
-                is_x86_64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x()
-                or is_loongarch64() or is_sparc32()
-            ):
+            if is_x86_64() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                 for addr in Ksym.get_addrs("dma_buf_debug_show", match="split"):
                     res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 100)
                     if is_x86_64():
                         g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                     elif is_s390x():
                         g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -82677,7 +82680,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
@@ -82742,14 +82745,14 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
                     )
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -82786,7 +82789,7 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = itertools.chain(
                         KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
                         KernelAddressHeuristicFinderUtil.riscv_gp_relative(res),
@@ -82845,11 +82848,11 @@ class KernelAddressHeuristicFinder:
                     )
                 elif is_arm32():
                     g = KernelAddressHeuristicFinderUtil.arm32_movw_movt(res)
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -82903,11 +82906,11 @@ class KernelAddressHeuristicFinder:
                         KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                         KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                     )
-                elif is_riscv32() or is_riscv64():
+                elif is_riscv():
                     g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-                elif is_mips32() or is_mips64():
+                elif is_mips():
                     g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-                elif is_ppc32() or is_ppc64():
+                elif is_ppc():
                     g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
                 elif is_s390x():
                     g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -82919,7 +82922,7 @@ class KernelAddressHeuristicFinder:
                     g = []
                 # irq_to_desc() of CONFIG_SPARSE_IRQ=n returns `irq_desc + irq`, and kirq walks irq_desc[] instead
                 irq_desc = None
-                if is_mips32() or is_mips64() or is_ppc32() or is_s390x() or is_loongarch64() or is_sparc32():
+                if is_mips() or is_ppc32() or is_s390x() or is_loongarch64() or is_sparc32():
                     irq_desc = KernelAddressHeuristicFinder.get_irq_desc()
                 for x in g:
                     if x == irq_desc:
@@ -82959,7 +82962,7 @@ class KernelAddressHeuristicFinder:
         addr = Ksym.get_addr("irq_to_desc")
         if addr:
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 20)
-            if is_x86_64() or is_x86_32():
+            if is_x86():
                 g = KernelAddressHeuristicFinderUtil.x64_x86_any_const(res)
             elif is_arm64():
                 g = itertools.chain(
@@ -82973,11 +82976,11 @@ class KernelAddressHeuristicFinder:
                     KernelAddressHeuristicFinderUtil.arm32_movw_movt(res),
                     KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
                 )
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 g = KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32())
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-            elif is_ppc32() or is_ppc64():
+            elif is_ppc():
                 g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res)
             elif is_s390x():
                 g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -83134,7 +83137,7 @@ class Kernel:
         """Read the return address at a normal function entry."""
         if is_x86():
             return read_int_from_memory(current_arch.sp)
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             return get_register("$ra")
         if is_arm64():
             return get_register("$x30")
@@ -83143,9 +83146,9 @@ class Kernel:
             if lr is not None:
                 return lr & ~1
             return None
-        if is_mips32() or is_mips64():
+        if is_mips():
             return get_register("$ra")
-        if is_ppc32() or is_ppc64():
+        if is_ppc():
             return get_register("$lr")
         if is_s390x():
             return get_register("$r14")
@@ -83572,7 +83575,7 @@ class Kernel:
 
     @staticmethod
     def slab_page_size():
-        if is_riscv64() or is_riscv32():
+        if is_riscv():
             return 0x1000
         return KernelAddressHeuristicFinder.consts().PAGE_SIZE
 
@@ -83702,9 +83705,7 @@ class Kernel:
         An address in the middle of an object is rejected unless `allow_unaligned`."""
         if not is_valid_addr(addr):
             return None
-        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (
-            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
-        ):
+        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (is_x86() or is_arm() or is_riscv()):
             return None
         obj = Kernel.slab_contains().get_slab_object(addr)
         if obj["error"]:
@@ -83721,9 +83722,7 @@ class Kernel:
         resolver_factory = {
             "SLUB": Kernel.slub, "SLUB_TINY": Kernel.slub_tiny, "SLAB": Kernel.slab, "SLOB": Kernel.slob,
         }.get(allocator)
-        if resolver_factory is None or not (
-            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
-        ):
+        if resolver_factory is None or not (is_x86() or is_arm() or is_riscv()):
             return allocator, None
         try:
             return allocator, resolver_factory().get_kmem_caches(target_names)
@@ -84152,7 +84151,7 @@ class KernelLayout:
             if is_valid_addr(vbar):
                 return vbar
 
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             # `stvec` register has interrupt vector address
             stvec = get_register("stvec")
             if is_valid_addr(stvec):
@@ -84241,7 +84240,7 @@ class KernelLayout:
                         text_base_map_index = i
                         break
 
-        elif is_riscv64() or is_riscv32():
+        elif is_riscv():
             stvec = KernelLayout.get_exception_vector()
             if stvec is not None:
                 for i, entry in enumerate(dic["maps"]):
@@ -84262,7 +84261,7 @@ class KernelLayout:
                     text_base_map_index = i
                     break
 
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             # The image is in an unmapped segment (KSEG0, or CKSEG0 or XKPHYS on 64-bit) that pagewalk shows as
             # a whole window. All the windows of XKPHYS alias it, so the window that the kernel runs in is used.
             pc = current_arch.pc
@@ -84452,7 +84451,7 @@ class KernelLayout:
             # init_task is the only task whose comm is "swapper/0" (or "swapper" when CONFIG_SMP=n),
             # and it points to itself through real_parent, parent and group_leader, which are before comm.
             stack = None
-            if is_mips32() or is_mips64() or is_loongarch64() or is_sparc32():
+            if is_mips() or is_loongarch64() or is_sparc32():
                 for addr in range(ro_base, dic["ro_end"], chunk_size):
                     data = read_memory(addr, min(chunk_size, dic["ro_end"] - addr), safe=True)
                     if data is None:
@@ -84502,7 +84501,7 @@ class KernelLayout:
             # .data starts at `__init_end` after the init sections, which free_initmem() passes to
             # free_reserved_area() with `__init_begin` (= `_sinittext`). It needs kallsyms, which is parsed with
             # `use_iomem=False`.
-            if (is_ppc32() or is_ppc64()) and use_iomem:
+            if is_ppc() and use_iomem:
                 ptrsize = current_arch.ptrsize
                 if ptrsize == 8:
                     key = p64(dic["text_base"])
@@ -84615,7 +84614,7 @@ class KernelLayout:
             # MIPS runs in the whole unmapped segment, which starts with the exception vectors.
             # ARM64 is excluded since its "Kernel code" starts at `_stext` on newer kernels.
             code = next((x for x in resources if x[2] == "code"), None)
-            if code and (is_arm32() or is_x86() or is_mips32() or is_mips64()):
+            if code and (is_arm32() or is_x86() or is_mips()):
                 phys_text_base = AddrMap.v2p(self.text_base)
                 if phys_text_base is not None:
                     text_base = AddressUtil.normalize_address(self.text_base + code[0] - phys_text_base)
@@ -84691,7 +84690,7 @@ class KernelLayout:
             # RISC-V puts `_sdata` right before .rodata, i.e., in the page of ro_base in the RWX layout.
             # Then the start of .data is `init_thread_union` (only with CONFIG_KALLSYMS_ALL=y).
             rw_base = lookup(("_sdata",), base.ro_base + get_pagesize(), vmem_end)
-            if rw_base is None and (is_riscv32() or is_riscv64()):
+            if rw_base is None and is_riscv():
                 rw_base = lookup(("__start_init_task", "init_thread_union"), base.ro_base + get_pagesize(), vmem_end)
             if rw_base is None and is_riscv64() and base.rwx:
                 # The boot task's stack is init_thread_union, the first object after .rodata.
@@ -88987,9 +88986,9 @@ class KernelSighand:
         # RISC-V and LoongArch have no sa_restorer; its action contains a handler, flags, and 64-bit mask.
         # Other architectures usually have sa_restorer, with alternate sizes as fallbacks.
         ptrsize = current_arch.ptrsize
-        if is_riscv32() or is_riscv64() or is_loongarch64():
+        if is_riscv() or is_loongarch64():
             candidates = [ptrsize * 2 + 8]
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             # the 32-bit flags (padded to a word), a handler, and 128-bit mask (__ARCH_HAS_IRIX_SIGACTION)
             candidates = [ptrsize * 2 + 16]
         elif is_sparc32():
@@ -89023,7 +89022,7 @@ class KernelSighand:
 
         # slow path
         ptrsize = current_arch.ptrsize
-        if is_mips32() or is_mips64():
+        if is_mips():
             return None, ptrsize * 2
         if is_sparc32():
             return ptrsize * 3 + 8, ptrsize * 3
@@ -89034,7 +89033,7 @@ class KernelSighand:
     @staticmethod
     def get_nsig():
         """Return _NSIG, the number of the signals."""
-        if is_mips32() or is_mips64():
+        if is_mips():
             return 128
         return 64
 
@@ -89067,7 +89066,7 @@ class KernelSighand:
         unpack = GefUtil.get_unpack(ptrsize)
         for i in range(nsig):
             base = sizeof_action * i
-            if is_mips32() or is_mips64():
+            if is_mips():
                 # the 32-bit flags come first (__ARCH_HAS_IRIX_SIGACTION)
                 handler = unpack(data[base + ptrsize:base + ptrsize * 2])
                 flags = u32(data[base:base + 4])
@@ -90464,7 +90463,7 @@ class KernelMM:
                 break
         elif is_arm64():
             commands = ["pagewalk arm64 1 --only-TTBR0_EL1 --ttbr0 {:#x}".format(pgd_phys)]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             satp = get_register("satp")
             if satp is None:
                 return []
@@ -90473,9 +90472,9 @@ class KernelMM:
             else:
                 satp = (satp & ~0x3f_ffff) | (pgd_phys >> 12)
             commands = ["pagewalk riscv --satp {:#x}".format(satp)]
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             commands = ["pagewalk mips --pgd {:#x}".format(pgd_phys)]
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             commands = ["pagewalk ppc --pgd {:#x}".format(pgd_phys)]
         elif is_s390x():
             # Linux fills a region or segment table (4 pages, 2048 entries) with the entries of its type (TT), even
@@ -92499,7 +92498,7 @@ class KernelIpcs:
                     res = res[:call.start()]
                     if is_x86():
                         pattern = r"\b(?:lea|add)\s+(?:rdi|eax),(?:\[\w+\+)?(0x[0-9a-f]+)"
-                    elif is_arm32() or is_arm64():
+                    elif is_arm():
                         pattern = r"\badd\s+(?:r0|x0),\s*\w+,\s*#(0x[0-9a-f]+|\d+)"
                     else:
                         pattern = r"(?!)"
@@ -92929,7 +92928,7 @@ class KernelIpcs:
         if addr:
             # The key copied to ipc64_perm first identifies the lock layout too.
             res = KernelAddressHeuristicFinderUtil.disassemble_until_next_symbol(addr, 60)
-            if is_x86_64() or is_x86_32():
+            if is_x86():
                 pattern = r"mov\s+(\w+),DWORD PTR \[(?:rdi|eax)\+(0x[0-9a-f]+)\].*?mov\s+DWORD PTR \[(?:rsi|edx)\],\1\b"
             elif is_arm64():
                 pattern = r"ldr\s+(w\d+), \[x0, #(\d+)\].*?str\s+\1, \[x1\]"
@@ -94124,7 +94123,7 @@ class KernelBpf:
                 KernelAddressHeuristicFinderUtil.x64_lea_reg_const(res, skip_msb_check=True),
                 KernelAddressHeuristicFinderUtil.x64_x86_add_reg_const(res, skip_msb_check=True),
             )
-        elif is_arm32() or is_arm64():
+        elif is_arm():
             constants = re.findall(
                 r"\badds?(?:eq|ne|cs|hs|cc|lo|mi|pl|vs|vc|hi|ls|ge|lt|gt|le|al)?(?:\.w)?"
                 r"\s+\w+,\s*(?:\w+,\s*)?#(0x[\da-f]+|\d+)", res,
@@ -94254,7 +94253,7 @@ class KernelSeccomp:
         try:
             self.tools_command = [GefUtil.which("ceccomp"), "disasm", "-c", "always"]
             # ceccomp reads the filter in the byte order of the given arch, which is the host by default
-            if is_mips32() or is_mips64():
+            if is_mips():
                 if is_mips64():
                     ceccomp_arch = "mips64"
                 else:
@@ -94284,7 +94283,7 @@ class KernelSeccomp:
                     ))
                     self.meta.append(("info", "GEF uses `capstone-disassemble bpf_func`"))
                     self.tools_command = None
-                elif is_mips32() or is_mips64() or is_ppc64() or is_s390x() or is_loongarch64():
+                elif is_mips() or is_ppc64() or is_s390x() or is_loongarch64():
                     # the arch of the filter is given only to ceccomp
                     self.meta.append(("info", "GEF uses `capstone-disassemble bpf_func`"))
                     self.tools_command = None
@@ -94394,7 +94393,7 @@ class KernelSeccomp:
             flags = read_int_from_memory(thread_info)
             return bool(flags & (1 << 11))
 
-        if (is_riscv32() or is_riscv64()) and "5.5" <= kversion:
+        if is_riscv() and "5.5" <= kversion:
             if "6.3" <= kversion: # generic entry
                 offset = GefUtil.offsetof("thread_info", "syscall_work")
                 if offset is None:
@@ -94406,7 +94405,7 @@ class KernelSeccomp:
                 bit = 8 # TIF_SECCOMP
             return bool(flags & (1 << bit))
 
-        if is_mips32() or is_mips64():
+        if is_mips():
             # thread_info is always on the kstack, and its flags follows task
             flags = read_int_from_memory(thread_info + current_arch.ptrsize)
             return bool(flags & (1 << 4)) # TIF_SECCOMP
@@ -97039,7 +97038,7 @@ class KernelSysctl:
         targets = set()
         for line in res.splitlines():
             targets.update(int(x, 16) for x in re.findall(r"0x[0-9a-f]+", line.partition(":")[2]))
-        if is_riscv64() or is_riscv32():
+        if is_riscv():
             # a far call is `auipc ra, hi20` and `jalr ra, lo12(ra)`
             targets.update(KernelAddressHeuristicFinderUtil.riscv_auipc_gen(
                 res, use_addi=False, use_mem=True, skip=0, skip_msb_check=False, read_valid=False,
@@ -100269,7 +100268,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
 
     def get_direct_result(self, name, finder):
         """Return (value, error, available, finder_args) of the finder resolved from the symbol in kallsyms."""
-        if (is_riscv32() or is_riscv64()) and name in self.unsupported_riscv:
+        if is_riscv() and name in self.unsupported_riscv:
             return None, None, False, ()
         symbol_name = self.direct_symbol_name(name)
         if symbol_name is None:
@@ -100812,8 +100811,7 @@ class KernelTask:
         in the kernel, except on x86. This must not be called while another thread is temporarily selected."""
         offset_comm = KernelTask.resolve_offset_comm()
         if offset_comm is None and (
-            is_arm32() or is_arm64() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or
-            is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
+            is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32()
         ):
             orig_thread = gdb.selected_thread()
             threads = (thread for thread in KernelPerCpu.get_cpu_threads() if thread != orig_thread)
@@ -101020,7 +101018,7 @@ class KernelTask:
                 "r7", "r8", "r9", "r10", "r11", "r12",
                 "sp", "lr", "pc", "cpsr", "orig_r0",
             ]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             regs_name = [
                 "epc", "ra", "sp", "gp", "tp", "t0", "t1", "t2",
                 "s0", "s1", "a0", "a1", "a2", "a3", "a4", "a5",
@@ -101045,7 +101043,7 @@ class KernelTask:
                 "t8", "t9", "k0", "k1", "gp", "sp", "fp", "ra",
                 "status", "hi", "lo", "badvaddr", "cause", "epc",
             ]
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             if is_ppc64():
                 mq_or_softe = "softe"
             else:
@@ -101093,7 +101091,7 @@ class KernelTask:
             kernel_thread_regs = p64(0) * (len(regs_name) - 2) + p64(0x5) + p64(0)
             if regs_data == kernel_thread_regs:
                 return None
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             # copy_thread() of a kernel thread clears all but status (and gp)
             epc, _ra, sp = slice_unpack(regs_data[:current_arch.ptrsize * 3], current_arch.ptrsize)
             if epc == 0 and sp == 0:
@@ -101103,10 +101101,10 @@ class KernelTask:
         regs = dict(zip(regs_name, slice_unpack(regs_data, current_arch.ptrsize)))
 
         # maybe kernel thread (copy_thread() clears the pt_regs but a few members)
-        if is_mips32() or is_mips64():
+        if is_mips():
             if regs["epc"] == 0 and regs["sp"] == 0:
                 return None
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             if regs["nip"] == 0:
                 return None
         elif is_s390x():
@@ -101162,7 +101160,7 @@ class KernelTask:
             return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["pc"])
         elif is_arm32():
             return regs["cpsr"] & 0x1f == 0x10 # USR mode
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             # SPP is clear for a trap from U-mode, and SPIE is always set there
             if regs["status"] & 0x100 or not regs["status"] & 0x20:
                 return False
@@ -101171,7 +101169,7 @@ class KernelTask:
             if is_riscv64():
                 return not AddressUtil.is_msb_on(regs["sp"]) and not AddressUtil.is_msb_on(regs["epc"])
             return True
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             # KSU of Status is 2 (user mode) for an exception from the user-land
             if regs["status"] & 0x18 != 0x10:
                 return False
@@ -101181,7 +101179,7 @@ class KernelTask:
             if AddressUtil.is_msb_on(regs["sp"]):
                 return False
             return not AddressUtil.is_msb_on(regs["epc"])
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             # MSR_PR (problem state), MSR_EE and MSR_ME are set in the user-land
             if regs["msr"] & 0xd000 != 0xd000:
                 return False
@@ -101262,7 +101260,7 @@ class KernelTask:
         actions = []
         for index in range(KernelSighand.get_nsig()):
             address = sighand + self.offset_action + self.sizeof_action * index
-            if is_mips32() or is_mips64():
+            if is_mips():
                 # the 32-bit flags come first (__ARCH_HAS_IRIX_SIGACTION)
                 handler = read_int_from_memory(address + current_arch.ptrsize)
                 flags = read_int32_from_memory(address)
@@ -101903,14 +101901,14 @@ class KernelTask:
         elif is_arm32():
             ptregs_size = ptrsize * 18
             distances = [ptregs_size + ptrsize * 2]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             distances = []
             sizeof_pt_regs = GefUtil.sizeof("pt_regs")
             if sizeof_pt_regs is not None:
                 distances.append(sizeof_pt_regs)
             distances.append(ptrsize * 36)
             distances = list(dict.fromkeys((x + 15) & ~15 for x in distances))
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             distances = []
             sizeof_pt_regs = GefUtil.sizeof("pt_regs")
             if sizeof_pt_regs is not None:
@@ -101920,12 +101918,12 @@ class KernelTask:
             else:
                 distances.append(ptrsize * 38 + 32)
             distances = list(dict.fromkeys(distances))
-        elif is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+        elif is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             distances = []
             sizeof_pt_regs = GefUtil.sizeof("pt_regs")
             if sizeof_pt_regs is not None:
                 distances.append(sizeof_pt_regs)
-            if is_ppc32() or is_ppc64():
+            if is_ppc():
                 distances += [ptrsize * n for n in (44, 46, 48, 56, 60)]
             elif is_s390x():
                 distances += [ptrsize * n for n in (23, 24, 25)]
@@ -102505,11 +102503,11 @@ class KernelTask:
             cpsr = get_register(current_arch.flag_register)
             if cpsr is not None and ((cpsr >> 2) & 0b11) == 0:
                 return "CPU is in EL0; sp_el0 holds a user stack pointer"
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             priv = get_register("priv")
             if priv == 3:
                 return "hart is in M-mode; tp belongs to the SBI firmware" # codespell:ignore
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             if not is_in_kernel():
                 return "CPU is in user mode; gp holds a user pointer"
             # Status.EXL is set from the exception entry, which switches gp later if it comes from the user
@@ -102708,7 +102706,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         # r7 and r0 are general registers of the other arches too
         if is_arm32():
             syscall_nr_regs.append("r7")
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             syscall_nr_regs.append("r0")
         for name, value in regs.items():
             if name in syscall_nr_regs and value in nr_table:
@@ -103037,9 +103035,9 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
         else:
             if is_arm64():
                 member = "thread.cpu_context.sp"
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 member = "thread.reg29"
-            elif is_ppc32() or is_ppc64() or is_s390x():
+            elif is_ppc() or is_s390x():
                 member = "thread.ksp"
             elif is_loongarch64():
                 member = "thread.reg03"
@@ -103055,7 +103053,7 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
                 names = ("__switch_to_asm", "__schedule", "schedule")
             elif is_arm64():
                 names = ("cpu_switch_to",)
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 names = ("resume",)
             elif is_s390x():
                 names = ("__switch_to_asm", "__switch_to")
@@ -103077,7 +103075,7 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
                         for m in re.findall(r"\badd\s+(?:ip|r12),\s*r1,\s*#(0x[0-9a-f]+|\d+)", res):
                             offset = int(m, 0) + ptrsize * 8
                             candidates.extend([("task", offset), ("stack", offset)])
-                    elif is_riscv32() or is_riscv64():
+                    elif is_riscv():
                         for m in re.findall(r"\b(?:sd|sw)\s+sp,\s*(\d+)\(a0\)", res):
                             candidates.append(("task", int(m)))
                         for m in re.findall(r"\bli\s+a4,\s*(\d+)", res):
@@ -103085,11 +103083,11 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
                         pattern = r"\blui\s+a4,(0x[0-9a-f]+).*?\baddiw?\s+a4,a4,(-?\d+)"
                         for high, low in re.findall(pattern, res, re.DOTALL):
                             candidates.append(("task", (int(high, 16) << 12) + int(low) + ptrsize))
-                    elif is_mips32() or is_mips64():
+                    elif is_mips():
                         # 0x80125d88 <resume+40>: sw sp,1592(a0)
                         for m in re.findall(r"\b(?:sw|sd)\s+sp,(\d+)\(a0\)", res):
                             candidates.append(("task", int(m)))
-                    elif is_ppc32() or is_ppc64():
+                    elif is_ppc():
                         # `ksp` is the head of thread_struct, which is passed to `_switch()` as `&prev->thread`.
                         # The same offset makes the thread of the next task too.
                         # 0xc000c2a4 <__switch_to+4>:  addi r9,r4,1632
@@ -103192,13 +103190,13 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
             self.out.append("saved sp={:#x}, stack={:#x}-{:#x}".format(sp, kstack, kstack + self.kstack_size))
             # the saved pc/ra next to the saved sp. PPC and s390x save it in the stack frame.
             slots = []
-            if is_arm32() or is_arm64() or is_sparc32():
+            if is_arm() or is_sparc32():
                 pc = read_int_from_memory(address + current_arch.ptrsize, safe=True)
                 slots.append((address + current_arch.ptrsize, pc))
-            elif is_riscv32() or is_riscv64() or is_loongarch64():
+            elif is_riscv() or is_loongarch64():
                 pc = read_int_from_memory(address - current_arch.ptrsize, safe=True)
                 slots.append((address - current_arch.ptrsize, pc))
-            elif is_mips32() or is_mips64():
+            elif is_mips():
                 # reg29 (sp), reg30 (fp), reg31 (ra)
                 pc = read_int_from_memory(address + current_arch.ptrsize * 2, safe=True)
                 slots.append((address + current_arch.ptrsize * 2, pc))
@@ -104986,7 +104984,7 @@ class KernelLoadCommand(GenericCommand):
             expected = Elf.EM_AARCH64
         elif is_arm32():
             expected = Elf.EM_ARM
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             expected = Elf.EM_RISCV
         else:
             expected = None
@@ -105112,7 +105110,7 @@ class KernelLoadCommand(GenericCommand):
             names = ["vector_swi"]
         elif is_arm64():
             names = ["vectors"]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             names = ["handle_exception"]
         else:
             return None
@@ -105489,9 +105487,9 @@ class KernelModuleLoadCommand(GenericCommand):
             machine = Elf.EM_AARCH64
         elif is_arm32():
             machine = Elf.EM_ARM
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             machine = Elf.EM_RISCV
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             machine = Elf.EM_MIPS
         elif is_ppc32():
             machine = Elf.EM_PPC
@@ -106994,7 +106992,7 @@ class KernelCharDevice:
             elif 224 <= minor < 256:
                 return "/dev/nst{:d}a".format(minor - 224)
         elif major == 11: # 11 are duplicates
-            if is_sparc32() or is_sparc32plus() or is_sparc64():
+            if is_sparc():
                 return "/dev/kbd"
             elif is_hppa32():
                 return "/dev/ttyB{:d}".format(minor)
@@ -114174,7 +114172,7 @@ class KernelSearchCodePtrCommand(GenericCommand, BufferingOutput):
             return
         # The other arches may map the whole image as RWX (e.g., the KSEG0 of MIPS), where .data is resolved apart from .rodata
         if self.klayout.rwx:
-            if is_x86() or is_arm32() or is_arm64():
+            if is_x86() or is_arm():
                 err("Unsupported environment which has RWX data area")
                 return
             if not self.klayout.ro_end <= self.klayout.rw_base < self.klayout.rw_end:
@@ -115866,9 +115864,9 @@ class KernelSyscall:
             return None
         # the table may be followed by other pointers, e.g., gpr_get of native_regsets (PPC64 v6.6),
         # read_const_counter of clocksource_const (LoongArch) and clock_probe of clock_driver (SPARC32)
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             pattern = r"<(?:__riscv_)?(?:compat_)?sys_"
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             # ~v4.x also has ppc_fork, ppc32_fadvise64, ppc64_personality and so on
             pattern = r"<(?:__powerpc_)?(?:compat_)?(?:sys|ppc|ppc32|ppc64)_"
         elif is_loongarch64():
@@ -116271,7 +116269,7 @@ class ExecAsm:
                 gdb.execute("set $pcoqh = {:#x}".format(dst), to_string=True)
                 dst2 = dst + len(current_arch.syscall_insn)
                 gdb.execute("set $pcoqt = {:#x}".format(dst2), to_string=True)
-            elif is_sparc32() or is_sparc32plus() or is_sparc64():
+            elif is_sparc():
                 gdb.execute("set $pc = {:#x}".format(dst), to_string=True)
                 dst2 = dst + len(current_arch.syscall_insn)
                 gdb.execute("set $npc = {:#x}".format(dst2), to_string=True)
@@ -162989,10 +162987,7 @@ class KernelSlub(KernelSlabAllocator):
     @staticmethod
     @Cache.cache_this_session(per_inferior=True)
     def warmup_page2virt():
-        if (
-            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
-            or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
-        ):
+        if is_x86() or is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             Kernel.page2virt(0)
         return
 
@@ -163071,7 +163066,7 @@ class KernelSlub(KernelSlabAllocator):
                         continue
                     # gdb can read only the pages in the TLB of MIPS, so the per-cpu chunks allocated later
                     # in the vmalloc area may be unreadable
-                    if is_mips32() or is_mips64():
+                    if is_mips():
                         consts = KernelAddressHeuristicFinder.consts()
                         if consts.VMALLOC_START is not None and consts.VMALLOC_END is not None:
                             if consts.VMALLOC_START <= addr < consts.VMALLOC_END:
@@ -164764,10 +164759,7 @@ class SlabDumpCommandMixin:
     # for slub-dump and slub-tiny-dump
     @Cache.cache_this_session
     def warmup_page2virt(self):
-        if (
-            is_x86_64() or is_x86_32() or is_x86_16() or is_arm64() or is_arm32() or is_riscv64() or is_riscv32()
-            or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
-        ):
+        if is_x86() or is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             args = self.args # backup
             KernelSlub.warmup_page2virt()
             # self.args will be overwritten. this is workaround.
@@ -167702,7 +167694,7 @@ class KernelSlob(KernelSlabAllocator):
         # resolve global freelists
         free_lists = {name: Ksym.get_addr("free_slob_" + name) for name in ("large", "medium", "small")}
         if not all(free_lists.values()):
-            if is_x86() or is_arm32() or is_arm64() or is_riscv32() or is_riscv64():
+            if is_x86() or is_arm() or is_riscv():
                 free_lists = self.resolve_free_slob_lists() or free_lists
             else:
                 free_lists = self.resolve_free_slob_lists_from_code() or free_lists
@@ -167802,7 +167794,7 @@ class KernelSlob(KernelSlabAllocator):
             arguments = ("$x0", "$x1", "$x2", "$x3")
         elif is_arm32():
             arguments = ("$r0", "$r1", "$r2", "$r3")
-        elif is_riscv64() or is_riscv32():
+        elif is_riscv():
             arguments = ("$a0", "$a1", "$a2", "$a3")
         else:
             return None
@@ -167855,9 +167847,9 @@ class KernelSlob(KernelSlabAllocator):
         The three list heads are adjacent and medium is the middle, but which end is small depends on the compiler.
         So follow both sides of the branch after the compare with 256 (or 1024) up to the next branch.
         If one side builds medium, the other side builds small (or large)."""
-        if is_mips32() or is_mips64():
+        if is_mips():
             gen = KernelAddressHeuristicFinderUtil.mips_lui_use
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             gen = functools.partial(KernelAddressHeuristicFinderUtil.ppc_addis_use, follow_addi=True)
         elif is_s390x():
             gen = KernelAddressHeuristicFinderUtil.s390x_larl_use
@@ -167870,7 +167862,7 @@ class KernelSlob(KernelSlabAllocator):
 
         def slots(insn):
             """Return the numbers of the delay slots run when the branch is taken and when not."""
-            if is_mips32() or is_mips64():
+            if is_mips():
                 # a compact branch of R6 has no delay slot
                 if insn.mnemonic.endswith("c"):
                     return 0, 0
@@ -168732,7 +168724,7 @@ class KobjCommand(GenericCommand):
         try:
             consts = F.consts()
             add(consts.MODULES_VADDR, consts.MODULES_END, "modules", "module")
-            if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64() or is_ppc64() or is_s390x() or is_loongarch64():
+            if is_x86_64() or is_arm64() or is_riscv() or is_ppc64() or is_s390x() or is_loongarch64():
                 add(F.get_VMEMMAP_START(), F.get_VMEMMAP_END(), "vmemmap (struct page array)", "vmemmap")
             add(F.get_VMALLOC_START(), F.get_VMALLOC_END(), "vmalloc", "vmalloc")
             add(F.get_PAGE_OFFSET(), F.get_PAGE_OFFSET_END(), "direct-map (physmap)", "physmap")
@@ -168978,7 +168970,7 @@ class KobjCommand(GenericCommand):
         self.emit("Allocator", "n/a (page descriptor array)")
         consts = KernelAddressHeuristicFinder.consts()
         start = KernelAddressHeuristicFinder.get_VMEMMAP_START()
-        if is_riscv32() or is_riscv64() or is_ppc64() or is_s390x() or is_loongarch64():
+        if is_riscv() or is_ppc64() or is_s390x() or is_loongarch64():
             page = Kernel.page()
             if page.initialize():
                 stride = page.sizeof_struct_page
@@ -169999,7 +169991,7 @@ class KernelBuddy:
         result = {"virt": None, "phys": result_phys}
         if phys is None or entry["is_highmem"]:
             return result
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             result["virt"] = Kernel.page2virt(entry["page"])
             return result
 
@@ -170573,7 +170565,7 @@ class KernelBuddyContains:
         self.sizeof_struct_page = None
         if not self.buddy.initialize():
             return None
-        if is_x86() or is_arm32() or is_arm64():
+        if is_x86() or is_arm():
             self.sizeof_struct_page = KernelAddressHeuristicFinder.consts().sizeof_struct_page
         else:
             page_resolver = Kernel.page()
@@ -171930,7 +171922,7 @@ class KernelSocketCommand(GenericCommand, BufferingOutput):
         if socket:
             stype, sstate = info["type"], info["socket_state"]
             # MIPS swaps SOCK_STREAM (2) and SOCK_DGRAM (1)
-            if (is_mips32() or is_mips64()) and stype in (1, 2):
+            if is_mips() and stype in (1, 2):
                 stype = 3 - stype
             self.out.append("     ├─ {:<14s} {:s}".format("type", self.ksocket.SOCK_TYPE.get(stype, str(stype))))
             self.out.append("     ├─ {:<14s} {:s}".format(
@@ -175095,11 +175087,11 @@ class Ksym:
                 targets = ("vector_swi",)
             elif is_arm64():
                 targets = ("vectors",)
-            elif is_riscv32() or is_riscv64():
+            elif is_riscv():
                 targets = ("handle_exception",)
             elif is_loongarch64():
                 targets = ("exception_handlers",)
-            elif is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_sparc32():
+            elif is_mips() or is_ppc() or is_s390x() or is_sparc32():
                 # the exception entry is not resolved, so only linux_banner is used
                 targets = ()
             else:
@@ -176127,7 +176119,7 @@ class Ksym:
             if Ksym.kernel_version < (7, 0, 0):
                 # The relative base is the lowest symbol. It is `_text`, but `_stext` on MIPS, whose head.S reserves
                 # 0x400 bytes for the exception handlers before it, and the boot code at 0x200 on old s390x (e.g., v4.9).
-                if is_mips32() or is_mips64():
+                if is_mips():
                     relative_base_mask = 0x3ff
                 elif is_s390x():
                     relative_base_mask = 0x1ff
@@ -176896,7 +176888,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         digest.update("{:x}".format(klayout.text_base).encode())
         h = digest.hexdigest()
         saved_mem_file = os.path.join(GEF_TEMP_DIR, "dump-memory-{:s}.raw".format(h))
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             elf_suffix = "-riscv1"
         else:
             elf_suffix = ""
@@ -176917,9 +176909,9 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         # vmlinux-to-elf guesses the architecture from the function prologues, but it does not know RISC-V, s390x
         # and LoongArch, and takes PPC64 for 32-bit PPC
         e_machine = None
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             e_machine = Elf.EM_RISCV
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             e_machine = Elf.EM_MIPS
         elif is_ppc32():
             e_machine = Elf.EM_PPC
@@ -176944,7 +176936,7 @@ class VmlinuxToElfApplyCommand(GenericCommand):
         if not os.path.exists(symboled_vmlinux_file) or os.path.getsize(symboled_vmlinux_file) == 0:
             return None
 
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             ret = Ksym.get_kallsyms()
             if ret is None:
                 os.unlink(symboled_vmlinux_file)
@@ -186627,7 +186619,7 @@ class JemallocBase:
         if self.sz_index2size is not None:
             quantum = read_int_from_memory(self.sz_index2size + self.ptrsize * 2)
             quantum -= read_int_from_memory(self.sz_index2size + self.ptrsize)
-        elif is_arm32() or is_mips32() or is_mips64() or is_mipsn32():
+        elif is_arm32() or is_mips():
             quantum = 8
         else:
             quantum = 16
@@ -201433,8 +201425,7 @@ class AddrMap:
             return bool(self.permission & Permission.EXECUTE)
 
         def is_userland(self):
-            if is_x86() or is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                    is_s390x() or is_loongarch64() or is_sparc32():
+            if is_x86() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                 return "USER" in self.flags
             if is_arm32():
                 return "PL0/---" not in self.flags and self.vstart != 0xffff_0000
@@ -201445,9 +201436,9 @@ class AddrMap:
         def is_kernel(self):
             if is_x86():
                 return "KERN" in self.flags
-            if is_riscv32() or is_riscv64():
+            if is_riscv():
                 return "KERN" in self.flags and "KERN/---" not in self.flags
-            if is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+            if is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                 return "USER" not in self.flags
             if is_arm32():
                 return "PL0/---" in self.flags or self.vstart == 0xffff_0000
@@ -201660,7 +201651,7 @@ class AddrMap:
             elif is_arm64():
                 warn("Make sure you are in EL1 (=kernel mode)")
                 warn("Make sure qemu 3.x or higher")
-            elif is_riscv64() or is_riscv32():
+            elif is_riscv():
                 warn("Make sure you are in S-mode (=kernel mode)")
             return
 
@@ -201668,7 +201659,7 @@ class AddrMap:
         # (e.g., kmalloc-tracer) cannot do while the thread is running. The maps of the last stop are reused there.
         thread = gdb.selected_thread()
         key = (force_secure, command, scope, getattr(thread, "num", None))
-        if is_mips32() or is_mips64() or is_ppc32() or is_sparc32():
+        if is_mips() or is_ppc32() or is_sparc32():
             if thread is not None and not thread.is_stopped():
                 return AddrMap.last_maps.get(key, [])
 
@@ -201706,7 +201697,7 @@ class AddrMap:
 
     @staticmethod
     def riscv_bare():
-        if not (is_riscv32() or is_riscv64()):
+        if not is_riscv():
             return False
         if get_register("priv") == 3:
             return True
@@ -201776,7 +201767,7 @@ class AddrMap:
         # QEMU can translate the active address space without a full page-table walk.
         # On RISC-V, the monitor CPU can differ from the selected GDB thread.
         # Secure-world translations and explicitly supplied maps must use their selected tables.
-        if maps is None and force_secure is None and not (is_riscv32() or is_riscv64()):
+        if maps is None and force_secure is None and not is_riscv():
             try:
                 ret = gdb.execute("monitor gva2gpa {:#x}".format(address), to_string=True)
                 match = re.search(r"gpa: (0x[0-9a-fA-F]+|0)\b", ret)
@@ -201824,7 +201815,7 @@ class AddrMap:
                 maps = [AddrMap.Entry(0, 1 << 32, 0, 1 << 32)]
                 return p2v_from_map()
 
-        if maps is None and force_secure is None and (is_arm32() or is_arm64()):
+        if maps is None and force_secure is None and is_arm():
             cpsr = get_register("$cpsr")
             sctlr = None
             hcr = 0
@@ -201909,7 +201900,7 @@ class Virt2PhysCommand(GenericCommand):
     ))
     def do_invoke(self, args):
         force_secure = None
-        if is_arm32() or is_arm64():
+        if is_arm():
             if args.force_normal:
                 force_secure = False
             elif args.force_secure:
@@ -201954,7 +201945,7 @@ class Phys2VirtCommand(GenericCommand):
     ))
     def do_invoke(self, args):
         force_secure = None
-        if is_arm32() or is_arm64():
+        if is_arm():
             if args.force_normal:
                 force_secure = False
             elif args.force_secure:
@@ -202170,8 +202161,7 @@ class PageTable(BufferingOutput):
                     color = Config.get("theme.address_writable")
                 if self.flags.startswith("RWX "):
                     color += " " + Config.get("theme.address_rwx")
-            elif is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or \
-                    is_s390x() or is_loongarch64() or is_sparc32():
+            elif is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
                 match = re.search(r"KERN/([RWX-]{3})", self.flags)
                 if match:
                     perm = match.group(1)
@@ -208983,11 +208973,11 @@ class PagewalkCommand(GenericCommand, BufferingOutput):
             gdb.execute("pagewalk arm {}".format(arguments))
         elif is_arm64():
             gdb.execute("pagewalk arm64 {}".format(arguments))
-        elif is_riscv64() or is_riscv32():
+        elif is_riscv():
             gdb.execute("pagewalk riscv {}".format(arguments))
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             gdb.execute("pagewalk mips {}".format(arguments))
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             gdb.execute("pagewalk ppc {}".format(arguments))
         elif is_s390x():
             gdb.execute("pagewalk s390x {}".format(arguments))
@@ -209873,7 +209863,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
         return
 
     def resolve_vmemmap(self):
-        if is_x86_64() or is_arm64() or is_riscv32() or is_riscv64():
+        if is_x86_64() or is_arm64() or is_riscv():
             self.quiet_info("Resolving vmemmap")
             VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
@@ -209920,9 +209910,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                         continue
                     self.insert_region(page_array, section_map_size, "section_mem_map(=page[])")
 
-        elif (
-            is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32()
-        ):
+        elif is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             VMEMMAP_START = KernelAddressHeuristicFinder.get_VMEMMAP_START()
             VMEMMAP_END = KernelAddressHeuristicFinder.get_VMEMMAP_END()
             if VMEMMAP_START and VMEMMAP_END:
@@ -209956,7 +209944,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
 
         self.quiet_info("Resolving ldt")
-        if is_x86_64() or is_x86_32():
+        if is_x86():
             LDT_BASE_ADDR = KernelAddressHeuristicFinder.consts().LDT_BASE_ADDR
             LDT_END_ADDR = KernelAddressHeuristicFinder.consts().LDT_END_ADDR
             if LDT_BASE_ADDR and LDT_END_ADDR:
@@ -209976,7 +209964,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
             return
 
         self.quiet_info("Resolving cpu entry")
-        if is_x86_64() or is_x86_32():
+        if is_x86():
             CPU_ENTRY_AREA_BASE = KernelAddressHeuristicFinder.consts().CPU_ENTRY_AREA_BASE
             CPU_ENTRY_AREA_END = KernelAddressHeuristicFinder.consts().CPU_ENTRY_AREA_END
             if CPU_ENTRY_AREA_BASE and CPU_ENTRY_AREA_END:
@@ -210288,7 +210276,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 vdso_size = read_int_from_memory(vdso_image_64 + current_arch.ptrsize)
                 self.insert_region(vdso_start, vdso_size, "vdso_image_64")
 
-        if is_x86_64() or is_x86_32():
+        if is_x86():
             vdso_image_32 = KernelAddressHeuristicFinder.get_vdso_image_32()
             if vdso_image_32:
                 vdso_start = read_int_from_memory(vdso_image_32)
@@ -210302,7 +210290,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 vdso_size = read_int_from_memory(vdso_image_x32 + current_arch.ptrsize)
                 self.insert_region(vdso_start, vdso_size, "vdso_image_x32")
 
-        if is_arm64() or is_arm32():
+        if is_arm():
             vdso_start = KernelAddressHeuristicFinder.get_vdso_start()
             if vdso_start:
                 vdso_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
@@ -210314,14 +210302,14 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 vdso_size = KernelAddressHeuristicFinder.consts().PAGE_SIZE
                 self.insert_region(vdso32_start, vdso_size, "vdso32_start")
 
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             for start_name, end_name in (("vdso_start", "vdso_end"), ("compat_vdso_start", "compat_vdso_end")):
                 start = Ksym.get_addr(start_name)
                 end = Ksym.get_addr(end_name)
                 if start and end and start < end:
                     self.insert_region_range(start, end, start_name)
 
-        if is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64():
+        if is_ppc() or is_s390x() or is_loongarch64():
             # s390x ~v6.x has vdso64_start and vdso32_start too
             names = (("vdso_start", "vdso_end"), ("vdso32_start", "vdso32_end"), ("vdso64_start", "vdso64_end"))
             for start_name, end_name in names:
@@ -210330,7 +210318,7 @@ class KernelVMMapCommand(GenericCommand, BufferingOutput):
                 if start and end and start < end:
                     self.insert_region_range(start, end, start_name)
 
-        if is_mips32() or is_mips64():
+        if is_mips():
             # struct mips_vdso_image begins with the data and the size of the image
             for name in ("vdso_image", "vdso_image_o32", "vdso_image_n32"):
                 vdso_image = Ksym.get_addr(name)
@@ -210518,10 +210506,7 @@ class KernelPage:
         self.meta = []
 
         # FLATMEM and SPARSEMEM_VMEMMAP place the page array linearly by PFN
-        if (
-            is_riscv64() or is_riscv32() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64()
-            or is_s390x() or is_loongarch64() or is_sparc32()
-        ):
+        if is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             layout = self.get_linear_page_layout()
             if layout is None:
                 self.meta.append(("err", "Could not resolve the page array"))
@@ -211390,7 +211375,7 @@ class KernelPage:
     def get_direct_map_virt(page, phys):
         """Return the virtual address of the physical address `phys` of the struct page `page`, or None."""
         # the same resolution as buddy-dump: physmap + phys, or page2virt when it falls outside the direct map
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             return Kernel.page2virt(page)
         consts = KernelAddressHeuristicFinder.consts()
         page_offset = KernelAddressHeuristicFinder.get_PAGE_OFFSET()
@@ -213775,7 +213760,7 @@ class XSkipCommand(GenericCommand):
         if is_hppa32():
             gdb.execute("set $pcoqh = {:#x}".format(pc))
             gdb.execute("set $pcoqt = {:#x}".format(Disasm.gef_instruction_n(pc, 1).address))
-        elif is_sparc32() or is_sparc32plus() or is_sparc64():
+        elif is_sparc():
             gdb.execute("set $pc = {:#x}".format(pc))
             gdb.execute("set $npc = {:#x}".format(Disasm.gef_instruction_n(pc, 1).address))
         else:
@@ -216259,7 +216244,7 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
         self.current_task_phys = None
         self.pgds = None
         self.user_sp = None
-        if is_x86_32() or is_x86_64():
+        if is_x86():
             current_task = KernelAddressHeuristicFinder.get_current_task()
             if current_task is None:
                 raise gdb.GdbError("Could not resolve current_task")
@@ -216269,7 +216254,7 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
             self.current_task_phys = AddrMap.v2p(current_task)
             if self.current_task_phys is None:
                 raise gdb.GdbError("Could not translate current_task")
-        elif is_arm32() or is_arm64():
+        elif is_arm():
             # The kernel stack is invisible in the user mode, but TTBR0 points to the PGD of the process.
             # The offset of mm_struct->pgd is unknown, so every kernel pointer in the mm is a candidate.
             # No pointer in the mm refers to the PGD of another process.
@@ -216281,9 +216266,9 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
             self.pgds.discard(None)
             if not self.pgds:
                 raise gdb.GdbError("Could not translate mm_struct members")
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             pass # stop() reads the current task from sscratch
-        elif is_ppc32() or is_ppc64() or is_s390x() or is_loongarch64() or is_sparc32():
+        elif is_ppc() or is_s390x() or is_loongarch64() or is_sparc32():
             # No register tells the current task in the user mode, so the stack pointer of `sleep` does.
             # The first stop is at the return of the syscall in progress, and the later ones use the scratch stack.
             self.user_sp = user_sp
@@ -216313,7 +216298,7 @@ class KmallocAllocatedBy_UserlandHardwareBreakpoint(gdb.Breakpoint):
 
     def stop(self):
         Cache.reset_gef_caches()
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             self.matched = KernelAddressHeuristicFinder.get_current_task_for_current_thread() == self.target_task
             return self.matched and (self.sp is None or current_arch.sp == self.sp)
         if self.pgds is not None:
@@ -216424,7 +216409,7 @@ class KmallocAllocatedByCommand(GenericCommand):
         # PPC (`sc`) and SPARC return the positive errno with a flag: the SO bit of CR0 and the carry bit of PSR.
         # `scv 0` of PPC64 returns -errno.
         failed = False
-        if is_ppc32() or is_ppc64():
+        if is_ppc():
             if self.syscall_insn != p32(0x44000001):
                 failed = (get_register("$cr") >> 28) & 1
         elif is_sparc32():
@@ -217986,9 +217971,9 @@ class KmallocAllocatedByCommand(GenericCommand):
             pc_name, sp_name = ("rip", "rsp")
         elif is_x86_32():
             pc_name, sp_name = ("eip", "esp")
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             pc_name, sp_name = ("epc", "sp")
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             pc_name, sp_name = ("nip", "r1")
         elif is_s390x():
             pc_name, sp_name = ("pswa", "r15")
@@ -218414,7 +218399,7 @@ class KpageWatchAllocBreakpoint(KernelWatchBreakpoint):
             return False
         order = Kernel.get_ith_parameter(self.index_of_order_arg)[1]
         caller_pc = Kernel.get_return_address()
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             # A non-local exit can leave a return breakpoint at this reused stack slot.
             call_context = Kernel.get_call_context(task_addr)
             for bp in GefUtil.get_owned_breakpoints(self.watcher):
@@ -221082,7 +221067,7 @@ class KernelLsm:
                 KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative_ldr(res),
                 KernelAddressHeuristicFinderUtil.arm32_ldr_pc_relative(res),
             )
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             # gcc may materialize the address of the whole array and load a head at an offset from it,
             # so take the loaded heads before the addresses themselves
             g = itertools.chain(
@@ -221091,9 +221076,9 @@ class KernelLsm:
                 ),
                 KernelAddressHeuristicFinderUtil.riscv_auipc_addi(res, include_lui=is_riscv32()),
             )
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             g = KernelAddressHeuristicFinderUtil.mips_lui_use(res)
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             g = KernelAddressHeuristicFinderUtil.ppc_addis_use(res, follow_addi=True)
         elif is_s390x():
             g = KernelAddressHeuristicFinderUtil.s390x_larl_use(res)
@@ -221124,7 +221109,7 @@ class KernelLsm:
                     return int(m.group(1), 16)
                 return 0
             return None
-        if is_arm64() or is_arm32():
+        if is_arm():
             loaded = {}
             for line in res.splitlines():
                 m = re.search(r"ldr\s+(\w+),\s*\[\w+(?:,\s*#(\d+))?\]", line)
@@ -221149,7 +221134,7 @@ class KernelLsm:
         kallsyms, _kallsyms_map = ret
         if count is None:
             # RVC halves most instructions, and the head is often loaded after a call that allocates something
-            if is_riscv32() or is_riscv64():
+            if is_riscv():
                 count = 64
             else:
                 count = 40
@@ -221291,7 +221276,7 @@ class KernelLsm:
                 "return": r"bx\s+lr|(?:ldm\w*|pop)\s+.*\bpc\}",
             }
             no_write = r"str\w*|stm\w*|push|cmp|cmn|tst|teq|b|b[a-z]{2}|bx|blx|bl|nop"
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             # RV32 MEDLOW builds an absolute address with lui instead
             if is_riscv32():
                 auipc_pattern = r"(?:auipc|lui)"
@@ -221308,7 +221293,7 @@ class KernelLsm:
                 "return": r"ret\b|jr\s",
             }
             no_write = r"s[bhwd]|b\w*|j|jr|jalr|ret|fence\S*|nop|wfi"
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             patterns = {
                 "hi16": r"lui\s+(\w+),\s*(0x[0-9a-f]+|\d+)",
                 "add": r"d?addiu\s+(\w+),\s*(\w+),\s*(-?\d+)",
@@ -221320,7 +221305,7 @@ class KernelLsm:
                 "return": r"jr\s+ra\b",
             }
             no_write = r"s[bhwdc]\w*|b\w*|j|jr|jal|jalr|nop|ssnop|ehb|sync\w*|cache|pref|t\w+"
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             # `mtctr r9` and `bctrl` call the key
             patterns = {
                 "hi16": r"lis\s+(\w+),\s*(-?(?:0x[0-9a-f]+|\d+))",
@@ -221429,7 +221414,7 @@ class KernelLsm:
                 target = int(m.group(1), 16)
                 branches.append((pc, target))
                 # `b,a` of SPARC annuls the delay slot
-                if is_mips32() or is_mips64() or is_sparc32():
+                if is_mips() or is_sparc32():
                     if not re.match(r"ba?,a\s", insn):
                         delayed = (target, bool(re.match(patterns["jump"], insn)), pc + 4)
                         continue
@@ -221527,7 +221512,7 @@ class KernelLsm:
                     continue
             m = re.match(patterns["load"], insn)
             if m:
-                if is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_ppc32() or is_ppc64() or is_s390x():
+                if is_riscv() or is_mips() or is_ppc() or is_s390x():
                     dst, offset, base = m.group(1), m.group(2), m.group(3)
                 else:
                     dst, base, offset = m.group(1), m.group(2), m.group(3)
@@ -222223,7 +222208,7 @@ class KernelLsm:
                 ("add", r"add\s+(?P<dst>(?P<src>\w+)),(?P<imm>0x\w+)"),
                 ("zero", r"xor\s+(?P<dst>\w+),(?P=dst)"),
             ]
-        elif is_arm64() or is_arm32():
+        elif is_arm():
             mem = r"\s+(?P<{:s}>\w+),\s*\[(?P<base>\w+)(?:,\s*#(?P<disp>-?\w+))?\]"
             if is_arm64():
                 arg, clobbered = ("x0", " ".join("x{:d}".format(i) for i in range(19)) + " x30")
@@ -222243,7 +222228,7 @@ class KernelLsm:
                 ("const", r"movs?(?:\.w)?\s+(?P<dst>\w+),\s*#(?P<imm>\w+)"),
                 ("add", r"adds?(?:\.w)?\s+(?P<dst>\w+),\s*(?P<src>\w+),\s*#(?P<imm>\w+)(?:,\s*lsl\s*#(?P<shift>\d+))?"),
             ]
-        elif is_riscv32() or is_riscv64():
+        elif is_riscv():
             if is_64bit():
                 size = "d"
             else:
@@ -222266,7 +222251,7 @@ class KernelLsm:
                 ("add", r"addi\s+(?P<dst>\w+),(?P<src>\w+),(?P<imm>-?\w+)"),
                 ("add", r"add\s+(?P<dst>\w+),(?P<src>\w+),(?P<reg>\w+)"),
             ]
-        elif is_mips32() or is_mips64():
+        elif is_mips():
             if is_64bit():
                 size = "d"
             else:
@@ -222286,7 +222271,7 @@ class KernelLsm:
                 ("add", r"d?addiu\s+(?P<dst>\w+),(?P<src>\w+),(?P<imm>-?\w+)"),
                 ("add", r"d?addu\s+(?P<dst>\w+),(?P<src>\w+),(?P<reg>\w+)"),
             ]
-        elif is_ppc32() or is_ppc64():
+        elif is_ppc():
             if is_64bit():
                 size, load_size = "d", "d"
             else:
@@ -232233,7 +232218,7 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
 
     def get_callsites(self, ret_addr):
         """Return [(call_address, expected_end_address), ...]."""
-        if is_sparc32() or is_sparc32plus() or is_sparc64():
+        if is_sparc():
             # %o7 (and the spilled %i7) holds the address of the call itself
             return [(ret_addr, None)]
         if is_arm32() or is_arm32_cortex_m():
@@ -232244,7 +232229,7 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             return [(ret_addr - n, ret_addr) for n in self.X86_CALL_LENGTHS]
         if is_s390x():
             return [(ret_addr - n, ret_addr) for n in self.S390X_CALL_LENGTHS]
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             return [(ret_addr - 4, ret_addr), (ret_addr - 2, ret_addr)]
         length = current_arch.instruction_length
         if length:
@@ -232368,7 +232353,7 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             if current_arch.is_thumb():
                 return "$r7", ["r7"], 0
             return "$r11", ["r11", "fp"], ptrsize
-        if is_riscv32() or is_riscv64():
+        if is_riscv():
             return "$fp", ["s0", "fp", "x8"], ptrsize * 2
         if is_loongarch64():
             return "$r22", ["$fp", "$r22", "fp", "r22"], ptrsize * 2
@@ -232405,15 +232390,15 @@ class StackRecoverCommand(GenericCommand, BufferingOutput):
             return ["$x30"]
         if is_arm32() or is_arm32_cortex_m():
             return ["$lr"]
-        if is_riscv32() or is_riscv64() or is_mips32() or is_mips64() or is_mipsn32():
+        if is_riscv() or is_mips():
             return ["$ra"]
-        if is_ppc32() or is_ppc64():
+        if is_ppc():
             return ["$lr"]
         if is_loongarch64():
             return ["$r1"]
         if is_s390x():
             return ["$r14"]
-        if is_sparc32() or is_sparc32plus() or is_sparc64():
+        if is_sparc():
             return ["$o7", "$i7"]
         return []
 
