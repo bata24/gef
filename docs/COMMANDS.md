@@ -12434,6 +12434,84 @@ A keyring leaf may itself be another keyring, so the command walks child keys re
 The request-key authorisation key held by an upcall helper is shown as the `request` root.
 ```
 
+## `kkvm`
+
+Display the KVM virtual machines, vcpus, VMCS (VMCB) and EPT (NPT) roots of the L1 kernel.
+
+
+### Syntax
+
+```text
+usage: kkvm [-h] [-hh] [-p PID] [-w] [--meta] [-n] [-q]
+
+options:
+  -h, --help          show this help message and exit
+  -hh, --help-simple  show help without ASCII diagram.
+  -p, --pid PID       select VMs owned by this pid.
+  -w, --walk          pass the EPT (NPT) root of each VM to pagewalk.
+  --meta              display layout and discovery information.
+  -n, --no-pager      do not use the pager.
+  -q, --quiet         show result only.
+```
+
+### Examples
+
+```gdb
+kkvm
+kkvm --pid 1337
+kkvm --walk
+```
+
+### Notes
+
+```text
+The VMs and vcpus are found from file->private_data of the fds of KVM (anon_inode:kvm-vm and kvm-vcpu).
+DWARF is used when available. Without it, the layout is validated with the back pointers.
+The EPT (NPT) root translates the guest physical addresses to the physical addresses of this (L1) kernel.
+It is `-` until the vcpu runs. `--walk` passes it to `pagewalk` (with `--ept` for EPT).
+Only the address of the VMCS is shown, since the processor keeps its contents in its own format.
+`shadow` means the shadow paging (ept=0 or npt=0), whose root depends on the page table of the guest.
+A CPU running a vcpu shows the registers of the guest (L2) to gdb, so select another CPU (`thread N`) first.
+
+Simplified KVM structure:
+
++-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+
+| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |
+| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+
+| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |
++-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |
+                                                                                                 |
+   +-------------------(anon_inode:kvm-vm)-------------------+------(anon_inode:kvm-vcpu:N)------+
+   |                                                         |
+   |  +-kvm--------+     +-vcpu_vmx------------------------+ |     +-vcpu_svm-------------+
+   +->| mmu_lock   |<-+  | vcpu (struct kvm_vcpu)          |<+---->| vcpu                 |
+      | slots_lock |  +--|   kvm                           |       |   ...                |
+      | mm         |     |   vcpu_id                       |       | vmcb                 |--->VMCB
+      | ...        |     |   arch                          |       | ...                  |    nested_cr3 (NPT root)
+      +------------+     |     root_mmu (mmu ~v4.19)       |       +----------------------+
+                         |       root.hpa (root_hpa ~v5.17)|--->EPT root (physical)
+                         |   ...                           |
+                         | vmcs01                          |<-+
+                         |   vmcs                          |--|--->VMCS
+                         |   ...                           |  |
+                         | loaded_vmcs                     |--+ (vmcs02 for the nested guest)
+                         | ...                             |
+                         +---------------------------------+
+
+The root is validated with the back pointer from its kvm_mmu_page:
+
+EPT root (physical)
+  |
+  |  +-page----+     +-kvm_mmu_page-+
+  +->| ...     |  +->| link         |
+     | private |--+  | ...          |
+     | ...     |     | role         | (level: 4 or 5)
+     +---------+     | gfn          |
+                     | spt          |--->the root table (virtual address)
+                     | ...          |
+                     +--------------+
+```
+
 ## `klocks`
 
 Display mutex/rwsem owners and the locks held by each task. Useful for investigating hangs and deadlocks.

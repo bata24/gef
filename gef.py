@@ -77569,6 +77569,19 @@ class KernelAddressHeuristicFinder:
             # plan 3 (from the slab pages of kmalloc caches)
             for pages in Kernel.get_kmalloc_pages():
                 valid = [page for page, _ in pages if is_valid_addr(page)]
+                if not valid:
+                    continue
+                # CONFIG_SLAB_VIRTUAL lists `struct slab` in the slab-meta area, whose `backing_folio` is in vmemmap
+                if Kernel.get_slab_type() == "SLUB" and Kernel.slub().slab_virtual_enabled:
+                    kslabv = Kernel.slab_virtual()
+                    if not kslabv.initialize():
+                        return None
+                    folios = []
+                    for slab in valid:
+                        folio, _ = kslabv.slab_to_page(slab)
+                        if is_valid_addr(folio):
+                            folios.append(folio)
+                    valid = folios
                 if valid:
                     return min(valid) & 0xffff_ffff_c000_0000 # ~((1 << PUD_SHIFT) - 1)
         return None
@@ -83363,6 +83376,11 @@ class Kernel:
     def epoll():
         """Return the epoll resolver."""
         return KernelEpoll.get_instance()
+
+    @staticmethod
+    def kvm():
+        """Return the KVM resolver."""
+        return KernelKvm.get_instance()
 
     @staticmethod
     def io_uring():
@@ -212179,8 +212197,9 @@ class KernelSlabVirtual:
         messages = []
 
         # Do NOT use `KF.get_VMEMMAP_START()` here.
-        # If CONFIG_KALLSYMS_ALL=n, `KF.get_VMEMMAP_START()` uses plan 3 and returns
-        # slab-virtual address (NOT page address).
+        # If CONFIG_KALLSYMS_ALL=n, `KF.get_VMEMMAP_START()` uses plan 3, which follows `backing_folio`
+        # only when the SLUB resolver detects CONFIG_SLAB_VIRTUAL (it needs `slub_tlbflush_worker`).
+        # Otherwise it returns slab-virtual address (NOT page address).
         # The returned value may be the first entry address of slab-virtual.
 
         # plan 1 (directly)
@@ -226106,6 +226125,576 @@ class KernelEpitemCommand(GenericCommand, BufferingOutput):
                 owner["comm"], owner["pid"], owner["fd"], owner["file"]))
         if not epoll_files:
             self.warn_add_out("No open epoll file descriptors found")
+        self.print_output(check_terminal_size=True)
+        return
+
+
+class KernelKvm(KernelTaskFileScanner):
+    """Resolve the virtual machines (struct kvm) and vcpus of KVM from the open files, and find the VMCS (or VMCB)
+    and the EPT (or NPT) root of each vcpu."""
+
+    # vcpu_vmx and vcpu_svm are read to the end of their slab object, or in this window
+    MAX_VCPU_SIZE = 0x8000
+    # the root table of the MMU is a physical address below MAXPHYADDR (52 bits)
+    MAX_PHYS_BITS = 52
+
+    @classmethod
+    @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
+    def get_instance(cls):
+        return cls()
+
+    def __init__(self):
+        self.meta = []
+        return
+
+    def initialize(self):
+        self.meta = []
+        self.kversion = Kernel.version()
+        if self.kversion is None:
+            self.meta.append(("err", "Could not find Linux kernel"))
+            return None
+        # the VMCS, the VMCB and the page tables of the MMU are pages in the direct mapping
+        consts = KernelAddressHeuristicFinder.consts()
+        if consts is None or consts.PAGE_OFFSET is None or consts.PAGE_OFFSET_END is None:
+            self.meta.append(("err", "Could not find the direct mapping"))
+            return None
+        self.page_offset = consts.PAGE_OFFSET
+        self.page_offset_end = consts.PAGE_OFFSET_END
+        self.task_command = False
+        self.task_mms = set()
+        return True
+
+    def find_kvm_files(self, pid=None):
+        """Return (the VM files, the vcpu files) of the user processes (only `pid` if given), or (None, None) without
+        the VFS layout. The VM files are resolved first, since a vcpu is validated with vcpu->kvm."""
+        command = self.get_task_command()
+        if self.get_kpath() is None:
+            return None, None
+        tasks = command.get_tasks(user_only=True)
+        # struct kvm is validated with kvm->mm, which is the mm of the process that created it
+        self.task_mms = set()
+        for info in tasks:
+            self.task_mms.add(info["mm"])
+        vm_files = []
+        vcpu_files = []
+        # threads share the files of their process, so only the processes are scanned
+        for info in tasks:
+            if pid is not None and info["pid"] != pid:
+                continue
+            files, _ = command.get_file_details(info["task"])
+            for entry in files:
+                # "anon_inode:kvm-vm" and "anon_inode:kvm-vcpu:N" ("anon_inode:kvm-vcpu" until v4.x), not the stats fds
+                name = re.sub(r"^anon_inode:", "", entry["path"]).strip("[]")
+                owner = {
+                    "task": info["task"], "pid": info["pid"], "comm": info["comm"], "fd": entry["fd"],
+                    "file": entry["file"], "kvm": None, "vcpu": None, "source": None,
+                }
+                if name == "kvm-vm":
+                    owner["kvm"], owner["source"] = self.context_from_file(entry["file"])
+                    vm_files.append(owner)
+                elif re.fullmatch(r"kvm-vcpu(:\d+)?", name):
+                    vcpu_files.append(owner)
+        kvms = set()
+        for owner in vm_files:
+            if owner["kvm"] is not None:
+                kvms.add(owner["kvm"])
+        for owner in vcpu_files:
+            vcpu = self.file_private_data(owner["file"])
+            if vcpu is not None and self.vcpu_kvm(vcpu, kvms) is not None:
+                owner["vcpu"], owner["source"] = vcpu, "debug information"
+            else:
+                # The window can reach the next file object (e.g., the next vcpu file), so the smallest offset is
+                # file's own member
+                file = owner["file"]
+                for index, pointer in enumerate(self.read_words(file, 0x200) or []):
+                    # vcpu is another object; an empty list in the file points into itself
+                    if file <= pointer < file + 0x200:
+                        continue
+                    if self.vcpu_kvm(pointer, kvms) is not None:
+                        owner["vcpu"] = pointer
+                        owner["source"] = "validated file member +{:#x}".format(index * current_arch.ptrsize)
+                        break
+            if owner["vcpu"] is not None:
+                owner["kvm"] = self.vcpu_kvm(owner["vcpu"], kvms)
+        return vm_files, vcpu_files
+
+    def validate_context(self, kvm):
+        # struct kvm is larger than a page and page aligned: kzalloc (~v4.x), then vmalloc or kvzalloc.
+        # It tells kvm from the objects next to a member of the file in the window (e.g., f_cred), which can have an mm.
+        if kvm & 0xfff or not KernelAddressHeuristicFinderUtil.is_kernel_space(kvm):
+            return 0
+        if self.find_kvm_mm(kvm) is None:
+            return 0
+        # f_cred can be page aligned (the first object of its slab), but struct kvm is larger than a page
+        obj = Kernel.get_slab_object(kvm, allow_unaligned=False)
+        if obj is not None and obj.get("object_size") and obj["object_size"] < 0x1000:
+            return 0
+        return 10
+
+    def find_kvm_mm(self, kvm):
+        """Return kvm->mm, which is the first word that points to the mm of a user process, or None."""
+        # mm follows mmu_lock and slots_lock (and slots_arch_lock of v5.13~), which lockdep makes larger
+        for word in self.read_words(kvm, 0x400) or []:
+            if word in self.task_mms:
+                return word
+        return None
+
+    def vcpu_kvm(self, vcpu, kvms=()):
+        """Return vcpu->kvm, the first member, if it is one of `kvms` or validated as struct kvm, or None."""
+        if vcpu & (current_arch.ptrsize - 1) or not KernelAddressHeuristicFinderUtil.is_kernel_space(vcpu):
+            return None
+        kvm = read_int_from_memory(vcpu, safe=True)
+        if kvm is None:
+            return None
+        if kvm in kvms:
+            return kvm
+        if not self.context_score(kvm):
+            return None
+        return kvm
+
+    def is_direct_mapped_page(self, address):
+        if not address or address & 0xfff:
+            return False
+        return self.page_offset <= address < self.page_offset_end
+
+    def shadow_page(self, table):
+        """Return (kvm_mmu_page, offsetof(kvm_mmu_page, spt)) if the physical address `table` is a page table of the KVM
+        MMU, or (None, None). private of its struct page points to the kvm_mmu_page, whose spt points back to the table
+        (set_page_private(virt_to_page(sp->spt), sp))."""
+        if not table or table & 0xfff or table >> self.MAX_PHYS_BITS:
+            return None, None
+        virt = self.page_offset + table
+        if not self.is_direct_mapped_page(virt):
+            return None, None
+        page = Kernel.phys2page(table)
+        if page is None:
+            return None, None
+        ptr = current_arch.ptrsize
+        # private is the 6th word (v4.18~) or the 7th word of struct page
+        for sp in self.read_words(page, ptr * 8) or []:
+            if sp & (ptr - 1) or not KernelAddressHeuristicFinderUtil.is_kernel_space(sp):
+                continue
+            # spt follows the list links, the role and the gfn
+            words = self.read_words(sp, 0x60) or []
+            if virt not in words[2:]:
+                continue
+            # sp->link is on the list of the MMU pages (or the TDP roots). The page table of a process (e.g., the host
+            # CR3 in vmcs01) points to mm_struct (pt_mm), which points back to it as mm->pgd, but is not on a list.
+            next_node, prev_node = words[0], words[1]
+            if read_int_from_memory(next_node + ptr, safe=True) != sp:
+                continue
+            if read_int_from_memory(prev_node, safe=True) != sp:
+                continue
+            return sp, words.index(virt) * ptr
+        return None, None
+
+    def find_root(self, vcpu, words):
+        """Return (the offset in `vcpu`, the root) of the MMU, or (None, None). The root is the physical address of the
+        first table of the KVM MMU in `vcpu`, which is root_mmu (mmu until v4.19). It is followed by prev_roots and
+        guest_mmu (the nested EPT/NPT). The PAE root (pae_root) of the shadow paging for a guest out of the long mode
+        is not a table of the KVM MMU, so it is not found (NPT, which can use it on 32-bit, is read from the VMCB)."""
+        offset = None
+        for member in ["arch.root_mmu.root.hpa", "arch.root_mmu.root_hpa", "arch.mmu.root_hpa"]:
+            offset = GefUtil.offsetof("kvm_vcpu", member)
+            if offset is not None:
+                break
+        ptr = current_arch.ptrsize
+        for index, word in enumerate(words):
+            if offset is not None and index * ptr != offset:
+                continue
+            # hpa_t is u64 on 32-bit, too
+            root = word
+            if ptr == 4 and index + 1 < len(words):
+                root |= words[index + 1] << 32
+            sp, _ = self.shadow_page(root)
+            if sp is not None:
+                return index * ptr, root
+            if offset is not None:
+                # INVALID_PAGE until the vcpu runs
+                return offset, None
+        return None, None
+
+    def is_vmcs(self, vmcs):
+        """Return True if `vmcs` looks like a VMCS: a page that starts with the revision identifier (bit 31 is set only
+        for a shadow VMCS) and the VMX-abort indicator (0). The other contents are processor-specific."""
+        if not self.is_direct_mapped_page(vmcs):
+            return False
+        data = read_memory(vmcs, 8, safe=True)
+        if data is None:
+            return False
+        revision, abort = u32(data[:4]), u32(data[4:])
+        if revision == 0 or revision >> 31:
+            return False
+        return abort == 0
+
+    def find_vmcs(self, vcpu, words):
+        """Return (the offset in `vcpu`, the current VMCS) of vcpu_vmx, or (None, None)."""
+        vmx = GefUtil.typed_struct(vcpu, "struct vcpu_vmx")
+        for path in [("loaded_vmcs", "vmcs"), ("vmcs",)]:
+            vmcs = GefUtil.field_int(vmx, *path)
+            if self.is_vmcs(vmcs):
+                return GefUtil.offsetof("vcpu_vmx", path[0]), vmcs
+        ptr = current_arch.ptrsize
+        # struct kvm can look like a VMCS: the ticket spinlock (mmu_lock, ~v4.1) and the padding before slots_lock.
+        # kvm_vcpu has pointers to the vcpu itself before vcpu_vmx (e.g., pmc->vcpu of the PMU), whose kvm is it.
+        kvm = read_int_from_memory(vcpu, safe=True)
+        nested = None
+        for index, word in enumerate(words):
+            if word & (ptr - 1) or not KernelAddressHeuristicFinderUtil.is_kernel_space(word):
+                continue
+            vmcs = read_int_from_memory(word, safe=True)
+            if vmcs == kvm or not self.is_vmcs(vmcs):
+                continue
+            # loaded_vmcs points to vmcs01 (struct loaded_vmcs, 0x14 bytes or more) just before it, whose first member
+            # is the VMCS
+            if 2 * ptr < vcpu + index * ptr - word <= 0x200:
+                return index * ptr, vmcs
+            # loaded_vmcs points to vmcs02 while the nested guest runs
+            if nested is None:
+                nested = (index * ptr, vmcs)
+        if nested is not None:
+            return nested
+        # loaded_vmcs is introduced in v3.1. vcpu_vmx of v3.0 has the VMCS after kvm_vcpu, whose pio_data may look
+        # like a VMCS, so the last one is taken
+        if self.kversion < "3.1":
+            for index in range(len(words) - 1, -1, -1):
+                if words[index] != kvm and self.is_vmcs(words[index]):
+                    return index * ptr, words[index]
+        return None, None
+
+    def is_vmcb(self, vmcb):
+        """Return True if `vmcb` is a VMCB: a page whose control area intercepts VMRUN (required by the processor), and
+        has the physical addresses of the I/O and MSR permission maps (page aligned)."""
+        if not self.is_direct_mapped_page(vmcb):
+            return False
+        data = read_memory(vmcb, 0x50, safe=True)
+        if data is None:
+            return False
+        # control.intercepts[INTERCEPT_WORD4] bit 0 (INTERCEPT_VMRUN)
+        if not u32(data[0x10:0x14]) & 1:
+            return False
+        # control.iopm_base_pa and control.msrpm_base_pa
+        for base in [u64(data[0x40:0x48]), u64(data[0x48:0x50])]:
+            if base == 0 or base & 0xfff:
+                return False
+        return True
+
+    def find_vmcb(self, vcpu, words):
+        """Return (the offset in `vcpu`, the current VMCB) of vcpu_svm, or (None, None)."""
+        svm = GefUtil.typed_struct(vcpu, "struct vcpu_svm")
+        vmcb = GefUtil.field_int(svm, "vmcb")
+        if self.is_vmcb(vmcb):
+            return GefUtil.offsetof("vcpu_svm", "vmcb"), vmcb
+        ptr = current_arch.ptrsize
+        # vmcb (the current one) is the first member after kvm_vcpu, and vmcb01.ptr (v5.13~) follows it
+        for index, word in enumerate(words):
+            if self.is_vmcb(word):
+                return index * ptr, word
+        return None, None
+
+    def get_vcpu_info(self, vcpu):
+        """Return the dict of the VMCS (VMX) or VMCB (SVM) and the MMU root of `vcpu`."""
+        size = self.MAX_VCPU_SIZE
+        obj = Kernel.get_slab_object(vcpu, allow_unaligned=False)
+        if obj is not None and obj.get("object_size"):
+            size = obj["object_size"]
+        words = self.read_words(vcpu, size) or []
+        ptr = current_arch.ptrsize
+        info = {
+            "vcpu": vcpu, "size": size, "vcpu_id": None, "vendor": None, "control": None, "offset_control": None,
+            "mode": None, "root": None, "offset_root": None, "levels": None,
+        }
+        # vcpu_id follows kvm, preempt_notifier (3 words, which KVM selects) and cpu
+        info["vcpu_id"] = GefUtil.field_int(GefUtil.typed_struct(vcpu, "struct kvm_vcpu"), "vcpu_id")
+        if info["vcpu_id"] is None:
+            info["vcpu_id"] = read_int32_from_memory(vcpu + ptr * 4 + 4, safe=True)
+        info["offset_root"], root = self.find_root(vcpu, words)
+
+        offset, vmcb = self.find_vmcb(vcpu, words)
+        if vmcb is not None:
+            info["vendor"], info["control"], info["offset_control"] = "SVM", vmcb, offset
+            # control.nested_ctl bit 0 (SVM_NESTED_CTL_NP_ENABLE)
+            nested_ctl = read_int64_from_memory(vmcb + 0x90, safe=True)
+            if nested_ctl is None or not nested_ctl & 1:
+                info["mode"] = "shadow"
+                info["root"] = root
+                return info
+            info["mode"] = "NPT"
+            # control.nested_cr3 is 0 until the vcpu runs
+            nested_cr3 = read_int64_from_memory(vmcb + 0xb0, safe=True)
+            if nested_cr3:
+                info["root"] = nested_cr3 & 0x000f_ffff_ffff_f000
+            return info
+
+        offset, vmcs = self.find_vmcs(vcpu, words)
+        if vmcs is None:
+            return info
+        info["vendor"], info["control"], info["offset_control"] = "VMX", vmcs, offset
+        info["root"] = root
+        if root is None:
+            return info
+        sp, offset_spt = self.shadow_page(root)
+        # role (u32) follows gfn (u64) and precedes spt until v4.19, and v4.20 moved it before gfn
+        offsets = [offset_spt - 0xc, offset_spt - ptr]
+        if self.kversion < "4.20":
+            offsets.reverse()
+        for offset in offsets:
+            role = read_int32_from_memory(sp + offset, safe=True)
+            # role.level is the lowest 4 bits (4 or 5 for EPT); gfn (0 for the root of TDP) reads as level 0
+            if role is not None and 2 <= (role & 0xf) <= 5:
+                info["levels"] = role & 0xf
+                break
+        # The shadow paging (ept=0) sets the accessed bit (bit 5) of the non-leaf entries, which is reserved in EPT
+        info["mode"] = "EPT"
+        data = read_memory(self.page_offset + root, 0x1000, safe=True)
+        for entry in slice_unpack(data or b"", 8):
+            if entry & 1 and entry & 0x20:
+                info["mode"] = "shadow"
+                break
+        return info
+
+
+@register_command
+class KernelKvmCommand(GenericCommand, BufferingOutput):
+    """Display the KVM virtual machines, vcpus, VMCS (VMCB) and EPT (NPT) roots of the L1 kernel."""
+
+    _cmdline_ = "kkvm"
+    _category_ = "06-g. Qemu-system/KGDB Cooperation - Linux Advanced"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
+    parser.add_argument("-p", "--pid", type=int, help="select VMs owned by this pid.")
+    parser.add_argument("-w", "--walk", action="store_true", help="pass the EPT (NPT) root of each VM to pagewalk.")
+    parser.add_argument("--meta", action="store_true", help="display layout and discovery information.")
+    parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
+    parser.add_argument("-q", "--quiet", action="store_true", help="show result only.")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s}",
+        "{0:s} --pid 1337",
+        "{0:s} --walk",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "The VMs and vcpus are found from file->private_data of the fds of KVM (anon_inode:kvm-vm and kvm-vcpu).",
+        "DWARF is used when available. Without it, the layout is validated with the back pointers.",
+        "The EPT (NPT) root translates the guest physical addresses to the physical addresses of this (L1) kernel.",
+        "It is `-` until the vcpu runs. `--walk` passes it to `pagewalk` (with `--ept` for EPT).",
+        "Only the address of the VMCS is shown, since the processor keeps its contents in its own format.",
+        "`shadow` means the shadow paging (ept=0 or npt=0), whose root depends on the page table of the guest.",
+        "A CPU running a vcpu shows the registers of the guest (L2) to gdb, so select another CPU (`thread N`) first.",
+        "",
+        "Simplified KVM structure:",
+        "",
+        "+-task_struct-+  +->+-files_struct-+  +->+-fdtable---+  +->+-files*[]----+  +->+-file---------+",
+        "| ...         |  |  | ...          |  |  | max_fds   |  |  | [0]         |--+  | ...          |",
+        "| files       |--+  | fdt          |--+  | fd        |--+  | ...         |     | private_data |--+",
+        "| ...         |     | ...          |     | ...       |     | [max_fds-1] |     | ...          |  |",
+        "+-------------+     +--------------+     +-----------+     +-------------+     +--------------+  |",
+        "                                                                                                 |",
+        "   +-------------------(anon_inode:kvm-vm)-------------------+------(anon_inode:kvm-vcpu:N)------+",
+        "   |                                                         |",
+        "   |  +-kvm--------+     +-vcpu_vmx------------------------+ |     +-vcpu_svm-------------+",
+        "   +->| mmu_lock   |<-+  | vcpu (struct kvm_vcpu)          |<+---->| vcpu                 |",
+        "      | slots_lock |  +--|   kvm                           |       |   ...                |",
+        "      | mm         |     |   vcpu_id                       |       | vmcb                 |--->VMCB",
+        "      | ...        |     |   arch                          |       | ...                  |    nested_cr3 (NPT root)",
+        "      +------------+     |     root_mmu (mmu ~v4.19)       |       +----------------------+",
+        "                         |       root.hpa (root_hpa ~v5.17)|--->EPT root (physical)",
+        "                         |   ...                           |",
+        "                         | vmcs01                          |<-+",
+        "                         |   vmcs                          |--|--->VMCS",
+        "                         |   ...                           |  |",
+        "                         | loaded_vmcs                     |--+ (vmcs02 for the nested guest)",
+        "                         | ...                             |",
+        "                         +---------------------------------+",
+        "",
+        "The root is validated with the back pointer from its kvm_mmu_page:",
+        "",
+        "EPT root (physical)",
+        "  |",
+        "  |  +-page----+     +-kvm_mmu_page-+",
+        "  +->| ...     |  +->| link         |",
+        "     | private |--+  | ...          |",
+        "     | ...     |     | role         | (level: 4 or 5)",
+        "     +---------+     | gfn          |",
+        "                     | spt          |--->the root table (virtual address)",
+        "                     | ...          |",
+        "                     +--------------+",
+    ])
+
+    def dump_vm(self, kvm, owners, vcpus):
+        self.out.append(titlify("kvm {:#x}".format(kvm), color="bold", msg_color="bold"))
+        fmt = "{:18s} {:7s} {:16s} {:4s} {:18s} {:s}"
+        legend = ["owner task", "pid", "task->comm", "fd", "file", "mm"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        mm = self.kkvm.find_kvm_mm(kvm)
+        if mm is None:
+            mm_text = "?"
+        else:
+            mm_text = "{:#018x}".format(mm)
+        if not owners:
+            # only the vcpu fds are open
+            self.out.append(fmt.format("-", "-", "-", "-", "-", mm_text))
+        # an extra owner of the same VM (a passed or inherited fd) gets its own row
+        for index, owner in enumerate(owners):
+            if index == 0:
+                row_mm_text = mm_text
+            else:
+                row_mm_text = ""
+            row = [
+                "{:#018x}".format(owner["task"]), str(owner["pid"]), owner["comm"], str(owner["fd"]),
+                "{:#018x}".format(owner["file"]), row_mm_text,
+            ]
+            self.out.append(fmt.format(*row).rstrip())
+
+        if not vcpus:
+            self.out.append("vcpus: none")
+            return
+        vendor = None
+        for info in vcpus:
+            if info["vendor"] is not None:
+                vendor = info["vendor"]
+                break
+        if vendor == "SVM":
+            control_name, root_name = "VMCB", "NPT root"
+        elif vendor == "VMX":
+            control_name, root_name = "VMCS", "EPT root"
+        else:
+            control_name, root_name = "VMCS/VMCB", "root"
+        fmt = "{:6s} {:4s} {:18s} {:18s} {:18s} {:18s} {:s}"
+        legend = ["vcpu", "fd", "kvm_vcpu", control_name, control_name + " (phys)", root_name + " (phys)", "mode"]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+        commands = []
+        for info in vcpus:
+            if info["vcpu_id"] is None:
+                vcpu_id_text = "?"
+            else:
+                vcpu_id_text = str(info["vcpu_id"])
+            if info["control"] is None:
+                control_text, phys_text = "?", "?"
+            else:
+                control_text = "{:#018x}".format(info["control"])
+                phys_text = "{:#018x}".format(info["control"] - self.kkvm.page_offset)
+            if info["root"] is None:
+                root_text = "-"
+            else:
+                root_text = "{:#018x}".format(info["root"])
+                # the root of NPT and the shadow paging is in the format of the paging of this kernel
+                if is_x86_64():
+                    command = "pagewalk x64"
+                else:
+                    command = "pagewalk x86"
+                if info["mode"] == "EPT":
+                    command += " --ept"
+                    if info["levels"] is not None:
+                        command += " --ept-levels {:d}".format(info["levels"])
+                command += " --cr3 {:#x}".format(info["root"])
+                if command not in commands:
+                    commands.append(command)
+            if info["mode"] is None:
+                mode_text = "-"
+            elif info["mode"] == "EPT" and info["levels"] is not None:
+                mode_text = "EPT ({:d}-level)".format(info["levels"])
+            else:
+                mode_text = info["mode"]
+            vcpu_text = "{:#018x}".format(info["vcpu"])
+            row = [vcpu_id_text, str(info["fd"]), vcpu_text, control_text, phys_text, root_text, mode_text]
+            self.out.append(fmt.format(*row))
+        for command in commands:
+            if not self.args.walk:
+                self.quiet_info_add_out("Walk the root with `{:s}`".format(command))
+                continue
+            self.out.append(titlify(command))
+            # the output is captured, so the pager and the progress bars (in the output) are disabled
+            try:
+                result = gdb.execute(command + " -q -n", to_string=True)
+            except gdb.error as e:
+                self.err_add_out("{}".format(e))
+                continue
+            self.out.append(result.rstrip("\n"))
+        return
+
+    def print_meta(self, vm_files, vcpu_files):
+        self.quiet_info("kernel version: {!s}".format(self.kkvm.kversion))
+        for owner in vm_files + vcpu_files:
+            if owner["source"] is not None:
+                self.quiet_info("file->private_data: {:s} (fd {:d} of {:s}[{:d}])".format(
+                    owner["source"], owner["fd"], owner["comm"], owner["pid"]))
+                break
+        # the layout of the first vcpu
+        for owner in vcpu_files:
+            if owner["vcpu"] is None:
+                continue
+            info = self.kkvm.get_vcpu_info(owner["vcpu"])
+            self.quiet_info("vcpu: {:#x} (size {:#x})".format(info["vcpu"], info["size"]))
+            if info["vendor"] == "SVM":
+                member = "vcpu_svm->vmcb"
+            else:
+                member = "vcpu_vmx->loaded_vmcs"
+            for name, offset in [(member, info["offset_control"]), ("root of the MMU", info["offset_root"])]:
+                if offset is None:
+                    self.quiet_info("offset of {:s}: unavailable".format(name))
+                else:
+                    self.quiet_info("offset of {:s}: {:#x}".format(name, offset))
+            if info["root"] is not None:
+                sp, offset_spt = self.kkvm.shadow_page(info["root"])
+                if sp is not None:
+                    self.quiet_info("kvm_mmu_page of the root: {:#x} (spt: +{:#x})".format(sp, offset_spt))
+            return
+        self.quiet_info("layout: unavailable (no vcpu is found)")
+        return
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.only_if_specific_gdb_mode(mode=("qemu-system", "vmware", "kgdb"))
+    @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
+    @Decorator.only_if_in_kernel_or_kpti_disabled
+    def do_invoke(self, args):
+        self.quiet_info("Wait for memory scan")
+        self.kkvm = Kernel.kvm()
+        if not self.kkvm.initialize():
+            for func, line in Kernel.export_meta(self, self.kkvm.meta):
+                func(line)
+            self.quiet_err("Failed to initialize")
+            return
+
+        vm_files, vcpu_files = self.kkvm.find_kvm_files(args.pid)
+        if vm_files is None:
+            for func, line in Kernel.export_meta(self, self.kkvm.meta):
+                func(line)
+            self.quiet_err("Failed to initialize the fd scan")
+            return
+        if args.meta:
+            for func, line in Kernel.export_meta(self, self.kkvm.meta):
+                func(line)
+            self.print_meta(vm_files, vcpu_files)
+            return
+
+        self.out = []
+        vms = collections.OrderedDict()
+        for owner in vm_files:
+            if owner["kvm"] is None:
+                self.warn_add_out("Found {:s}[{:d}] fd={:d} file={:#x}, but private_data is unresolved".format(
+                    owner["comm"], owner["pid"], owner["fd"], owner["file"]))
+                continue
+            vms.setdefault(owner["kvm"], ([], collections.OrderedDict()))[0].append(owner)
+        for owner in vcpu_files:
+            if owner["kvm"] is None:
+                self.warn_add_out("Found {:s}[{:d}] fd={:d} file={:#x}, but the vcpu is unresolved".format(
+                    owner["comm"], owner["pid"], owner["fd"], owner["file"]))
+                continue
+            _, vcpus = vms.setdefault(owner["kvm"], ([], collections.OrderedDict()))
+            # a dup()'ed fd shares the vcpu
+            if owner["vcpu"] not in vcpus:
+                info = self.kkvm.get_vcpu_info(owner["vcpu"])
+                info["fd"] = owner["fd"]
+                vcpus[owner["vcpu"]] = info
+        for kvm, (owners, vcpus) in vms.items():
+            self.dump_vm(kvm, owners, list(vcpus.values()))
+        if not vm_files and not vcpu_files:
+            self.warn_add_out("No open KVM file descriptors found")
         self.print_output(check_terminal_size=True)
         return
 
