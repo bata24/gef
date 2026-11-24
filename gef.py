@@ -18100,7 +18100,7 @@ class GenericCommand(gdb.Command):
             self.repeat_count = 0
             return
 
-        command = gdb.execute("show commands", to_string=True).strip().split("\n")[-1]
+        command = GefUtil.show_commands().strip().split("\n")[-1]
         if self.last_command == command:
             self.repeat_count = self.repeat_count + 1
         else:
@@ -19530,19 +19530,28 @@ class HistoryCommand(GenericCommand, BufferingOutput):
 
     def get_history(self):
         history = {}
-        line_idx = 0
-        prev_ret = None
+        arg = "0"
+        prev_idx = None
         while True:
-            ret = gdb.execute("show commands {:d}".format(line_idx), to_string=True)
-            for line in ret.splitlines():
-                line_idx = int(line.split()[0])
-                if line_idx in history:
-                    continue
-                history[line_idx] = line
-
-            if prev_ret == ret:
+            ret = GefUtil.show_commands(arg)
+            if not ret:
                 break
-            prev_ret = ret
+
+            line_idx = int(ret.split(maxsplit=1)[0])
+            # GDB repeats the last window when there are no more entries.
+            if line_idx == prev_idx:
+                break
+            prev_idx = line_idx
+            end_idx = line_idx + 10
+
+            for line in ret[:-1].split("\n"):
+                if line_idx < end_idx and line.startswith("{:5d}  ".format(line_idx)):
+                    history[line_idx] = line
+                    line_idx += 1
+                else:
+                    history[line_idx - 1] += "\n" + line
+
+            arg = "+"
         return list(history.values())
 
     @Decorator.parse_args
@@ -237688,6 +237697,17 @@ class GefUtil:
                     return exe_file
 
         raise FileNotFoundError("Missing file `{:s}`".format(program))
+
+    @staticmethod
+    def show_commands(arg=""):
+        """Return command history output, escaping undecodable bytes."""
+        command = "show commands"
+        if arg:
+            command += " " + arg
+        try:
+            return gdb.execute(command, to_string=True)
+        except UnicodeDecodeError as e:
+            return e.object.decode(e.encoding, errors="backslashreplace")
 
     @staticmethod
     def show_last_exception():
