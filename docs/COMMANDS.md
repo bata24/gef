@@ -16793,7 +16793,7 @@ positional arguments:
 
 options:
   -h, --help          show this help message and exit
-  -c, --color-sample  print available name of colors.
+  -c, --color-sample  print available color names.
   -n, --no-pager      do not use the pager.
 ```
 
@@ -16803,11 +16803,11 @@ options:
 theme                         # show all theme settings
 theme address_code            # show specified theme setting
 theme address_code bold cyan  # set new theme
+theme address_code ""         # clear the color
 ```
 
 ### Notes
 
 ```text
-GDB 17 do not allow multiple color specifications (such as "bold red"). This bug had fixed in GDB 18.
 --color-sample explicitly emits ANSI colors even when gef.disable_color or NO_COLOR is set.
 ```

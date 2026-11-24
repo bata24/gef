@@ -1071,7 +1071,7 @@ class Color:
         "normal"               : "\033[0m",
 
         "bold"                 : "\033[1m",
-        "bold_off"             : "\033[21m",
+        "bold_off"             : "\033[22m",
         "highlight"            : "\033[2m",
         "highlight_off"        : "\033[22m",
         "italic"               : "\033[3m",
@@ -1580,15 +1580,17 @@ class Color:
         return bool(Color.NO_COLOR)
 
     @staticmethod
-    def colorify(text, attrs):
+    def colorify(text, attrs, *, force=False):
         """Color text according to the given attributes."""
-        if Color.disable_color():
+        if not force and Color.disable_color():
             return str(text)
 
         escapes = Color.cached_escapes.get(attrs)
         if escapes is None:
             colors = Color.colors
             escapes = "".join([colors[attr] for attr in attrs.split() if attr in colors])
+            # GDB 17.1 replaces the previous style when it reads a new SGR sequence.
+            escapes = escapes.replace("m\033[", ";")
             Color.cached_escapes[attrs] = escapes
         if not escapes:
             return str(text)
@@ -18210,7 +18212,7 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("key", metavar="KEY", nargs="?", help="color theme key.")
     parser.add_argument("value", metavar="VALUE", nargs="*", help="color theme value.")
-    parser.add_argument("-c", "--color-sample", action="store_true", help="print available name of colors.")
+    parser.add_argument("-c", "--color-sample", action="store_true", help="print available color names.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -18218,10 +18220,10 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         "{0:s}                         # show all theme settings",
         "{0:s} address_code            # show specified theme setting",
         "{0:s} address_code bold cyan  # set new theme",
+        '{0:s} address_code ""         # clear the color',
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
-        'GDB 17 do not allow multiple color specifications (such as "bold red"). This bug had fixed in GDB 18.',
         "--color-sample explicitly emits ANSI colors even when gef.disable_color or NO_COLOR is set.",
     ])
 
@@ -18231,28 +18233,23 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         self.add_setting("context_title_message", "cyan", "Color of the title in context window")
         self.add_setting("default_title_line", "cyan", "Default color of borders")
         self.add_setting("default_title_message", "cyan", "Default color of title")
-        self.add_setting("table_heading", "bold blue", "Color of the column headings to tables (e.g., vmmap)")
+        self.add_setting("table_heading", "bold blue", "Color of the column headings of tables (e.g., vmmap)")
         self.add_setting("context_code_past", "bright_black", "Color to display past code")
         self.add_setting("context_code_future", "", "Color to display future code")
-        self.add_setting("disassemble_address", "", "Color of address when disassembling")
-        self.add_setting("disassemble_address_highlight", "bold green", "Color of address when disassembling (=$pc)")
-        self.add_setting("disassemble_opcode", "white", "Color of location when disassembling")
-        self.add_setting("disassemble_opcode_highlight", "bold white", "Color of location when disassembling (=$pc)")
+        self.add_setting("disassemble_address", "", "Color of address and location when disassembling")
+        self.add_setting("disassemble_address_highlight", "bold green", "Color of address and location when disassembling (=$pc)")
+        self.add_setting("disassemble_opcode", "white", "Color of opcode bytes when disassembling")
+        self.add_setting("disassemble_opcode_highlight", "bold white", "Color of opcode bytes when disassembling (=$pc)")
         self.add_setting("disassemble_mnemonic_normal", "yellow", "Color of normal mnemonic when disassembling")
-        self.add_setting("disassemble_mnemonic_normal_highlight", "bold bright_yellow",
-                         "Color of normal mnemonic when disassembling (=$pc)")
+        self.add_setting("disassemble_mnemonic_normal_highlight", "bold bright_yellow", "Color of normal mnemonic when disassembling (=$pc)")
         self.add_setting("disassemble_mnemonic_branch", "bold bright_yellow", "Color of branch mnemonic when disassembling")
-        self.add_setting("disassemble_mnemonic_branch_highlight", "bold bright_yellow",
-                         "Color of branch mnemonic when disassembling (=$pc)")
+        self.add_setting("disassemble_mnemonic_branch_highlight", "bold bright_yellow", "Color of branch mnemonic when disassembling (=$pc)")
         self.add_setting("disassemble_operands_normal", "cyan", "Color of normal operands when disassembling")
-        self.add_setting("disassemble_operands_normal_highlight", "bold cyan",
-                         "Color of normal operands when disassembling (=$pc)")
+        self.add_setting("disassemble_operands_normal_highlight", "bold cyan", "Color of normal operands when disassembling (=$pc)")
         self.add_setting("disassemble_operands_const", "bright_blue", "Color of const operands when disassembling")
-        self.add_setting("disassemble_operands_const_highlight", "bold bright_blue",
-                         "Color of const operands when disassembling (=$pc)")
-        self.add_setting("disassemble_operands_symbol", "white", "Color of symbol operands when disassembling)")
-        self.add_setting("disassemble_operands_symbol_highlight", "bold white",
-                         "Color of symbol operands when disassembling (=$pc)")
+        self.add_setting("disassemble_operands_const_highlight", "bold bright_blue", "Color of const operands when disassembling (=$pc)")
+        self.add_setting("disassemble_operands_symbol", "white", "Color of symbol operands when disassembling")
+        self.add_setting("disassemble_operands_symbol_highlight", "bold white", "Color of symbol operands when disassembling (=$pc)")
         self.add_setting("dereference_string", "yellow", "Color of dereferenced string")
         self.add_setting("dereference_base_address", "cyan", "Color of dereferenced address")
         self.add_setting("dereference_register_value", "bold blue", "Color of dereferenced register")
@@ -18266,23 +18263,23 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         self.add_setting("address_rwx", "underline", "Color to use when a RWX address is found")
         self.add_setting("address_valid_but_none", "bright_black", "Color to use when a --- address is found")
         self.add_setting("source_current_line", "bold green", "Color to use for the current code line in the source window")
-        self.add_setting("heap_arena_label", "bold cyan underline", "Color of the arena label used heap")
-        self.add_setting("heap_chunk_label", "bold cyan underline", "Color of the chunk label used heap")
-        self.add_setting("heap_label_active", "bold green underline", "Color of the (active) label used heap")
-        self.add_setting("heap_label_inactive", "bold red underline", "Color of the (inactive) label used heap")
-        self.add_setting("heap_chunk_address_used", "bright_black", "Color of the chunk address used heap")
-        self.add_setting("heap_chunk_address_freed", "bold yellow", "Color of the freed chunk address used heap")
-        self.add_setting("heap_chunk_used", "bright_black", "Color of the used chunk used heap")
-        self.add_setting("heap_chunk_freed", "yellow", "Color of the freed chunk used heap")
-        self.add_setting("heap_chunk_size", "bold magenta", "Color of the size used heap")
-        self.add_setting("heap_chunk_flag_prev_inuse", "bold red", "Color of the prev_in_use flag used heap")
-        self.add_setting("heap_chunk_flag_non_main_arena", "bold yellow", "Color of the non_main_arena flag used heap")
-        self.add_setting("heap_chunk_flag_is_mmapped", "bold blue", "Color of the is_mmapped flag used heap")
-        self.add_setting("heap_freelist_hint", "bold blue", "Color of the freelist hint used heap")
-        self.add_setting("heap_page_address", "bold", "Color of the page address used heap")
-        self.add_setting("heap_management_address", "bright_blue", "Color of the management address used heap")
-        self.add_setting("heap_slab_address", "lilac", "Color of the slab management address used heap")
-        self.add_setting("heap_corrupted_msg", "bold red", "Color of the corrupted message used heap")
+        self.add_setting("heap_arena_label", "bold cyan underline", "Color of heap arena labels")
+        self.add_setting("heap_chunk_label", "bold cyan underline", "Color of heap chunk labels")
+        self.add_setting("heap_label_active", "bold green underline", "Color of active heap labels")
+        self.add_setting("heap_label_inactive", "bold red underline", "Color of inactive heap labels")
+        self.add_setting("heap_chunk_address_used", "bright_black", "Color of addresses of in-use heap chunks")
+        self.add_setting("heap_chunk_address_freed", "bold yellow", "Color of addresses of freed heap chunks")
+        self.add_setting("heap_chunk_used", "bright_black", "Color of in-use heap chunks")
+        self.add_setting("heap_chunk_freed", "yellow", "Color of freed heap chunks")
+        self.add_setting("heap_chunk_size", "bold magenta", "Color of heap chunk sizes")
+        self.add_setting("heap_chunk_flag_prev_inuse", "bold red", "Color of the prev_in_use heap chunk flag")
+        self.add_setting("heap_chunk_flag_non_main_arena", "bold yellow", "Color of the non_main_arena heap chunk flag")
+        self.add_setting("heap_chunk_flag_is_mmapped", "bold blue", "Color of the is_mmapped heap chunk flag")
+        self.add_setting("heap_freelist_hint", "bold blue", "Color of heap freelist hints")
+        self.add_setting("heap_page_address", "bold", "Color of heap page addresses")
+        self.add_setting("heap_management_address", "bright_blue", "Color of heap management addresses")
+        self.add_setting("heap_slab_address", "lilac", "Color of heap slab management addresses")
+        self.add_setting("heap_corrupted_msg", "bold red", "Color of heap corruption messages")
         return
 
     def show_all_config(self):
@@ -18293,9 +18290,9 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
             value = Config.get(key)
             if value:
                 value = Color.colorify(value, value)
-                self.out.append("{:40s}: {:s}".format(setting, value))
             else:
-                self.out.append("{:40s}: {:s}".format(setting, "None"))
+                value = '""'
+            self.out.append("{:40s}: {:s}".format(setting, value))
         return
 
     def show_color_sample(self):
@@ -18303,10 +18300,11 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         def list_all_color_sample(mod):
             i = 0
             line = ""
-            for k, v in Color.colors.items():
+            for k in Color.colors:
                 if k.endswith("_off") or k == "normal":
                     continue
-                line += ("{}{:20s}{}  ".format(mod + v, k, Color.colors["normal"]))
+                attrs = "{:s} {:s}".format(mod, k).lstrip()
+                line += Color.colorify("{:20s}".format(k), attrs, force=True) + "  "
 
                 if k in ["blink", "cyan", "bright_white", "_black"]: # group terminators
                     self.out.append(line)
@@ -18324,10 +18322,13 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
         list_all_color_sample("")
 
         self.out.append(titlify("defined colors (bold)"))
-        list_all_color_sample(Color.colors["bold"])
+        list_all_color_sample("bold")
 
         self.out.append(titlify("defined colors (highlight)"))
-        list_all_color_sample(Color.colors["highlight"])
+        list_all_color_sample("highlight")
+
+        reset_styles = [name for name in Color.colors if name.endswith("_off") or name == "normal"]
+        self.out.append("Style resets: {:s}".format(", ".join(reset_styles)))
         return
 
     @Decorator.parse_args
@@ -18340,27 +18341,31 @@ class GefThemeCommand(GenericCommand, BufferingOutput):
             if args.color_sample:
                 self.show_color_sample()
             else:
-                self.out.append("* use --color-sample to see available color name")
+                self.out.append("* use --color-sample to see available color names")
             self.print_output(check_terminal_size=True)
             return
 
         # show one
         key = "theme.{:s}".format(args.key)
-        if Config.get(key) is None:
+        value = Config.get(key)
+        if value is None:
             err("Invalid key")
             return
         if args.value == []:
-            value = Config.get(key)
-            value = Color.colorify(value, value)
+            if value:
+                value = Color.colorify(value, value)
+            else:
+                value = '""'
             gef_print("{:40s}: {:s}".format(args.key, value))
             return
 
         # set
-        invalid = [x for x in args.value if x not in Color.colors]
+        values = [x for x in args.value if x]
+        invalid = [x for x in values if x not in Color.colors]
         if invalid:
             err("Invalid color: {:s} (use `theme --color-sample` for available colors)".format(", ".join(invalid)))
             return
-        gdb.execute("gef config theme.{:s} {:s}".format(args.key, GefUtil.quote_gdb_argument(" ".join(args.value))))
+        Config.set(key, " ".join(values), reset_all=True)
         return
 
 
