@@ -570,9 +570,10 @@ options:
 ```text
 Only when qemu-user or pin, the `c` command is redirected to `continue-for-qemu-user`.
 This setting is done only once, when hook_stop_handler is called for the first time.
-Nested `c` command causes a problem, so in that case gef executes the original continue command instead.
-Internally, SIGINT is monitored in a forked child process.
-The monitor sends at most one SIGTRAP during each continue.
+An independent process monitors SIGINT and sends at most one SIGTRAP.
+Pin and SDE are given time to handle Ctrl+C before the monitor sends SIGTRAP.
+For qemu-user in a terminal, GEF enables GDB's disconnect confirmation during continue.
+GEF uses native continue when it cannot identify the local target or a monitor is already active.
 ```
 
 ## `down`

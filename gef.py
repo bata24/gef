@@ -189,7 +189,7 @@ current_arch_context        = None # the target which current_arch is resolved f
 
 GEF_RC                      = os.getenv("GEF_RC") or os.path.join(os.getenv("HOME") or "~", ".gef.rc")
 GEF_TEMP_DIR                = os.path.join(tempfile.gettempdir(), "gef")
-GEF_FILEPATH                = os.path.expanduser(http_get.__code__.co_filename) # the full path of GEF
+GEF_FILEPATH                = os.path.abspath(os.path.expanduser(http_get.__code__.co_filename)) # the full path of GEF
                             # note: __file__ will no longer be available from gdb 15
 
 
@@ -15714,6 +15714,45 @@ class Pid:
         return None
 
     @staticmethod
+    @Cache.cache_this_session(per_inferior=True)
+    def get_pid_pin(tid):
+        peer_pid = Pid.get_pid_from_tcp_session()
+        if peer_pid is None:
+            return None
+        candidates = [peer_pid]
+        if tid > 0 and tid != peer_pid:
+            # Pin reports the host LWP ID even when the connection goes through a relay.
+            try:
+                with open("/proc/{:d}/status".format(tid), "rb") as status:
+                    for line in status:
+                        if line.startswith(b"Tgid:"):
+                            candidates.append(int(line.split()[1]))
+                            break
+            except OSError:
+                pass
+
+        # Pin and SDE map pinbin into the debuggee. A TCP relay only owns the socket.
+        for pid in candidates:
+            try:
+                with open("/proc/{:d}/maps".format(pid), errors="backslashreplace") as maps:
+                    for line in maps:
+                        fields = line.rstrip().split(maxsplit=5)
+                        if len(fields) == 6 and fields[5].split(" (deleted)", 1)[0].endswith("/pinbin"):
+                            break
+                    else:
+                        continue
+            except OSError:
+                continue
+            if pid == peer_pid:
+                return pid
+            # Require a TCP connection from the relay to this Pin process as well as the LWP match.
+            peer_sessions = {(s["laddr"], s["raddr"]) for s in Pid.get_tcp_sess(peer_pid)}
+            for session in Pid.get_tcp_sess(pid):
+                if (session["raddr"], session["laddr"]) in peer_sessions:
+                    return pid
+        return None
+
+    @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True)
     def get_pid(remote=False):
         """Return the PID of the debuggee process."""
@@ -15724,7 +15763,10 @@ class Pid:
                 return gdb.selected_inferior().pid or None
             return None
         if is_pin():
-            return Pid.get_pid_from_tcp_session()
+            thread = gdb.selected_thread()
+            if thread is None:
+                return None
+            return Pid.get_pid_pin(thread.ptid[1])
         elif is_qemu_user() or is_qemu_system():
             pid = Pid.get_pid_from_tcp_session("qemu") # strict way
             if pid is None:
@@ -16769,6 +16811,7 @@ class EventHandler:
     @staticmethod
     def hook_stop_handler(event):
         """GDB event handler for stop cases."""
+        ContinueForQemuUserCommand.stop_monitor()
         Cache.reset_gef_caches()
         thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
         if isinstance(event, gdb.SignalEvent):
@@ -16811,23 +16854,8 @@ class EventHandler:
         # set `c`, `ni` and `si` command hooks for qemu-user and pin
         if EventHandler.__gef_check_once__:
             if is_qemu_user() or is_pin():
-                gdb.execute(
-                    "define c\n"
-                    "if $argc == 0\n"
-                    "continue-for-qemu-user\n"
-                    "else\n"
-                    "if $argc == 1\n"
-                    "continue-for-qemu-user $arg0\n"
-                    "else\n"
-                    "if $argc > 2\n"
-                    "python raise gdb.GdbError('Too many arguments for c')\n"
-                    "else\n"
-                    "continue-for-qemu-user $arg0 $arg1\n"
-                    "end\n"
-                    "end\n"
-                    "end\n"
-                    "end"
-                )
+                # A GDB user-defined command cannot prompt for remote disconnect confirmation.
+                ContinueForQemuUserCommand("c")
                 if is_or1k() or is_cris():
                     gdb.execute(
                         "define si\nif $argc == 0\n"
@@ -16891,6 +16919,7 @@ class EventHandler:
     @staticmethod
     def exit_handler(_event):
         """GDB event handler for exit cases."""
+        ContinueForQemuUserCommand.stop_monitor()
         Cache.reset_gef_caches(all=True)
         PatchCommand.invalidate_history(getattr(_event, "inferior", None))
         KernelVersion.clear_override(inferior=getattr(_event, "inferior", None))
@@ -18908,6 +18937,7 @@ class ContinueForQemuUserCommand(GenericCommand):
 
     _cmdline_ = "continue-for-qemu-user"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
+    _repeat_ = False # The short form enables repeat when registered.
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", dest="all_threads", action="count", default=0,
@@ -18919,68 +18949,79 @@ class ContinueForQemuUserCommand(GenericCommand):
     _note_ = "\n".join([
         "Only when qemu-user or pin, the `c` command is redirected to `continue-for-qemu-user`.",
         "This setting is done only once, when hook_stop_handler is called for the first time.",
-        "Nested `c` command causes a problem, so in that case gef executes the original continue command instead.",
-        "Internally, SIGINT is monitored in a forked child process.",
-        "The monitor sends at most one SIGTRAP during each continue.",
+        "An independent process monitors SIGINT and sends at most one SIGTRAP.",
+        "Pin and SDE are given time to handle Ctrl+C before the monitor sends SIGTRAP.",
+        "For qemu-user in a terminal, GEF enables GDB's disconnect confirmation during continue.",
+        "GEF uses native continue when it cannot identify the local target or a monitor is already active.",
     ])
 
-    nested = False
+    monitor = None
 
-    def continue_for_qemu_fork(self, command):
-        import signal
+    def __init__(self, command_name=None):
+        if command_name is not None:
+            self._cmdline_ = command_name
+            self._repeat_ = True
+        super().__init__()
+        return
 
-        parent_pid = Pid.get_pid()
-        try:
-            child_pid = os.fork()
-        except OSError as e:
-            warn("Could not start SIGINT monitor: {:s}".format(str(e)))
+    @classmethod
+    def stop_monitor(cls):
+        if cls.monitor is not None:
+            monitor = cls.monitor
+            cls.monitor = None
+            monitor.stdin.close()
+            monitor.wait()
+        return
+
+    @classmethod
+    def continue_with_monitor(cls, command, target_pid, delay):
+        import textwrap
+
+        def watch_sigint(target_pid, delay):
+            import os
+            import select
+            import signal
+
             try:
-                gdb.execute(command)
-            except gdb.error as e:
-                err(e)
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+                signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGINT})
+                os.write(1, b"1")
+                os.read(0, 1) # EOF cancels the monitor even if GDB dies.
+            except KeyboardInterrupt:
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                readable, _, _ = select.select([0], [], [], delay)
+                if readable:
+                    return
+                try:
+                    os.kill(target_pid, signal.SIGTRAP)
+                except ProcessLookupError:
+                    pass
             return
 
-        if child_pid == 0:
-
-            # child
-            def sig_handler(_signum, _frame):
-                nonlocal signal_received
-                signal_received = True
-                return
-
-            signal_received = False
-            signal.signal(signal.SIGINT, sig_handler)
-            while not signal_received:
-                signal.pause()
-            # Let targets that handle Ctrl+C themselves stop first.
-            time.sleep(0.5)
-            os.kill(parent_pid, signal.SIGTRAP)
-            os._exit(0)
-
+        # Use a fresh interpreter because GDB is multithreaded.
         try:
-            gdb.execute(command)
-        except gdb.error:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            err(exc_value)
-        finally:
             try:
-                while True:
-                    try:
-                        os.kill(child_pid, signal.SIGKILL)
-                        break
-                    except InterruptedError:
-                        continue
-                    except ProcessLookupError:
-                        break
-            finally:
-                while True:
-                    try:
-                        os.waitpid(child_pid, 0)
-                        break
-                    except InterruptedError:
-                        continue
-                    except ChildProcessError:
-                        break
+                script = textwrap.dedent(GefUtil.get_source(watch_sigint))
+                script += "\nwatch_sigint({:d}, {!r})".format(target_pid, delay)
+                cls.monitor = subprocess.Popen(
+                    [GefUtil.which("python3"), "-I", "-S", "-c", script],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                )
+                with cls.monitor.stdout as ready:
+                    if not ready.read(1):
+                        warn("SIGINT monitor exited before continue.")
+            except OSError as e:
+                warn("Could not start SIGINT monitor: {:s}".format(str(e)))
+            if delay == 0 and os.isatty(0):
+                # A second Ctrl+C can reach GDB before the SIGTRAP if the monitor is delayed.
+                with ContextManager.gdb_parameter("confirm", "on"):
+                    gdb.execute(command)
+            else:
+                gdb.execute(command)
+        except gdb.error as e:
+            err(e)
+        finally:
+            cls.stop_monitor()
         return
 
     @Decorator.parse_args
@@ -18996,22 +19037,20 @@ class ContinueForQemuUserCommand(GenericCommand):
         elif args.ignore_count is not None:
             command += " " + args.ignore_count
 
-        if is_qemu_user() or is_pin():
-            if Pid.get_pid():
-                if not self.nested:
-                    self.nested = True
-                    try:
-                        self.continue_for_qemu_fork(command)
-                    finally:
-                        self.nested = False
-                    return
+        if self.monitor is None and (is_qemu_user() or is_pin()):
+            target_pid = Pid.get_pid()
+            if target_pid is not None:
+                delay = 0
+                if is_pin():
+                    delay = 0.5
+                self.continue_with_monitor(command, target_pid, delay)
+                return
 
         # fall back to original continue command
         try:
             gdb.execute(command)
-        except gdb.error:
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            err(exc_value)
+        except gdb.error as e:
+            err(e)
         return
 
 
@@ -237546,6 +237585,12 @@ class GefUtil:
     def get_source(function):
         """Return the source of function."""
         import inspect
+
+        function = inspect.unwrap(function)
+        code = getattr(function, "__code__", None)
+        if code is not None and code.co_filename == http_get.__code__.co_filename and code.co_filename != GEF_FILEPATH:
+            # GDB can load gef.py by a relative path and change directories later.
+            function = code.replace(co_filename=GEF_FILEPATH)
         s = inspect.getsource(function)
         return s.rstrip()
 

@@ -802,11 +802,10 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - On OpenRISC 1000 architecture, branch operations don't work well, so GEF uses breakpoints to simulate.
     - On CRIS architecture, `stepi`/`nexti` commands don't work well, so GEF uses breakpoints to simulate.
     - If you want to use native `si`/`ni`, use the full form `stepi`/`nexti`.
-- `c`: is the wrapper for native `c` if gdb is connected to `qemu-user` or `Intel Pin`.
-    - When connecting to gdb stub of `qemu-user` or `Intel Pin`, gdb does not trap `SIGINT` during `continue`.
-    - If you want to trap, you need to issue `SIGTRAP` on the `qemu-user` or `pin` side, but switching screens is annoying.
-    - This command realizes a pseudo `SIGTRAP` trap by trapping `SIGINT` on the Python side and throwing `SIGTRAP` back to `qemu-user` or `Intel Pin`.
-    - It works only for local `qemu-user` or `Intel Pin`.
+- `c` wraps GDB's continue command for `qemu-user`, `Intel Pin`, and `Intel SDE`.
+    - When you press Ctrl+C, GEF sends `SIGTRAP` to a local `qemu-user` process so GDB can interrupt it.
+    - GEF gives Pin and SDE time to handle Ctrl+C before sending `SIGTRAP`.
+    - GEF uses native `continue` when it cannot identify the local target process.
     - If you want to use native `c`, use the full form `continue`.
 
 </details>
