@@ -12393,14 +12393,18 @@ class CRIS(Architecture):
 
     def is_conditional_branch(self, insn):
         conditions = [
-            "cc", "cs", "ne", "eq", "vc", "vs", "pl", "mi",
-            "ls", "hi", "ge", "lt", "gt", "le", "wf"
+            "cc", "hs", "cs", "lo", "ne", "eq", "vc", "vs", "pl", "mi",
+            "ls", "hi", "ge", "lt", "gt", "le", "wf", "sb",
         ]
         return any(insn.mnemonic == f"b{cc}" for cc in conditions)
 
     def is_branch_taken(self, insn):
         mnemo = insn.mnemonic
-        val = get_register(self.flag_register)
+        val = get_register("$ccs") # CRISv32
+        if val is None:
+            val = get_register(self.flag_register)
+        if val is None:
+            return None, "Could not read CCS or CCR"
         flags = {self.flags_table[k]: k for k in self.flags_table}
         taken, reason = False, ""
 
@@ -12410,9 +12414,9 @@ class CRIS(Architecture):
         carry = bool(val & (1 << flags["carry"]))
         write_fail = bool(val & (1 << flags["write-fail"]))
 
-        if mnemo == "bcc":
+        if mnemo in ("bcc", "bhs"):
             taken, reason = not carry, "!C"
-        elif mnemo == "bcs":
+        elif mnemo in ("bcs", "blo"):
             taken, reason = carry, "C"
         elif mnemo == "bne":
             taken, reason = not zero, "!Z"
@@ -12441,6 +12445,8 @@ class CRIS(Architecture):
             taken, reason = zero or (negative and not overflow) or (not negative and overflow), "Z || (N && !V) || (!N && V)"
         elif mnemo == "bwf":
             taken, reason = write_fail, "WF"
+        elif mnemo == "bsb":
+            taken, reason = bool(val & (1 << 7)), "P" # CRISv32 condition 15
         return taken, reason
 
     def flag_register_to_human(self, val=None):
@@ -18590,7 +18596,7 @@ class QemuUserStepBreakpointGroup:
 
 
 class SimpleInternalTemporaryBreakpoint(gdb.Breakpoint):
-    """A simple wrapper that takes into account the bug where temporary breakpoints isn't deleted after it is hit."""
+    """Disable temporary breakpoints on hit in case GDB fails to delete them."""
 
     @staticmethod
     def get_qemu_user_step_instruction(is_next=False):
@@ -18647,24 +18653,20 @@ class SecondBreakpoint(gdb.Breakpoint):
 
 @register_command
 class NextiForQemuUserCommand(GenericCommand):
-    """`ni` wrapper for specific architectures; COUNT is unsupported."""
+    """Step over machine instructions with delay-slot handling for OpenRISC 1000 and CRIS under qemu-user."""
 
     _cmdline_ = "nexti-for-qemu-user"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("count", metavar="COUNT", nargs="?",
-                        help="Unsupported. Run this command without COUNT to step once.")
+                        help="Instruction count. Omit in qemu-user on OpenRISC 1000 or CRIS.")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
-        "Only when qemu-user with specific architecture, the `ni` command is redirected to `nexti-for-qemu-user`.",
-        "This setting is done only once, when `hook_stop_handler` is called for the first time.",
-        "COUNT arguments are not supported.",
-        "",
-        "Target architecture:",
-        "  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.",
-        "  CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.",
+        "GEF redirects `ni` at the first stop if the target is OpenRISC 1000 or CRIS under qemu-user.",
+        "On these targets, GEF uses breakpoints to handle delay slots. Run without COUNT.",
+        "On other targets, COUNT is passed to GDB's `nexti` command.",
     ])
 
     def ni_set_bp_for_branch(self, group):
@@ -18704,7 +18706,7 @@ class NextiForQemuUserCommand(GenericCommand):
         if target is None:
             return True
 
-        # something wrong if infinity loop on CRIS architecture
+        # A CRIS branch to itself must stop in its delay slot first.
         if is_cris() and target == insn.address:
             insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
             if insn_next is None:
@@ -18736,7 +18738,10 @@ class NextiForQemuUserCommand(GenericCommand):
             command = "nexti"
             if args.count is not None:
                 command += " " + args.count
-            gdb.execute(command)
+            try:
+                gdb.execute(command)
+            except gdb.error as e:
+                err(e)
             return
         if args.count is not None:
             err("COUNT is not supported by `nexti-for-qemu-user`.")
@@ -18774,24 +18779,20 @@ class NextiForQemuUserCommand(GenericCommand):
 
 @register_command
 class StepiForQemuUserCommand(GenericCommand):
-    """`si` wrapper for specific architectures; COUNT is unsupported."""
+    """Step into machine instructions with delay-slot handling for OpenRISC 1000 and CRIS under qemu-user."""
 
     _cmdline_ = "stepi-for-qemu-user"
     _category_ = "01-c. Debugging Support - Basic Command Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("count", metavar="COUNT", nargs="?",
-                        help="Unsupported. Run this command without COUNT to step once.")
+                        help="Instruction count. Omit in qemu-user on OpenRISC 1000 or CRIS.")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
-        "Only when qemu-user with specific architecture, the `si` command is redirected to `stepi-for-qemu-user`.",
-        "This setting is done only once, when `hook_stop_handler` is called for the first time.",
-        "COUNT arguments are not supported.",
-        "",
-        "Target architecture:",
-        "  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.",
-        "  CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.",
+        "GEF redirects `si` at the first stop if the target is OpenRISC 1000 or CRIS under qemu-user.",
+        "On these targets, GEF uses breakpoints to handle delay slots. Run without COUNT.",
+        "On other targets, COUNT is passed to GDB's `stepi` command.",
     ])
 
     def si_set_bp_for_branch(self, group):
@@ -18830,7 +18831,7 @@ class StepiForQemuUserCommand(GenericCommand):
         if target is None:
             return True
 
-        # something wrong if infinity loop on CRIS architecture
+        # A CRIS branch to itself must stop in its delay slot first.
         if is_cris() and target == insn.address:
             insn_next = SimpleInternalTemporaryBreakpoint.get_qemu_user_step_instruction(is_next=True)
             if insn_next is None:
@@ -18862,7 +18863,10 @@ class StepiForQemuUserCommand(GenericCommand):
             command = "stepi"
             if args.count is not None:
                 command += " " + args.count
-            gdb.execute(command)
+            try:
+                gdb.execute(command)
+            except gdb.error as e:
+                err(e)
             return
         if args.count is not None:
             err("COUNT is not supported by `stepi-for-qemu-user`.")

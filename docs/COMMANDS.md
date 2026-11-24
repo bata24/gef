@@ -624,7 +624,7 @@ multi-line x/4xg $rax; ---t TAG; x/4xg $rbx  # `---t TAG`: bold white line (`=`)
 
 ## `nexti-for-qemu-user`
 
-`ni` wrapper for specific architectures; COUNT is unsupported.
+Step over machine instructions with delay-slot handling for OpenRISC 1000 and CRIS under qemu-user.
 
 
 ### Syntax
@@ -633,7 +633,7 @@ multi-line x/4xg $rax; ---t TAG; x/4xg $rbx  # `---t TAG`: bold white line (`=`)
 usage: nexti-for-qemu-user [-h] [COUNT]
 
 positional arguments:
-  COUNT       Unsupported. Run this command without COUNT to step once.
+  COUNT       Instruction count. Omit in qemu-user on OpenRISC 1000 or CRIS.
 
 options:
   -h, --help  show this help message and exit
@@ -642,13 +642,9 @@ options:
 ### Notes
 
 ```text
-Only when qemu-user with specific architecture, the `ni` command is redirected to `nexti-for-qemu-user`.
-This setting is done only once, when `hook_stop_handler` is called for the first time.
-COUNT arguments are not supported.
-
-Target architecture:
-  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.
-  CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.
+GEF redirects `ni` at the first stop if the target is OpenRISC 1000 or CRIS under qemu-user.
+On these targets, GEF uses breakpoints to handle delay slots. Run without COUNT.
+On other targets, COUNT is passed to GDB's `nexti` command.
 ```
 
 ## `stepi-for-kgdb`
@@ -677,7 +673,7 @@ On ARM32, Thumb code is stepped without the mask.
 
 ## `stepi-for-qemu-user`
 
-`si` wrapper for specific architectures; COUNT is unsupported.
+Step into machine instructions with delay-slot handling for OpenRISC 1000 and CRIS under qemu-user.
 
 
 ### Syntax
@@ -686,7 +682,7 @@ On ARM32, Thumb code is stepped without the mask.
 usage: stepi-for-qemu-user [-h] [COUNT]
 
 positional arguments:
-  COUNT       Unsupported. Run this command without COUNT to step once.
+  COUNT       Instruction count. Omit in qemu-user on OpenRISC 1000 or CRIS.
 
 options:
   -h, --help  show this help message and exit
@@ -695,13 +691,9 @@ options:
 ### Notes
 
 ```text
-Only when qemu-user with specific architecture, the `si` command is redirected to `stepi-for-qemu-user`.
-This setting is done only once, when `hook_stop_handler` is called for the first time.
-COUNT arguments are not supported.
-
-Target architecture:
-  OpenRISC 1000: branch operations don't work well, so GEF uses breakpoints to simulate.
-  CRIS: si/ni commands don't work well. so GEF uses breakpoints to simulate.
+GEF redirects `si` at the first stop if the target is OpenRISC 1000 or CRIS under qemu-user.
+On these targets, GEF uses breakpoints to handle delay slots. Run without COUNT.
+On other targets, COUNT is passed to GDB's `stepi` command.
 ```
 
 ## `time`
