@@ -18387,12 +18387,15 @@ class HighlightCommand(GenericCommand):
     subparsers.add_parser("clear")
     _syntax_ = parser.format_help()
 
+    RE_CSI = re.compile(r"((?:\033\[|\x9b)[0-?]*[ -/]*[@-~])")
+    RE_SGR = re.compile(r"(?:\033\[|\x9b)([0-9;:]*)m")
+
     highlight_table = {}
 
     @staticmethod
     def highlight_text(text):
         """Highlight text using highlight_table { match -> color } settings.
-        Split by ANSI codes and color each literal or regex match in the text.
+        Skip CSI sequences when matching and restore SGR styles after coloring.
         Invalid regex patterns are ignored."""
         if not HighlightCommand.highlight_table:
             return text
@@ -18405,11 +18408,11 @@ class HighlightCommand(GenericCommand):
             if regex:
                 try:
                     pattern = re.compile(match)
-                except re.error:
+                except (re.error, OverflowError, RecursionError):
                     continue
             else:
                 pattern = re.compile(re.escape(match))
-            ansiSplit = re.split(r"(\033\[[\d;]*m)", text)
+            ansiSplit = HighlightCommand.RE_CSI.split(text)
             plain = "".join(ansiSplit[::2])
             matches = [item for item in pattern.finditer(plain) if item.group(0)]
             offset = 0
@@ -18438,7 +18441,10 @@ class HighlightCommand(GenericCommand):
                 offset = segment_end
                 if index + 1 < len(ansiSplit):
                     code = ansiSplit[index + 1]
-                    if code in ("\033[m", "\033[0m"):
+                    sgr = HighlightCommand.RE_SGR.fullmatch(code)
+                    if sgr is None:
+                        continue
+                    if sgr.group(1) in ("", "0"):
                         active = ""
                     else:
                         active += code
@@ -18473,7 +18479,7 @@ class HighlightListCommand(GenericCommand):
 
         left_pad = max(map(len, HighlightCommand.highlight_table.keys()))
         for match, color in sorted(HighlightCommand.highlight_table.items()):
-            # do not use gef_print because the color will be overwrite
+            # Use print to preserve the listed colors.
             print("{!s} | {!s}".format(
                 Color.colorify(match.ljust(left_pad), color),
                 Color.colorify(color, color),
@@ -18510,8 +18516,8 @@ class HighlightAddCommand(GenericCommand):
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("match", metavar="MATCH", help="the keyword phrase to highlight.")
-    parser.add_argument("color", metavar="COLOR", nargs="+", help="the color used to highlight.")
+    parser.add_argument("match", metavar="MATCH", help="text or regex pattern to highlight.")
+    parser.add_argument("color", metavar="COLOR", nargs="+", help="colors or styles to apply.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -18519,7 +18525,8 @@ class HighlightAddCommand(GenericCommand):
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
-        "use config `gef config highlight.regex true` if need regex.",
+        "Use `gef config highlight.regex true` to enable regex matching.",
+        r'Enclose regex patterns in double quotes and double each backslash (e.g., "\\d+").',
     ])
 
     @Decorator.parse_args
@@ -18534,7 +18541,7 @@ class HighlightAddCommand(GenericCommand):
         if Config.get("highlight.regex"):
             try:
                 re.compile(args.match)
-            except (re.error, OverflowError) as e:
+            except (re.error, OverflowError, RecursionError) as e:
                 err("Invalid regex: {}".format(e))
                 return
         HighlightCommand.highlight_table[args.match] = " ".join(args.color)
@@ -18543,13 +18550,13 @@ class HighlightAddCommand(GenericCommand):
 
 @register_command
 class HighlightRemoveCommand(GenericCommand):
-    """Remove a match in the highlight table."""
+    """Remove a match from the highlight table."""
 
     _cmdline_ = "highlight remove"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("match", metavar="MATCH", help="the keyword phrase to remove from highlight.")
+    parser.add_argument("match", metavar="MATCH", help="the match to remove from the highlight table.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([

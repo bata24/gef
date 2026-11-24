@@ -1675,8 +1675,8 @@ Add a match to the highlight table.
 usage: highlight add [-h] MATCH COLOR [COLOR ...]
 
 positional arguments:
-  MATCH       the keyword phrase to highlight.
-  COLOR       the color used to highlight.
+  MATCH       text or regex pattern to highlight.
+  COLOR       colors or styles to apply.
 
 options:
   -h, --help  show this help message and exit
@@ -1691,7 +1691,8 @@ highlight add "call   rcx" bold yellow
 ### Notes
 
 ```text
-use config `gef config highlight.regex true` if need regex.
+Use `gef config highlight.regex true` to enable regex matching.
+Enclose regex patterns in double quotes and double each backslash (e.g., "\\d+").
 ```
 
 ## `highlight clear`
@@ -1724,7 +1725,7 @@ options:
 
 ## `highlight remove`
 
-Remove a match in the highlight table.
+Remove a match from the highlight table.
 
 
 ### Syntax
@@ -1733,7 +1734,7 @@ Remove a match in the highlight table.
 usage: highlight remove [-h] MATCH
 
 positional arguments:
-  MATCH       the keyword phrase to remove from highlight.
+  MATCH       the match to remove from the highlight table.
 
 options:
   -h, --help  show this help message and exit
