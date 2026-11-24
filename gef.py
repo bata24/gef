@@ -19414,7 +19414,7 @@ class UpCommand(GenericCommand):
     _repeat_ = True
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("n", metavar="N", nargs="?", type=int, default=1,
+    parser.add_argument("n", metavar="N", nargs="?", type=AddressUtil.parse_address, default=1,
                         help="Number of frames to move. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
@@ -19435,8 +19435,13 @@ class UpCommand(GenericCommand):
 
         # go to target frame
         if current_frame and current_frame.is_valid():
-            current_frame.select()
+            GefUtil.select_frame(current_frame)
 
+        if ContextCommand.is_hide():
+            gdb.execute("frame")
+            return
+
+        gdb.execute("frame", to_string=True) # Update the source position for `list`.
         with ContextManager.config("context_trace.nb_lines_before", 0xff), \
                 ContextManager.config("context_trace.nb_lines", 0x100):
             gdb.execute("context trace -i")
@@ -19465,7 +19470,7 @@ class DownCommand(GenericCommand):
     _repeat_ = True
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("n", metavar="N", nargs="?", type=int, default=1,
+    parser.add_argument("n", metavar="N", nargs="?", type=AddressUtil.parse_address, default=1,
                         help="Number of frames to move. (default: %(default)s)")
     _syntax_ = parser.format_help()
 
@@ -19486,8 +19491,13 @@ class DownCommand(GenericCommand):
 
         # go to target frame
         if current_frame and current_frame.is_valid():
-            current_frame.select()
+            GefUtil.select_frame(current_frame)
 
+        if ContextCommand.is_hide():
+            gdb.execute("frame")
+            return
+
+        gdb.execute("frame", to_string=True) # Update the source position for `list`.
         with ContextManager.config("context_trace.nb_lines_before", 0xff), \
                 ContextManager.config("context_trace.nb_lines", 0x100):
             gdb.execute("context trace -i")
@@ -45754,14 +45764,22 @@ class ContextTraceCommand(GenericCommand):
             err("Failed to get frame information", redirect=redirect)
             return
 
-        frames = [current_frame]
-        while current_frame != orig_frame:
-            current_frame = current_frame.older()
+        frames = []
+        while current_frame:
             frames.append(current_frame)
+            if current_frame == orig_frame:
+                break
+            current_frame = current_frame.older()
 
-        nb_lines_before = min(max(Config.get("context_trace.nb_lines_before"), 0), nb_lines - 1)
-        level = max(len(frames) - nb_lines_before - 1, 0)
-        current_frame = frames[level]
+        if current_frame is None:
+            current_frame = orig_frame
+            level = GefUtil.get_frame_level(orig_frame)
+            if level is None:
+                level = 0
+        else:
+            nb_lines_before = min(max(Config.get("context_trace.nb_lines_before"), 0), nb_lines - 1)
+            level = max(len(frames) - nb_lines_before - 1, 0)
+            current_frame = frames[level]
 
         try:
             while current_frame and nb_lines:
@@ -237548,6 +237566,32 @@ class GefUtil:
         if hasattr(gdb.Inferior, "architecture"): # gdb 10.1~
             return gdb.selected_inferior().architecture()
         return gdb.selected_frame().architecture()
+
+    @staticmethod
+    def get_frame_level(frame):
+        """Return its level in the backtrace, or None for a frame from `frame view`."""
+        newest = gdb.newest_frame()
+        level = 0
+        while frame:
+            if frame == newest:
+                return level
+            frame = frame.newer()
+            level += 1
+        return None
+
+    @staticmethod
+    def select_frame(frame):
+        level = GefUtil.get_frame_level(frame)
+        if level is not None:
+            try:
+                # Notify MI and TUI of the change, without printing the frame.
+                gdb.execute("select-frame {:#x}".format(level))
+                return
+            except gdb.error:
+                # The frame can be beyond GDB's backtrace limit.
+                pass
+        frame.select()
+        return
 
     __gef_convenience_vars_index__ = 0 # $_gef1, $_gef2, ...
 
