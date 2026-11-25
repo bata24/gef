@@ -13431,8 +13431,8 @@ def read_int64_from_memory(addr, safe=False, signed=False):
         raise
 
 
-def read_cstring_from_memory(addr, max_length=None, safe=False, allow_non_ascii=False):
-    """Return a C-string read from memory, or None on error when safe is True."""
+def read_cstring_from_memory(addr, max_length=None, safe=False, allow_non_ascii=False, raw=False):
+    """Return a C-string read from memory (as bytes if raw is True), or None on error when safe is True."""
     try:
         if max_length is None:
             max_length = Config.get("context.nb_max_string_length")
@@ -13463,6 +13463,8 @@ def read_cstring_from_memory(addr, max_length=None, safe=False, allow_non_ascii=
 
         # decode the C string
         res = res.split(b"\x00")[0]
+        if raw:
+            return res
         if allow_non_ascii:
             ustr = res.decode("utf-8", "backslashreplace")
         else:
@@ -17610,7 +17612,7 @@ class Auxv:
 
     @staticmethod
     def get_auxiliary_walk(offset=0, return_start=False):
-        """Find AUXV by walking stack, or return its start address."""
+        """Find AUXV by walking stack, and return a list of (type, value), or its start address."""
 
         if Config.get("context.disable_auxv"):
             return None
@@ -17712,29 +17714,36 @@ class Auxv:
         current += current_arch.ptrsize * 2
         auxv_start = current
 
-        # parse auxv
-        res = {}
+        # parse auxv (keep the order and the duplicated types, e.g., AT_IGNOREPPC of PowerPC)
+        res = []
+        values = {}
         while True:
             key = read_int_from_memory(current, safe=True)
             val = read_int_from_memory(current + current_arch.ptrsize, safe=True)
             if key is None or val is None:
                 break
-            name = AuxvCommand.AT_CONSTANTS.get(key, "AT_UNKNOWN_{:x}".format(key))
-            res[name] = val
+            res.append((key, val))
+            values[AuxvCommand.AT_CONSTANTS.get(key, "AT_UNKNOWN_{:x}".format(key))] = val
             if key == 0:
                 break
             current += current_arch.ptrsize * 2
 
         # test
-        if "AT_ENTRY" not in res:
+        if "AT_ENTRY" not in values:
             return None
-        if "AT_PHDR" not in res:
+        if "AT_PHDR" not in values:
             return None
-        if "AT_RANDOM" not in res:
+        if "AT_RANDOM" not in values:
             return None
-        if "AT_BASE" not in res:
+        if "AT_BASE" not in values:
             return None
-        if "AT_NULL" not in res:
+        if "AT_NULL" not in values:
+            return None
+        # .dynamic also has these keys (e.g., when sp is pivoted to .bss), so check the values too
+        if values.get("AT_PHENT") not in (32, 56): # sizeof(Elf32_Phdr), sizeof(Elf64_Phdr)
+            return None
+        pagesz = values.get("AT_PAGESZ")
+        if not pagesz or pagesz & (pagesz - 1): # a power of 2
             return None
 
         if return_start:
@@ -17796,9 +17805,21 @@ class Auxv:
     # The cache is retained until explicitly cleared or a new objfile is loaded (e.g., by exec).
     @staticmethod
     @Cache.cache_this_session(cache_None=False, until_new_objfile=True)
-    def get_auxiliary_values(force_heuristic=False):
+    def get_auxiliary_values():
         """Retrieve the auxiliary values of the current execution.
         Return None if not running, or a dict() of values."""
+        entries = Auxv.get_auxiliary_entries()
+        if not entries:
+            return None
+        res = {}
+        for key, val in entries:
+            res[AuxvCommand.AT_CONSTANTS.get(key, "AT_UNKNOWN_{:x}".format(key))] = val
+        return res
+
+    @staticmethod
+    def get_auxiliary_entries(force_heuristic=False):
+        """Retrieve the auxiliary vector of the current execution without the cache.
+        Return None if not running, or a list of (type, value) that keeps the order and the duplicated types."""
 
         if Config.get("context.disable_auxv"):
             return None
@@ -17821,19 +17842,18 @@ class Auxv:
                     result = gdb.execute("info auxv", to_string=True)
                 except gdb.error:
                     return None
-            res = {}
+            res = []
             for line in result.splitlines():
                 tmp = line.split()
-                auxv_type = tmp[1]
-                if auxv_type == "???":
-                    auxv_type = "AT_UNKNOWN_{:x}".format(int(tmp[0], 0))
-                if auxv_type in ("AT_PLATFORM", "AT_EXECFN", "AT_BASE_PLATFORM"):
+                # use the type number, since gdb shows ??? for a type it does not know (e.g., AT_HWCAP3 on GDB 19)
+                auxv_type = int(tmp[0], 0)
+                if AuxvCommand.AT_CONSTANTS.get(auxv_type) in ("AT_PLATFORM", "AT_EXECFN", "AT_BASE_PLATFORM"):
                     m = re.match("^.+?(0x[0-9a-f]+)", line)
                     if m is None: # `set print address off`
                         return None
-                    res[auxv_type] = int(m.group(1), 0)
+                    res.append((auxv_type, int(m.group(1), 0)))
                 else:
-                    res[auxv_type] = int(tmp[-1], 0)
+                    res.append((auxv_type, int(tmp[-1], 0)))
             return res
 
         def slow_path():
@@ -20496,7 +20516,7 @@ class AuxvCommand(GenericCommand):
         24 : "AT_BASE_PLATFORM",     # String identifying real platforms
         25 : "AT_RANDOM",            # Address of 16 random bytes
         26 : "AT_HWCAP2",            # extension of AT_HWCAP
-        27 : "AT_RSEQ_FEATURE_SIZE", # seq supported feature size
+        27 : "AT_RSEQ_FEATURE_SIZE", # rseq supported feature size
         28 : "AT_RSEQ_ALIGN",        # rseq allocation alignment
         29 : "AT_HWCAP3",            # extension of AT_HWCAP
         30 : "AT_HWCAP4",            # extension of AT_HWCAP
@@ -20518,34 +20538,39 @@ class AuxvCommand(GenericCommand):
         51 : "AT_MINSIGSTKSZ",       # stack needed for signal delivery
     }
 
+    ADDRESS_TYPES = [
+        "AT_PHDR", "AT_BASE", "AT_ENTRY", "AT_RANDOM", "AT_EXECFN", "AT_PLATFORM", "AT_BASE_PLATFORM",
+        "AT_SYSINFO", "AT_SYSINFO_EHDR",
+    ]
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        auxval = Auxv.get_auxiliary_values(args.force_heuristic)
-        if not auxval:
-            return None
-
-        reverse_AT_CONSTS = {v: "{:#04x}".format(k) for k, v in self.AT_CONSTANTS.items()}
+        # do not use the cache, since -f reads the memory that the program can modify
+        entries = Auxv.get_auxiliary_entries(args.force_heuristic)
+        if not entries:
+            if Config.get("context.disable_auxv"):
+                err("auxv is disabled by `gef config context.disable_auxv True`")
+            else:
+                err("Could not find the auxiliary vector")
+            return
 
         gef_print(titlify("ELF auxiliary vector"))
         fmt = "{:6s} {:22s} {:s}"
         legend = ["Const", "Name", "Value"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
-        for k, v in auxval.items():
-            num = reverse_AT_CONSTS.get(k, "?")
-            name = k
-            if k.startswith("AT_UNKNOWN_"):
-                num = "{:#04x}".format(int(k[len("AT_UNKNOWN_"):], 16))
-                name = "???"
+        for key, v in entries:
+            num = "{:#04x}".format(key)
+            k = self.AT_CONSTANTS.get(key, "???")
             additional_message = ""
             if k == "AT_NULL":
                 additional_message = " (End of vector)"
             elif k in ["AT_EXECFN", "AT_PLATFORM", "AT_BASE_PLATFORM"]:
-                s = read_cstring_from_memory(v)
+                s = read_cstring_from_memory(v, allow_non_ascii=True)
                 if s is None:
                     s = "Cannot access memory"
                 s = Color.yellowify(repr(s))
@@ -20568,11 +20593,12 @@ class AuxvCommand(GenericCommand):
                     s = Color.yellowify(repr("Cannot access memory"))
                     additional_message = " -> {:s}".format(s)
 
-            if is_valid_addr(v):
+            # a small number can be a valid address too (e.g., the gateway page of qemu-hppa at 0x0-0x1000)
+            if k in self.ADDRESS_TYPES and is_valid_addr(v):
                 v = str(ProcessMap.lookup(v))
             else:
                 v = hex(v)
-            gef_print("{:6s} {:22s} {:s}{:s}".format(num, name + ":", v, additional_message))
+            gef_print("{:6s} {:22s} {:s}{:s}".format(num, k + ":", v, additional_message))
         return
 
 
@@ -20585,16 +20611,26 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-v", "--verbose", action="store_true", help="print all elements. (default: outputs up to 100)")
-    parser.add_argument("-i", "--increase-limit", action="store_true", help="increase rounding limit from 128 to 4096 bytes.")
+    parser.add_argument("-i", "--increase-limit", action="store_true",
+                        help="truncate at the page size instead of 128 characters.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address, help="address of the argv array.")
     _syntax_ = parser.format_help()
 
     def get_address_from_symbol(self, symbol):
         try:
-            return AddressUtil.parse_address(symbol)
+            # a frame of another language (e.g., Rust) does not accept the C expression
+            with ContextManager.gdb_parameter("language", "c"):
+                return AddressUtil.parse_address(symbol)
         except Exception:
             return None
+
+    def quote_string(self, data, max_size):
+        # repr_os_path shows a raw byte 0xff as \xff, which differs from the literal "\xff" shown as \\xff
+        s = data.decode("utf-8", "surrogateescape")
+        if len(s) > max_size:
+            return String.repr_os_path(s[:max_size]) + "[...]"
+        return String.repr_os_path(s)
 
     def print_from_mem(self, array):
         fmt = "{:3s} {:{:d}s}  {:{:d}s} -> {:s}"
@@ -20624,9 +20660,11 @@ class ArgvCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            s = repr(read_cstring_from_memory(addr, get_pagesize(), allow_non_ascii=True))
-            if len(s) > max_size:
-                s = s[:max_size] + "[...]"
+            s = read_cstring_from_memory(addr, get_pagesize(), raw=True)
+            if s is None:
+                s = repr("Cannot access memory")
+            else:
+                s = self.quote_string(s, max_size)
             s = Color.yellowify(s)
 
             self.out.append("{:03d} {!s}: {!s} -> {:s}".format(
@@ -20649,11 +20687,11 @@ class ArgvCommand(GenericCommand, BufferingOutput):
             max_size = 128
 
         data = open(filename, "rb").read()
-        lines = data.decode("utf-8", "backslashreplace")
-        if lines.endswith("\0"):
+        lines = data
+        if lines.endswith(b"\0"):
             lines = lines[:-1]
         if data:
-            split_lines = lines.split("\0")
+            split_lines = lines.split(b"\0")
         else:
             split_lines = []
         for i, elem in enumerate(split_lines):
@@ -20661,9 +20699,7 @@ class ArgvCommand(GenericCommand, BufferingOutput):
                 self.out.append("...")
                 break
 
-            if len(elem) > max_size:
-                elem = elem[:max_size] + "[...]"
-            self.out.append("{:03d} {!r}".format(i, elem))
+            self.out.append("{:03d} {:s}".format(i, self.quote_string(elem, max_size)))
         return
 
     def dump_dl_argv(self):
@@ -20671,7 +20707,10 @@ class ArgvCommand(GenericCommand, BufferingOutput):
         addr = self.get_address_from_symbol("*(void**)&_dl_argv")
         # a static glibc never sets it to argv, and keeps the initial value &__progname
         if addr is not None and addr == self.get_address_from_symbol("&__progname"):
-            return
+            return False
+        # a static-pie before the self-relocation keeps the unrelocated value, which is not readable
+        if addr and not is_valid_addr(addr):
+            return False
         if paddr and addr:
             self.out.append(titlify("ARGV from _dl_argv"))
             self.info_add_out("_dl_argv @ {}".format(ProcessMap.lookup(paddr)))
@@ -20736,14 +20775,15 @@ class ArgvCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class EnvpCommand(ArgvCommand):
-    """Display initial envp from __environ@ld, or modified envp managed by libc."""
+    """Display the current envp from __environ, the envp arrays managed by libc, and the initial envp."""
 
     _cmdline_ = "envp"
     _category_ = "02-d. Process Information - Trivial Information"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-v", "--verbose", action="store_true", help="print all elements. (default: outputs up to 100)")
-    parser.add_argument("-i", "--increase-limit", action="store_true", help="increase rounding limit from 128 to 4096 bytes.")
+    parser.add_argument("-i", "--increase-limit", action="store_true",
+                        help="truncate at the page size instead of 128 characters.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("array", metavar="ARRAY", nargs="?", type=AddressUtil.parse_address, help="address of the envp array.")
     _syntax_ = parser.format_help()
@@ -20759,77 +20799,89 @@ class EnvpCommand(ArgvCommand):
             max_size = 128
 
         data = open(filename, "rb").read()
-        lines = data.decode("utf-8", "backslashreplace")
-        if lines.endswith("\0"):
+        lines = data
+        if lines.endswith(b"\0"):
             lines = lines[:-1]
         if data:
-            split_lines = lines.split("\0")
+            split_lines = lines.split(b"\0")
         else:
             split_lines = []
         for i, elem in enumerate(split_lines):
             if not self.args.verbose and i >= 100:
                 self.out.append("...")
                 break
-            if len(elem) > max_size:
-                elem = elem[:max_size] + "[...]"
-            elem = repr(elem)
+            elem = self.quote_string(elem, max_size)
             elem = re.sub(r"^(.*?=)", Color.boldify("\\1"), elem)
             self.out.append("{:03d} {:s}".format(i, elem))
         return
 
+    def get_libc_address_from_symbol(self, name):
+        # A loader with the symbol table has its own hidden __environ and __environ_array_list, which libc never updates,
+        # and an expression can resolve to them. The __environ copy relocated to the executable is the one that libc uses.
+        paddr = self.get_address_from_symbol("&{:s}".format(name))
+        libc = None
+        for objfile in gdb.objfiles():
+            # libc.so.6.1 is for Alpha
+            if re.fullmatch(r"libc\.so\.6(\.1)?|libc-2\.\d+\.so", os.path.basename(objfile.filename or "")):
+                libc = objfile
+                break
+        if libc is None: # static, or not glibc
+            return paddr
+        if paddr is not None:
+            solib = gdb.solib_name(paddr)
+            if solib is None or os.path.basename(solib) == os.path.basename(libc.filename):
+                return paddr
+
+        # Resolve it from the .symtab of the separate debug file (or libc itself), which works without DWARF.
+        path = libc.filename
+        for objfile in gdb.objfiles():
+            if objfile.owner is not None and objfile.owner.filename == libc.filename:
+                path = objfile.filename
+                break
+        if not os.path.isfile(path): # e.g., `target:/...` of gdbserver
+            return None
+        value = Elf(path).get_symbol_values([name]).get(name)
+        # the first PT_LOAD of libc starts at 0, so its load base is the bias
+        base = ProcessMap.get_section_base_address(libc.filename)
+        if value is None or base is None:
+            return None
+        return base + value
+
     def dump_environ(self):
         self.out.append(titlify("ENVP from __environ"))
-        paddr = self.get_address_from_symbol("&__environ")
-        addr = self.get_address_from_symbol("*(void**)&__environ")
+        paddr = self.get_libc_address_from_symbol("__environ")
+        addr = None
+        if paddr:
+            addr = read_int_from_memory(paddr, safe=True)
         if paddr and addr:
             self.info_add_out("__environ @ {}".format(ProcessMap.lookup(paddr)))
             self.print_from_mem(addr)
-            return True
+            return addr
         elif addr == 0:
-            self.err_add_out("___environ is 0x0")
+            # e.g., after clearenv()
+            self.err_add_out("__environ is 0x0")
+            return 0
         else:
             self.err_add_out("Could not find __environ")
-        return False
+        return None
 
     def dump_last_environ(self):
-        paddr = self.get_address_from_symbol("&last_environ")
+        paddr = self.get_libc_address_from_symbol("last_environ")
         if paddr is not None:
             self.out.append(titlify("ENVP from last_environ (for putenv, etc.)"))
-            addr = self.get_address_from_symbol("*(void**)&last_environ")
-            if paddr and addr:
+            addr = read_int_from_memory(paddr, safe=True)
+            if addr:
                 self.info_add_out("last_environ @ {}".format(ProcessMap.lookup(paddr)))
                 self.print_from_mem(addr)
                 return True
             elif addr == 0:
                 self.err_add_out("last_environ is 0x0")
             else:
-                self.err_add_out("Could not find last_environ")
+                self.err_add_out("Could not read last_environ")
             return False
 
         self.out.append(titlify("ENVP from __environ_array_list (for putenv, etc.)"))
-        objfile = None
-        for candidate in gdb.objfiles():
-            name = os.path.basename(candidate.filename or "")
-            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
-                objfile = candidate
-                break
-
-        if objfile is not None:
-            symbol = objfile.lookup_global_symbol("__environ_array_list")
-            if symbol is None:
-                paddr = None
-            else:
-                paddr = int(symbol.value().address)
-                if os.path.basename(gdb.solib_name(paddr) or "") != name:
-                    # Older GDB versions can resolve the hidden libc symbol to the loader's copy.
-                    symbols = Elf(symbol.symtab.objfile.filename).get_symbol_values(("__environ_array_list", "setenv"))
-                    setenv = self.get_address_from_symbol("&setenv")
-                    if setenv and os.path.basename(gdb.solib_name(setenv) or "") == name and len(symbols) == 2:
-                        paddr = setenv + symbols["__environ_array_list"] - symbols["setenv"]
-                    else:
-                        paddr = None
-        else:
-            paddr = self.get_address_from_symbol("&__environ_array_list")
+        paddr = self.get_libc_address_from_symbol("__environ_array_list")
         if paddr is None:
             self.err_add_out("Could not find last_environ or __environ_array_list")
             return False
@@ -20871,17 +20923,19 @@ class EnvpCommand(ArgvCommand):
             self.out.append(titlify("ENVP from {:#x}".format(args.array)))
             self.print_from_mem(args.array)
         else:
-            found_environ = self.dump_environ()
+            environ = self.dump_environ()
             arrays = None
-            if not found_environ:
+            if not environ:
                 arrays = Auxv.get_initial_arrays()
                 if arrays is not None:
-                    self.out.clear()
+                    # keep the message if __environ is 0x0 (e.g., after clearenv), and add the initial envp as a reference
+                    if environ is None:
+                        self.out.clear()
                     self.out.append(titlify("ENVP from initial stack"))
                     self.print_from_mem(arrays[1])
             last_start = len(self.out)
             found_last = self.dump_last_environ()
-            if arrays is not None and not found_last:
+            if environ is None and arrays is not None and not found_last:
                 del self.out[last_start:]
             self.dump_proc_environ()
         self.print_output(check_terminal_size=True)
