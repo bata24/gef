@@ -884,7 +884,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `timeout`: aborts the GDB command if it does not finish within the specified seconds.
 - `multi-line`: executes multiple GDB commands in sequence.
     - ![](images/multi-line.png)
-- `stepi-for-kgdb`: is wrapper for ARM32/AArch64 KGDB that avoids stepping into pending IRQ handlers.
+- `stepi-for-kgdb`: is a wrapper for ARM32/AArch64 KGDB that avoids stepping into pending IRQ handlers.
 
 </details>
 

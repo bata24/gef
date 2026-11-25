@@ -1637,7 +1637,7 @@ class Address:
 
     def __str__(self):
         value = AddressUtil.format_address(self.value)
-        if not self.valid:
+        if not is_alive() or self.section is None or not self.valid:
             return value
         line_color = ""
         if self.is_in_stack_segment():
@@ -1658,7 +1658,7 @@ class Address:
 
     def long_fmt(self):
         value = AddressUtil.format_address(self.value, long_fmt=True)
-        if not self.valid:
+        if not is_alive() or self.section is None or not self.valid:
             return value
         line_color = ""
         if self.is_in_stack_segment():
@@ -16873,14 +16873,7 @@ class EventHandler:
                 gdb.execute("gef config context.disable_vmmap True")
                 gdb.execute("gef config context.disable_auxv True")
 
-        # If the silent command is specified for a breakpoint, skip `context` command.
-        context_flag = not kpti_transition
-        if isinstance(event, gdb.BreakpointEvent):
-            if event.breakpoint.is_valid() and event.breakpoint.enabled:
-                if event.breakpoint.commands:
-                    if event.breakpoint.commands.startswith("silent"):
-                        context_flag = False
-        if context_flag:
+        if EventHandler.should_show_stop_context(event):
             gdb.execute("context")
 
         # Message if file is not loaded.
@@ -16891,6 +16884,18 @@ class EventHandler:
                     err("If the architecture isn't automatically detected, use: `set architecture YOUR_ARCH`")
             EventHandler.__gef_check_once__ = False
         return
+
+    @staticmethod
+    def should_show_stop_context(event):
+        if EventHandler.kpti_transition_active:
+            return False
+        # A silent breakpoint suppresses automatic context output.
+        if isinstance(event, gdb.BreakpointEvent):
+            bp = event.breakpoint
+            if bp.is_valid() and bp.enabled:
+                if bp.commands and bp.commands.startswith("silent"):
+                    return False
+        return True
 
     @staticmethod
     def new_objfile_handler(_event):
@@ -19112,11 +19117,10 @@ class StepiForKGDBCommand(GenericCommand):
         if instruction in (0xd69f_03e0, 0xd69f_0bff, 0xd69f_0fff): # ERET/ERETAA/ERETAB
             return "preserve", None
 
+        # Firmware calls (HVC/SMC) can return to PC+4. The post-step PC and mode checks catch exception entry.
         exception_instruction = instruction & 0xffe0_001f
         if exception_instruction in (
             0xd400_0001, # SVC
-            0xd400_0002, # HVC
-            0xd400_0003, # SMC
             0xd420_0000, # BRK
             0xd440_0000, # HLT
             0xd4a0_0001, # DCPS1
@@ -19193,18 +19197,18 @@ class StepiForKGDBCommand(GenericCommand):
         return False
 
     @staticmethod
-    def exception_state_changed(old_pc, instruction, new_pc, old_cpsr, new_cpsr, old_registers):
+    def exception_state_changed(state, pc, cpsr, did_not_advance):
         """Detect exception transitions from PC, processor mode and ELR/SPSR changes."""
         # ARM32 is stepped by temporary breakpoints, so it never stops at an exception vector.
         # Its new PC is not checked, since gdb also steps over a whole LDREX/STREX sequence at once.
         # The same happens with LDXR/STXR on ARM64, which is_branch_instruction accepts.
-        if is_arm64():
-            if new_pc != old_pc + 4 and not StepiForKGDBCommand.is_branch_instruction(instruction):
+        if is_arm64() and not did_not_advance:
+            if pc != state["pc"] + 4 and not StepiForKGDBCommand.is_branch_instruction(state["instruction"]):
                 return True
-        if (old_cpsr & 0x1f) != (new_cpsr & 0x1f):
+        if (state["cpsr"] & 0x1f) != (cpsr & 0x1f):
             return True
 
-        for name, old_value in old_registers.items():
+        for name, old_value in state["exception_registers"].items():
             new_value = get_register(name)
             if new_value is not None and new_value != old_value:
                 return True
@@ -19218,16 +19222,16 @@ class StepiForKGDBCommand(GenericCommand):
         except (AttributeError, gdb.error):
             return False
 
-    def mask_irq(self, cpsr):
-        """Try to mask IRQs, verify the write and attempt rollback on failure."""
+    def prepare_step(self, cpsr, step_mask):
+        """Set the temporary CPSR bits, verify the write and attempt rollback on failure."""
         try:
-            masked_cpsr = cpsr | self.irq_mask_bit
+            masked_cpsr = cpsr | step_mask
             gdb.execute("set $cpsr = {:#x}".format(masked_cpsr), to_string=True)
             if get_register("$cpsr") == masked_cpsr:
                 return True
-            message = "The target did not accept the temporary {:s} mask; `stepi` was not run".format(self.irq_mask_name)
+            message = "The target did not accept the temporary CPSR value; `stepi` was not run"
         except (gdb.error, KeyboardInterrupt) as e:
-            message = "Could not temporarily set {:s}: {}".format(self.irq_mask_name, e)
+            message = "Could not temporarily set CPSR: {}".format(e)
         try:
             if get_register("$cpsr") != cpsr:
                 gdb.execute("set $cpsr = {:#x}".format(cpsr), to_string=True)
@@ -19240,7 +19244,12 @@ class StepiForKGDBCommand(GenericCommand):
     @contextlib.contextmanager
     def capture_stop(events):
         """Capture step stop events and disconnect the temporary hook on exit."""
-        callback = events.append
+
+        def callback(event):
+            show_context = not ContextManager.stop_handler_suspended and EventHandler.should_show_stop_context(event)
+            events.append((event, show_context))
+            return
+
         connected = False
         try:
             EventHooking.gef_on_stop_hook(callback)
@@ -19286,6 +19295,10 @@ class StepiForKGDBCommand(GenericCommand):
                 ))
                 return
 
+            rollback = not step_succeeded and event is None and pc == state["start_pc"]
+            if state["cpsr"] & self.irq_mask_bit and not rollback:
+                return # only PSTATE.SS needed setting; KGDB owns it after resume
+
             signal = getattr(event, "stop_signal", None)
             event_thread = getattr(event, "inferior_thread", None)
             event_type = type(event).__name__
@@ -19299,16 +19312,15 @@ class StepiForKGDBCommand(GenericCommand):
                 )
             )
             step_verified = step_succeeded and same_cpu and normal_stop
-            transitioned = self.exception_state_changed(
-                state["pc"], state["instruction"], pc, state["cpsr"], cpsr, state["exception_registers"],
-            )
-            did_not_advance = (
-                pc == state["pc"] and not transitioned
+            did_not_advance = (pc == state["start_pc"] and pc != state["pc"]) or (
+                pc == state["pc"]
                 and (signal == "SIGINT" or not step_succeeded or event_type == "BreakpointEvent" or not same_cpu)
             )
+            if self.exception_state_changed(state, pc, cpsr, did_not_advance):
+                return
             if did_not_advance:
                 irq = 0
-            elif irq is None or transitioned or unexpected_signal:
+            elif irq is None or unexpected_signal:
                 return
             elif not step_verified and pc != state["pc"] and state["action"] is None:
                 if cpsr & self.irq_mask_bit:
@@ -19317,25 +19329,29 @@ class StepiForKGDBCommand(GenericCommand):
 
             # MRS read the temporary mask, so give its register the original unmasked state,
             # or a later restore like `msr cpsr_c, r12` would keep IRQ masked
-            reader = state["mask_reader"]
-            if reader and pc != state["pc"]:
+            reader = state.get("mask_reader")
+            if reader and not did_not_advance and pc != state["pc"]:
                 value = get_register(reader)
                 if value is not None:
                     gdb.execute("set {:s} = {:#x}".format(reader, value & ~self.irq_mask_bit), to_string=True)
 
-            if irq:
-                restored_cpsr = cpsr | self.irq_mask_bit
+            mask = self.irq_mask_bit
+            if rollback:
+                mask = state["step_mask"]
+                restored_cpsr = (cpsr & ~mask) | (state["cpsr"] & mask)
+            elif irq:
+                restored_cpsr = cpsr | mask
             else:
-                restored_cpsr = cpsr & ~self.irq_mask_bit
+                restored_cpsr = cpsr & ~mask
             if restored_cpsr == cpsr:
                 return
             try:
                 gdb.execute("set $cpsr = {:#x}".format(restored_cpsr), to_string=True)
                 verified_cpsr = get_register("$cpsr")
-                if verified_cpsr is None or (verified_cpsr & self.irq_mask_bit) != (restored_cpsr & self.irq_mask_bit):
-                    warn("The target did not confirm the restored {:s} value".format(self.irq_mask_name))
+                if verified_cpsr is None or (verified_cpsr & mask) != (restored_cpsr & mask):
+                    warn("The target did not confirm the restored CPSR value")
             except gdb.error as e:
-                warn("Could not restore {:s} on the original KGDB CPU: {}".format(self.irq_mask_name, e))
+                warn("Could not restore CPSR on the original KGDB CPU: {}".format(e))
         finally:
             if result_thread is not None and not result_matches:
                 try:
@@ -19356,7 +19372,11 @@ class StepiForKGDBCommand(GenericCommand):
         if pc is None or cpsr is None:
             err("Could not read the current PC and CPSR")
             return
-        if cpsr & self.irq_mask_bit:
+        step_mask = self.irq_mask_bit
+        if is_arm64():
+            # Older ARM64 KGDB stubs only set PSTATE.SS on the first step.
+            step_mask |= 1 << 21
+        if (cpsr & step_mask) == step_mask:
             gdb.execute("stepi", from_tty=True)
             return
         if is_arm32() and cpsr & 0x20: # Thumb instructions are not decoded
@@ -19368,40 +19388,49 @@ class StepiForKGDBCommand(GenericCommand):
         elif is_arm32():
             self.irq_mask_name = "CPSR.I"
 
-        try:
-            instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
-            if is_arm64() and instruction == 0xd420_8020: # BRK #0x401, the compiled break of KGDB
-                # KGDB skips it and steps the next instruction
-                pc += 4
-                instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
-            if is_arm64():
-                action, irq = self.get_daif_update(instruction)
-            elif is_arm32():
-                action, irq = self.get_cpsr_update(instruction)
-        except gdb.error as e:
-            err("Could not prepare the KGDB step: {}".format(e))
-            return
-
         thread = gdb.selected_thread()
         state = {
             "thread": thread, "thread_num": thread.num, "ptid": thread.ptid,
-            "pc": pc, "cpsr": cpsr, "instruction": instruction, "action": action,
-            "exception_registers": self.get_exception_registers(), "mask_reader": self.get_mask_reader(instruction),
+            "pc": pc, "start_pc": pc, "cpsr": cpsr, "step_mask": step_mask,
+            "exception_registers": self.get_exception_registers(),
         }
-        if not self.mask_irq(cpsr):
+        irq = None
+        if not (cpsr & self.irq_mask_bit):
+            try:
+                instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
+                if is_arm64() and instruction == 0xd420_8020: # BRK #0x401, the compiled break of KGDB
+                    # KGDB skips the BRK only if it handled the compiled breakpoint on the preceding stop.
+                    pc += 4
+                    instruction = int.from_bytes(gdb.selected_inferior().read_memory(pc, 4), "little")
+                if is_arm64():
+                    action, irq = self.get_daif_update(instruction)
+                elif is_arm32():
+                    action, irq = self.get_cpsr_update(instruction)
+                state.update({
+                    "pc": pc, "instruction": instruction, "action": action, "mask_reader": self.get_mask_reader(instruction),
+                })
+            except gdb.error as e:
+                err("Could not prepare the KGDB step: {}".format(e))
+                return
+        if not self.prepare_step(cpsr, step_mask):
             return
 
         events = []
         step_succeeded = False
         try:
-            with self.capture_stop(events):
+            with ContextManager.hidden_context(), self.capture_stop(events):
                 gdb.execute("stepi", from_tty=True)
                 step_succeeded = True
         finally:
+            event = None
+            show_context = False
             if events:
-                self.restore_irq(state, irq, events[-1], step_succeeded)
-            else:
-                self.restore_irq(state, irq, None, step_succeeded)
+                event, show_context = events[-1]
+                # The continue hook recorded the temporary CPSR value.
+                ContextRegistersCommand.old_registers["$cpsr"] = cpsr
+            self.restore_irq(state, irq, event, step_succeeded)
+            if show_context and not ContextCommand.is_hide():
+                gdb.execute("context")
         return
 
 
