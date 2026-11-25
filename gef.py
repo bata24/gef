@@ -6454,9 +6454,10 @@ def get_libc_version(verbose=False, silent=False, use_system=True):
     raise RuntimeError("The libc version could not be determined")
 
 
-def titlify(text, color=None, msg_color=None, horizontal_line="-"):
+def titlify(text, color=None, msg_color=None, horizontal_line="-", cols=None):
     """Print a centered title."""
-    cols = GefUtil.get_terminal_size()[1]
+    if cols is None:
+        cols = GefUtil.get_terminal_size()[1]
     if color is None:
         color = Config.get("theme.default_title_line")
     if msg_color is None:
@@ -23453,7 +23454,7 @@ class HijackFdCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("old_fd", metavar="OLD_FD", type=int, help="file descriptor number to redirect.")
-    parser.add_argument("new_output", metavar="NEW_OUTPUT", type=str, help="the location redirected data is stored.")
+    parser.add_argument("new_output", metavar="NEW_OUTPUT", type=str, help="the location where redirected data is stored.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--file", action="store_true", help="treat NEW_OUTPUT as a file path.")
     group.add_argument("--socket", action="store_true", help="treat NEW_OUTPUT as a host:port socket.")
@@ -23466,27 +23467,35 @@ class HijackFdCommand(GenericCommand):
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
-        "`socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.",
+        "`socketcall` is not supported; on i386, s390x and m68k with Linux < 4.3, SPARC32 with Linux < 4.4,",
+        "or old qemu-user, the socket redirection fails with ENOSYS.",
         "IPv6 socket destinations accept `::1:PORT` and `[::1]:PORT`.",
     ])
 
     def call_syscall(self, syscall_name, args):
+        """Return the result and the errno description (None on success) of the syscall."""
+        entry = Syscall.get_syscall_table().name_table[syscall_name]
         formatted_args = []
         for arg in args:
             if arg >= 0:
                 formatted_args.append(hex(arg))
             else:
                 formatted_args.append(str(arg))
-        args = " ".join(formatted_args)
-        cmd = "call-syscall {:s} {:s}".format(syscall_name, args)
-        self.quiet_info(cmd)
-        res = gdb.execute(cmd, to_string=True)
-        output_line = res.splitlines()[-1]
-        self.quiet_info(output_line)
-        value = int(output_line.split()[2], 0)
-        if not AddressUtil.is_msb_on(value) and re.search(r"\(-\d+", output_line):
-            return -value
-        return value
+        self.quiet_info("{:s}({:s})".format(syscall_name, ", ".join(formatted_args)))
+        # not via call-syscall, whose highlighted output is hard to parse and whose stop lines leak to a non-terminal
+        ret = ExecSyscall(entry.nr, args).exec_code()
+        value = ret["reg"][entry.ret_regs[0]]
+        errno = ExecSyscall.get_errno(ret)
+        if errno is None:
+            self.quiet_info("{:s} = {:#x}".format(entry.ret_regs[0], value))
+            return value, None
+        einfo = ErrnoCommand.get_errno_dict().get(errno)
+        if einfo:
+            error = "-{:d} {:s}: {:s}".format(errno, einfo[0], einfo[1])
+        else:
+            error = "-{:d}".format(errno)
+        self.quiet_info("{:s} = {:#x} ({:s})".format(entry.ret_regs[0], value, error))
+        return value, error
 
     @contextlib.contextmanager
     def write_stack(self, data):
@@ -23528,9 +23537,9 @@ class HijackFdCommand(GenericCommand):
         return
 
     def close_fd(self, fd):
-        close_result = self.call_syscall("close", [fd])
-        if AddressUtil.is_msb_on(close_result):
-            err("Failed to close fd #{:d}".format(fd))
+        _, error = self.call_syscall("close", [fd])
+        if error:
+            err("Failed to close fd #{:d}: {:s}".format(fd, error))
             return False
         self.quiet_info("Closed extra fd #{:d}".format(fd))
         return True
@@ -23547,19 +23556,23 @@ class HijackFdCommand(GenericCommand):
 
                 AT_FDCWD = -100
                 flags = self.O_APPEND | self.O_CREAT | self.O_RDWR
+                if is_32bit():
+                    flags |= self.O_LARGEFILE
                 mode = 0o666
                 # open does not exist in aarch64. So use openat instead of open.
-                open_fd = self.call_syscall("openat", [AT_FDCWD, stack_addr, flags, mode])
+                fd, error = self.call_syscall("openat", [AT_FDCWD, stack_addr, flags, mode])
+                if error is None:
+                    open_fd = fd
 
-            if AddressUtil.is_msb_on(open_fd):
-                err("Failed to open {:s}".format(self.args.new_output))
+            if error:
+                err("Failed to open {:s}: {:s}".format(self.args.new_output, error))
                 return None
 
-            self.quiet_info("Opened {:s} with 0o666 as fd #{:d}".format(Color.boldify(self.args.new_output), open_fd))
+            self.quiet_info("Opened {:s} as fd #{:d}".format(Color.boldify(self.args.new_output), open_fd))
             success = True
             return open_fd
         finally:
-            if not success and open_fd is not None and not AddressUtil.is_msb_on(open_fd):
+            if not success and open_fd is not None:
                 self.close_fd(open_fd)
 
     def get_fd_from_connect_server(self):
@@ -23589,9 +23602,9 @@ class HijackFdCommand(GenericCommand):
         address = endpoint[0]
 
         # call socket
-        sock_fd = self.call_syscall("socket", [family, self.SOCK_STREAM, 0])
-        if AddressUtil.is_msb_on(sock_fd):
-            err("Failed to create socket")
+        sock_fd, error = self.call_syscall("socket", [family, self.SOCK_STREAM, 0])
+        if error:
+            err("Failed to create socket: {:s}".format(error))
             return None
         success = False
         try:
@@ -23607,10 +23620,10 @@ class HijackFdCommand(GenericCommand):
                 if stack_addr is None:
                     return None
                 self.quiet_info("Trying to connect to {:s}".format(Color.boldify(self.args.new_output)))
-                connect_result = self.call_syscall("connect", [sock_fd, stack_addr, len(sockaddr)])
+                _, error = self.call_syscall("connect", [sock_fd, stack_addr, len(sockaddr)])
 
-            if AddressUtil.is_msb_on(connect_result):
-                err("Failed to connect to {:s}:{:d}".format(address, port))
+            if error:
+                err("Failed to connect to {:s}:{:d}: {:s}".format(address, port, error))
                 return None
 
             self.quiet_info("Connected to {:s} as fd #{:d}".format(Color.boldify(self.args.new_output), sock_fd))
@@ -23637,7 +23650,10 @@ class HijackFdCommand(GenericCommand):
         try:
             # call dup3
             # dup2 does not exist in aarch64. So use dup3 instead of dup2.
-            dup3_result = self.call_syscall("dup3", [new_fd, self.args.old_fd, 0])
+            dup3_result, error = self.call_syscall("dup3", [new_fd, self.args.old_fd, 0])
+            if error:
+                err("Failed to dup3 fd #{:d} -> #{:d}: {:s}".format(new_fd, self.args.old_fd, error))
+                return
             if dup3_result != self.args.old_fd:
                 err("Failed to dup3 (result {:d} != fd #{:d})".format(dup3_result, self.args.old_fd))
                 return
@@ -23653,7 +23669,7 @@ class HijackFdCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "rr", "wine"))
     @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -23665,7 +23681,9 @@ class HijackFdCommand(GenericCommand):
         self.O_APPEND = 0o2000
         self.O_CREAT = 0o100
         self.O_RDWR = 0o2
-        # some architecture use different consts.
+        # a 32-bit target needs it for a file over 2GiB, since only 64-bit native openat adds it (force_o_largefile)
+        self.O_LARGEFILE = 0o100000
+        # some architectures use different constants.
         if is_mips():
             # /usr/mipsel-linux-gnu/include/bits/socket_type.h
             # /usr/mips64el-linux-gnuabi64/include/bits/socket_type.h
@@ -23674,11 +23692,13 @@ class HijackFdCommand(GenericCommand):
             # /usr/mips64el-linux-gnuabi64/include/bits/fcntl.h
             self.O_APPEND = 0x0008
             self.O_CREAT = 0x0100
+            self.O_LARGEFILE = 0x2000
         elif is_sparc():
             # sparcv8--uclibc--stable-2022.08-1/sparc-buildroot-linux-uclibc/sysroot/usr/include/bits/fcntl.h
             # sparc64--glibc--stable-2022.08-1/sparc64-buildroot-linux-gnu/sysroot/usr/include/bits/fcntl.h
             self.O_APPEND = 0x0008
             self.O_CREAT = 0x0200
+            self.O_LARGEFILE = 0x40000
         elif is_alpha():
             # /usr/alpha-linux-gnu/include/bits/fcntl.h
             self.O_APPEND = 0o0010
@@ -23687,6 +23707,14 @@ class HijackFdCommand(GenericCommand):
             # /usr/hppa-linux-gnu/include/bits/fcntl.h
             self.O_APPEND = 0o0010
             self.O_CREAT = 0o0400
+            self.O_LARGEFILE = 0o4000
+        elif is_arm32() or is_m68k():
+            # /usr/arm-linux-gnueabihf/include/bits/fcntl.h
+            # /usr/m68k-linux-gnu/include/bits/fcntl.h
+            self.O_LARGEFILE = 0o400000
+        elif is_ppc32():
+            # /usr/powerpc-linux-gnu/include/bits/fcntl.h
+            self.O_LARGEFILE = 0o200000
 
         self.hijack_fd()
         return
@@ -23808,7 +23836,7 @@ class XtapCommand(GenericCommand):
           unsigned int  msg_len     off sizeof(struct msghdr)
 
         sizeof(struct msghdr) is 7 pointers:
-          msg_name, msg_namelen(+pad), msg_iov, msg_iovlen, msg_control, msg_controllen(+pad),
+          msg_name, msg_namelen(+pad), msg_iov, msg_iovlen, msg_control, msg_controllen,
           msg_flags(+pad). We step by that stride.
         """
         msghdr_size = current_arch.ptrsize * 7
@@ -23850,10 +23878,12 @@ class XtapCommand(GenericCommand):
 
         if kind == "buf":
             buf = entry_args[1]
+            # recv with MSG_TRUNC returns the real length of a datagram, which may exceed the buffer
+            limit = min(limit, entry_args[2])
             try:
                 data = read_memory(buf, limit)
             except gdb.error:
-                return []
+                data = b""
             return [("buf={:#x} ret={:#x}".format(buf, retval), data)]
 
         if kind == "iovec":
@@ -23886,7 +23916,8 @@ class XtapCommand(GenericCommand):
                 warn("syscall '{:s}' is unknown on this target, skipped".format(name))
                 continue
             try:
-                res = gdb.execute("catch syscall {:s}".format(name), to_string=True)
+                # by number, since the syscall XML of an old gdb lacks some (e.g., recvfrom on i386)
+                res = gdb.execute("catch syscall {:d}".format(self.syscall_table.name_table[name].nr), to_string=True)
             except gdb.error as e:
                 warn("could not set catch syscall '{:s}': {}".format(name, e))
                 continue
@@ -23898,8 +23929,8 @@ class XtapCommand(GenericCommand):
                     break
             if num is None:
                 warn("catch syscall '{:s}' did not return a catchpoint number, skipped".format(name))
-                # best-effort: it may still have been created; try to clean up later via name match is unreliable,
-                # so leave it. but do not track an unknown number.
+                # best-effort: it may still have been created; cleaning up later by name is unreliable,
+                # so leave it, but do not track an unknown number.
                 continue
             self.catch_numbers.append(num)
             self.hooked_names.append(name)
@@ -24051,7 +24082,7 @@ class XtapCommand(GenericCommand):
             arrow = "->"
         for label, data in self.extract_exit_data(data_name, pending["arg_values"], retval):
             head = "[fd {:d}] {:s} {:s} {:s}".format(fd, display_name, arrow, label)
-            lines = [titlify(head)]
+            lines = [titlify(head, cols=self.cols)]
             if data:
                 lines.append(hexdump(data, base=0))
             else:
@@ -24065,6 +24096,7 @@ class XtapCommand(GenericCommand):
         libc = ctypes.CDLL(None)
         gdb.flush()
         libc.fflush(None)
+        self.cols = GefUtil.get_terminal_size()[1] # unknown while fd 1 is redirected
         with ContextManager.redirect_output() as write_stdout, ContextManager.suspend_stop_handler():
             try:
                 with EventHooking.temporary("stop", self.remember_stop):
@@ -24098,11 +24130,15 @@ class XtapCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "pin", "kgdb", "vmware", "wine"))
+    # the Qiling stub advertises QCatchSyscalls+, but ignores it and never stops at a syscall
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "qemu-user", "pin", "kgdb", "vmware", "wine", "qiling"))
     # gdbserver catches syscalls only on x86 and ARM. GDB itself lacks `catch syscall` on SH4, M68K, ALPHA, HPPA, OR1K,
     # MICROBLAZE, XTENSA and CSKY, and on MIPS it takes the number from v0, which holds the result at the return.
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
+        if args.maxlen is not None and args.maxlen < 0:
+            err("Maximum length must not be negative")
+            return
         self.target_fds = list(args.fd)
         self.maxlen = args.maxlen
         self.catch_numbers = []
@@ -24156,8 +24192,10 @@ class ScanSectionCommand(GenericCommand):
     _aliases_ = ["peek-pointers", "leakfind", "p2p"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("haystack", metavar="HAYSTACK", nargs="?", help="where to search for the needle.")
-    parser.add_argument("needle", metavar="NEEDLE", nargs="?", help="what to search for.")
+    parser.add_argument("haystack", metavar="HAYSTACK", nargs="?", default="any",
+                        help="where to search for the needle. (default: %(default)s)")
+    parser.add_argument("needle", metavar="NEEDLE", nargs="?", default="any",
+                        help="what to search for. (default: %(default)s)")
     parser.add_argument("-s", "--stride", type=AddressUtil.parse_address,
                         help="number of bytes between pointer candidates (default: pointer size).")
     _syntax_ = parser.format_help()
@@ -24171,7 +24209,35 @@ class ScanSectionCommand(GenericCommand):
         "{0:s} any any",
     ]).format(_cmdline_)
 
+    _note_ = "\n".join([
+        "HAYSTACK and NEEDLE are `any`, `binary` (or `bin`), a region name (e.g., `heap`, `stack`, `libc`), or `START-END`.",
+        "`START-END` is a range of hexadecimal addresses with 0x, excluding END.",
+    ])
+
     def scan(self, haystack, needle, stride=None):
+
+        def parse_range(text):
+            try:
+                start, end = AddressUtil.parse_string_range(text)
+            except ValueError:
+                start, end = None, None
+            if start is None or start >= end:
+                err("Invalid range: {:s}".format(text))
+                return None
+            return start, end
+
+        def is_target(name, path):
+            if name is None:
+                return True
+            path = re.sub(r"(<[^<>]*>)+$", "", path) # e.g., `[stack]<tls-th1>` and `<stack-th2>` on x86
+            if path == name or path == "[{:s}]".format(name):
+                return True
+            # `libc` is libc.so.6 or libc-2.31.so, but not libcrypto.so.3
+            basename = os.path.basename(path)
+            if basename == name:
+                return True
+            return basename.startswith((name + ".so", name + "-"))
+
         needle_sections = []
         haystack_sections = []
         width = current_arch.ptrsize
@@ -24180,24 +24246,32 @@ class ScanSectionCommand(GenericCommand):
         unpack = GefUtil.get_unpack(width)
 
         if haystack and "0x" in haystack.lower():
-            try:
-                start, end = AddressUtil.parse_string_range(haystack)
-                haystack_sections.append((start, end, ""))
-            except ValueError:
-                pass
+            haystack_range = parse_range(haystack)
+            if haystack_range is None:
+                return
+            start, end = haystack_range
+            haystack_sections.append((start, end, ""))
 
         if needle and "0x" in needle.lower():
-            try:
-                start, end = AddressUtil.parse_string_range(needle)
-                needle_sections.append((start, end))
-            except ValueError:
-                pass
+            needle_range = parse_range(needle)
+            if needle_range is None:
+                return
+            needle_sections.append(needle_range)
 
-        for sect in ProcessMap.get_process_maps():
-            if haystack is None or haystack in sect.path:
+        # ptrace reads PROT_NONE reservations too, but scanning their zeros is very slow
+        for sect in ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True):
+            if sect.is_readable() and is_target(haystack, sect.path):
                 haystack_sections.append((sect.page_start, sect.page_end, os.path.basename(sect.path)))
-            if needle is None or needle in sect.path:
+        for sect in ProcessMap.get_process_maps():
+            if is_target(needle, sect.path):
                 needle_sections.append((sect.page_start, sect.page_end))
+
+        if not haystack_sections:
+            err("Could not find the readable region of the haystack")
+            return
+        if not needle_sections:
+            err("Could not find the region of the needle")
+            return
 
         reader = functools.partial(read_memory, safe=True)
         for hstart, hend, hname in haystack_sections:
