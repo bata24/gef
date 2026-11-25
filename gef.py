@@ -6591,6 +6591,8 @@ class String:
                 chars.append("\\x{:02x}".format(code - 0xdc00))
             elif char == quote:
                 chars.append("\\" + quote)
+            elif 0x80 <= code <= 0xff and not char.isprintable():
+                chars.append("\\u{:04x}".format(code)) # repr() shows it as \xNN, the same as a raw byte
             else:
                 chars.append(repr(char)[1:-1])
         return quote + "".join(chars) + quote
@@ -21353,7 +21355,8 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         vptr = read_int_from_memory(address)
         nameptr = read_int_from_memory(address + self.ptrsize)
         if nameptr:
-            name = read_cstring_from_memory(nameptr, max_length=0x1000, safe=True)
+            # GCC 10 and later accept UTF-8 identifiers
+            name = read_cstring_from_memory(nameptr, max_length=0x1000, safe=True, allow_non_ascii=True)
         else:
             name = None
         if not vptr or not name or name.endswith("[...]"):
@@ -21381,7 +21384,9 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
 
         if self.cppfilt:
             try:
-                result = GefUtil.gef_execute_external([self.cppfilt, "_ZTS" + name.lstrip("*")]).strip()
+                result = GefUtil.gef_execute_external([self.cppfilt, "_ZTS" + name.lstrip("*")])
+                # gef_execute_external decodes byte by byte, but c++filt keeps the UTF-8 identifiers
+                result = String.str2bytes(result).decode("utf-8", "backslashreplace").strip()
                 if result.startswith("typeinfo name for "):
                     name = result[len("typeinfo name for "):]
             except (OSError, subprocess.CalledProcessError):
@@ -21484,6 +21489,12 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
             address &= ~1
         if is_hppa32() and address < get_pagesize():
             return False # the gateway page mapped at address 0 has no virtual function
+        for zone in ProcessMap.get_info_files():
+            # .rodata may be in the executable segment with .text (e.g., ppc32, m68k and sh4 static binaries)
+            if zone.zone_start <= address < zone.zone_end and zone.name.startswith(".rodata"):
+                return False
+        if self.code_ranges is not None:
+            return any(start <= address < end for start, end in self.code_ranges)
         return ProcessMap.lookup(address).is_in_text_segment()
 
     def dump_functions(self, table, count):
@@ -21506,7 +21517,14 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
                 break
             if function == 0:
                 next_entry = read_int_from_memory(slot + self.ptrsize, safe=True)
-                if next_entry and not self.is_function(next_entry):
+                # vcall offsets of a secondary table, or the offset-to-top 0 and RTTI 0 of the next table
+                if next_entry == 0:
+                    break
+                if next_entry is not None:
+                    # the offset-to-top after a vcall offset 0, or RTTI after the offset-to-top 0 of the next table
+                    if not self.is_function(next_entry):
+                        break
+                    # RTTI may be in an executable segment (e.g., .rodata of a static ppc32 binary without sections)
                     try:
                         self.read_typeinfo(next_entry)
                     except (gdb.error, ValueError, OverflowError):
@@ -21534,6 +21552,14 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         self.ptrsize = AddressUtil.get_memory_alignment()
         self.typeinfos = {}
         self.out = []
+        self.code_ranges = None
+        if is_core_file():
+            # the maps of a core file come from NT_FILE without permissions, but its sections have the CODE flag
+            res = gdb.execute("maintenance info sections", to_string=True).split("Core file:")[-1]
+            self.code_ranges = []
+            for start, end, flags in re.findall(r"(0x[0-9a-f]+)->(0x[0-9a-f]+) at 0x[0-9a-f]+: \S+(.*)", res):
+                if "CODE" in flags.split():
+                    self.code_ranges.append((int(start, 16), int(end, 16)))
         try:
             self.cppfilt = GefUtil.which(Config.get("gef.cppfilt_command"))
         except FileNotFoundError:
@@ -21646,7 +21672,10 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         # ptrace cannot read VM_PFNMAP, so copy them in the inferior.
         # Never do it for an unreadable mapping; the inferior would receive SIGSEGV.
         if pending and self.get_copy_codes(pending) and not is_core_file():
-            data = self.read_by_inferior(pending)
+            try:
+                data = self.read_by_inferior(pending)
+            except gdb.error:
+                data = None # e.g., the code cannot be written at an unreadable pc
             if data is not None:
                 pos = 0
                 for entry in pending:
@@ -21669,17 +21698,21 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
             return codes
 
         def arm32_mov_imm(rd, value, thumb):
-            # movw rd, #imm16; movt rd, #imm16
+            # ARMv6 and older have neither movw/movt nor Thumb-2, so build the value byte by byte
             codes = []
-            for arm_base, thumb_base, imm in [(0xe300_0000, 0xf240, value & 0xffff), (0xe340_0000, 0xf2c0, value >> 16)]:
-                if thumb:
-                    codes.append(
-                        struct.pack(
-                            "<HH", thumb_base | (imm >> 11 & 1) << 10 | imm >> 12, (imm >> 8 & 7) << 12 | rd << 8 | imm & 0xFF,
-                        )
-                    )
-                else:
-                    codes.append(struct.pack("<I", arm_base | (imm >> 12) << 16 | rd << 12 | imm & 0xfff))
+            if thumb:
+                # movs rd, #imm8; lsls rd, rd, #8; adds rd, #imm8; ...
+                codes.append(struct.pack("<H", 0x2000 | rd << 8 | value >> 24))
+                for shift in [16, 8, 0]:
+                    codes.append(struct.pack("<H", 0x0200 | rd << 3 | rd))
+                    codes.append(struct.pack("<H", 0x3000 | rd << 8 | value >> shift & 0xff))
+            else:
+                # mov rd, #imm8; orr rd, rd, #imm8, ror #24; orr rd, rd, #imm8, ror #16; orr rd, rd, #imm8, ror #8
+                codes.append(struct.pack("<I", 0xe3a0_0000 | rd << 12 | value & 0xff))
+                for i in range(1, 4):
+                    rotate = 16 - i * 4
+                    imm = value >> i * 8 & 0xff
+                    codes.append(struct.pack("<I", 0xe380_0000 | rd << 16 | rd << 12 | rotate << 8 | imm))
             return codes
 
         if Endian.is_big_endian():
@@ -21714,10 +21747,10 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
                 codes += arm32_mov_imm(1, entry.page_start, thumb)
                 codes += arm32_mov_imm(2, entry.size, thumb)
                 if thumb:
-                    codes += [b"\x51\xf8\x04\x3b"] # ldr.w r3, [r1], #4
-                    codes += [b"\x40\xf8\x04\x3b"] # str.w r3, [r0], #4
+                    codes += [b"\x08\xc9"] # ldmia r1!, {r3}
+                    codes += [b"\x08\xc0"] # stmia r0!, {r3}
                     codes += [b"\x04\x3a"] # subs r2, #4
-                    codes += [b"\xf9\xd1"] # bne.n <ldr.w>
+                    codes += [b"\xfb\xd1"] # bne.n <ldmia>
                 else:
                     codes += [b"\x04\x30\x91\xe4"] # ldr r3, [r1], #4
                     codes += [b"\x04\x30\x80\xe4"] # str r3, [r0], #4
@@ -21853,6 +21886,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
         entry = self.find_map(maps, rings)
         if entry is None or layout["sq_tail"] == 0:
             return None, None
+        candidates = []
         for sqe_size in [0x40, 0x80]: # IORING_SETUP_SQE128
             size = align_to_pagesize(layout["sq_entries"] * sqe_size)
             addr = rings - size
@@ -21863,8 +21897,18 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
                 continue
             sqes = [data[i:i + sqe_size] for i in range(0, layout["sq_entries"] * sqe_size, sqe_size)]
             if all(sqe[0] < len(KernelIoUring.OPCODES) and sqe[1] < 0x80 for sqe in sqes): # opcode, IOSQE_*
+                candidates.append((addr, size, data))
+        if not candidates:
+            return None, None
+        if len(candidates) == 2:
+            # SQE128 also passes as 0x40 bytes from its middle once the latter half is used, since the second 0x40 bytes
+            # of an SQE are usually 0. Then its former half is in use, which is out of the SQEs of 0x40 bytes.
+            addr, size, data = candidates[1]
+            seconds = b"".join(data[i + 0x40:i + 0x80] for i in range(0, size, 0x80))
+            if any(data[:size - candidates[0][1]]) and not any(seconds):
                 return addr, size
-        return None, None
+        addr, size, _ = candidates[0]
+        return addr, size
 
     def dump(self, title, addr, data, lines=()):
         if data is None:
@@ -21904,7 +21948,7 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
                 name += " (IORING_OFF_SQ_RING"
             else:
                 name += " (IORING_OFF_CQ_RING"
-            if not layout and delta == 0:
+            if not layout and delta == 0 and data is not None: # not recognized only if it is read
                 name += ", unknown layout"
                 if is_sq:
                     struct_name = "io_sq_ring"
@@ -21959,6 +22003,8 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
                 break
             addr += length
             size -= length
+        if not data:
+            return None # the first address is unreadable
         return bytes(data)
 
     def scan_rings(self, maps):
@@ -22022,6 +22068,8 @@ class IouringDumpCommand(GenericCommand, BufferingOutput):
                     data = data[:align(pos + layout["sq_entries"] * 4, page_size)]
                     lines.append("sq_array: +{:#x}, so the size of CQE is {:d} bytes".format(pos, cqe_size))
                 self.dump("struct io_rings (IORING_SETUP_NO_MMAP, {:s})".format(how), rings, data, lines)
+            elif data is None: # not recognized only if it is read
+                self.dump("struct io_rings (IORING_SETUP_NO_MMAP, {:s})".format(how), rings, data)
             else:
                 self.dump("unknown (struct io_rings is not recognized)", rings, data)
 
@@ -22561,11 +22609,10 @@ class ProcInfoCommand(GenericCommand):
         real_proto = self.get_proto_string(int(port, 16))
         return ip, real_proto # str, str
 
-    def get_extra_info(self):
+    def get_extra_info(self, pid):
         # e.g., inode -> "[tcp]           127.0.0.1:34588 -> 127.0.0.1:5001 (ESTABLISHED)"
 
         # get all sockets
-        pid = Pid.get_pid()
         sockets = {}
         path = "/proc/{:d}/fd".format(pid)
         for fname in os.listdir(path):
@@ -22652,10 +22699,10 @@ class ProcInfoCommand(GenericCommand):
     def show_fds(self):
         gef_print(titlify("File Descriptors"))
 
-        pid = Pid.get_pid()
-        path = "/proc/{:d}/fd".format(pid)
+        fd_owner = FileDescriptorsCommand.get_fd_owner(Pid.get_pid())
+        path = "/proc/{:d}/fd".format(fd_owner)
 
-        gef_print("{:30s}  ->  {:s}".format("Num of FD slots", self.get_state_of(pid)["FDSize"]))
+        gef_print("{:30s}  ->  {:s}".format("Num of FD slots", self.get_state_of(fd_owner)["FDSize"]))
         try:
             items = os.listdir(path)
         except OSError as e:
@@ -22665,7 +22712,7 @@ class ProcInfoCommand(GenericCommand):
             gef_print("No FD opened")
             return
 
-        extra_info = self.get_extra_info()
+        extra_info = self.get_extra_info(fd_owner)
 
         for fname in items:
             fullpath = os.path.join(path, fname)
@@ -22707,12 +22754,21 @@ class FileDescriptorsCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
+    @staticmethod
+    def get_fd_owner(pid):
+        """Return the ID whose /proc/ID/fd is the fd table of the selected thread."""
+        # the thread may have its own fd table (unshare(CLONE_FILES)), and that of the exited leader is empty
+        tid = Pid.get_tid()
+        if os.path.isdir("/proc/{:d}/task/{:d}".format(pid, tid)):
+            return tid
+        return pid # the TID is not that of the host
+
     def fd_dump(self):
         pid = Pid.get_pid()
         if not pid:
             err("Could not find the local pid")
             return
-        path = "/proc/{:d}/fd".format(pid)
+        path = "/proc/{:d}/fd".format(FileDescriptorsCommand.get_fd_owner(pid))
 
         try:
             items = os.listdir(path)
