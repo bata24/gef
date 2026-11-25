@@ -16667,9 +16667,12 @@ class ProcessMap:
     @staticmethod
     @Cache.cache_this_session(cache_None=False, per_inferior=True, until_new_objfile=True)
     def get_codebase():
-        entry = (Auxv.get_auxiliary_values() or {}).get("AT_ENTRY")
-        if entry is not None:
-            section = ProcessMap.process_lookup_address(entry)
+        auxv = Auxv.get_auxiliary_values() or {}
+        # AT_PHDR is in the first segment. With lld, the page of the code segment can also have the file offset 0,
+        # so the first segment cannot be found from AT_ENTRY
+        addr = auxv.get("AT_PHDR") or auxv.get("AT_ENTRY")
+        if addr is not None:
+            section = ProcessMap.process_lookup_address(addr)
             if section is not None and section.path:
                 return ProcessMap.get_section_load_base_address(section)
 
@@ -19785,7 +19788,8 @@ class RelativeVirtualAddressFunction(gdb.Function):
             codebase = 0
         if codebase is None:
             raise gdb.GdbError("Could not find the codebase")
-        return codebase + int(offset)
+        # a huge offset must not overflow the conversion to gdb.Value
+        return (codebase + int(offset)) & AddressUtil.get_vmem_end_mask()
 
 
 @register_command
@@ -19797,7 +19801,7 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
     _aliases_ = ["brva"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("offset", metavar="OFFSET", type=AddressUtil.parse_address,
+    parser.add_argument("offset", metavar="OFFSET", type=lambda x: AddressUtil.parse_address(x, signed=True),
                         help="the offset from codebase to set a breakpoint.")
     _syntax_ = parser.format_help()
 
@@ -19810,12 +19814,20 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        elf = Elf.get_elf()
-        if elf is None or not elf.is_valid():
-            err("Invalid ELF")
+        if not 0 <= args.offset <= AddressUtil.get_vmem_end_mask():
+            err("Invalid offset")
             return
 
-        gdb.execute("b *$gef_rva({:#x})".format(args.offset))
+        # the ELF file is not needed, since the codebase is resolved from the auxv and the memory maps
+        if is_alive() and ProcessMap.get_codebase() is None:
+            err("Could not find the codebase")
+            return
+
+        try:
+            gdb.execute("b *$gef_rva({:#x})".format(args.offset))
+        except gdb.error as e:
+            err("{}".format(e))
+            return
         if not is_alive():
             info("Add delayed breakpoint to codebase+{:#x}".format(args.offset))
         return
