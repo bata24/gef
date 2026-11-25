@@ -1142,7 +1142,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `canary` *(improved)*
     - It displays all canary positions in memory.
         - ![](images/canary.png)
-- `capability`: shows the capabilities of the debugging process.
+- `capability`: shows the capabilities of the debugged process.
     - ![](images/capability.png)
 - `ptr-mangle`: shows the mangled value that will be mangled by `PTR_MANGLE`.
 - `ptr-demangle`: shows the demangled value of the value mangled by `PTR_MANGLE`.

@@ -22815,7 +22815,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         data = open(path, "rb").read()
         for line in sorted(data.split(b"\0")):
             if line:
-                line = String.bytes2str(line)
+                line = line.decode("utf-8", "backslashreplace")
                 if "=" not in line:
                     self.out.append(line)
                     continue
@@ -22830,7 +22830,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         if data.endswith(b"\0"):
             data = data[:-1]
         for i, line in enumerate(data.split(b"\0")):
-            self.out.append("{:03d} {!r}".format(i, String.bytes2str(line)))
+            # repr_os_path shows a raw byte 0xff as \xff, which differs from the literal "\xff" shown as \\xff
+            self.out.append("{:03d} {:s}".format(i, String.repr_os_path(line.decode("utf-8", "surrogateescape"))))
         return
 
     def dump_auxv(self, path):
@@ -22840,10 +22841,12 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
             typ = data[i]
             val = data[i + 1]
             self.out.append("{:#8x}: {:#x}".format(typ, val))
+            if typ == 0: # AT_NULL; the auxv of a compat task has pairs of 0 after it
+                break
         return
 
     def dump_syscall(self, path):
-        data = String.bytes2str(open(path, "rb").read()).strip()
+        data = open(path, "rb").read().decode("utf-8", "backslashreplace").strip()
         self.out.append(data)
         if data == "running":
             return
@@ -22880,7 +22883,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_stat(self, path):
-        data = String.bytes2str(open(path, "rb").read())
+        data = open(path, "rb").read().decode("utf-8", "backslashreplace")
         self.out.append(data.strip())
 
         self.out.append("----- parsed -----")
@@ -22917,7 +22920,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_statm(self, path):
-        data = String.bytes2str(open(path, "rb").read())
+        data = open(path, "rb").read().decode("utf-8", "backslashreplace")
         self.out.append(data.strip())
 
         self.out.append("----- parsed -----")
@@ -22935,22 +22938,11 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         return
 
     def dump_status(self, path):
-        try:
-            column_command = GefUtil.which("column")
-        except FileNotFoundError as e:
-            self.out.append("{}".format(e))
-            return
-
-        ret = GefUtil.gef_execute_external([column_command, "-s:", "-t", path], as_list=True)
-        for line in ret:
-            r = line.split(maxsplit=1)
-            if len(r) == 2:
-                k, v = r[0], r[1]
-            else:
-                k, v = r[0], ""
-            k = k.strip() + ":"
-            v = v.replace("\t", "").strip()
-            self.out.append("{:30s} {:s}".format(k, v))
+        data = open(path, "rb").read().decode("utf-8", "backslashreplace")
+        for line in data.splitlines():
+            # split only at the first ":" (Name may contain it), and keep the fields split by tabs (e.g., Uid)
+            k, _, v = line.partition(":")
+            self.out.append("{:30s} {:s}".format(k.strip() + ":", v.strip().replace("\t", " ")))
         return
 
     def dump_rt_acct(self, path):
@@ -22972,7 +22964,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
             return
 
         ret = GefUtil.gef_execute_external([column_command, "-t", path], as_list=True)
-        self.out.extend(ret)
+        # gef_execute_external decodes byte by byte, but column keeps UTF-8 paths under a UTF-8 LC_ALL
+        self.out.extend(String.str2bytes(line).decode("utf-8", "backslashreplace") for line in ret)
         return
 
     def dump_raw(self, path):
@@ -23022,11 +23015,11 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
     def dump_igmp(self, path):
         with open(path, "rb") as fd:
             for line in fd.readlines():
-                self.out.append(String.bytes2str(line.rstrip())) # no-lstrip
+                self.out.append(line.rstrip().decode("utf-8", "backslashreplace")) # no-lstrip
         return
 
     def dump_netstat(self, path):
-        data = String.bytes2str(open(path, "rb").read())
+        data = open(path, "rb").read().decode("utf-8", "backslashreplace")
         table = [line.split() for line in data.splitlines()]
         for idx in range(0, len(table), 2):
             for i, (k, v) in enumerate(zip(*table[idx:idx + 2])):
@@ -23050,7 +23043,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
         try:
             with fd:
                 for line in fd.readlines():
-                    self.out.append(String.bytes2str(line).strip())
+                    self.out.append(line.decode("utf-8", "backslashreplace").strip())
         except OSError:
             self.out.append("{:s} Parse failed".format(Color.colorify("[!]", "bold red")))
         return
@@ -23061,9 +23054,9 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
             err("Could not find the local pid")
             return
         parsers = {
-            "environ": self.dump_environ, "cmdline": self.dump_cmdline, "context": self.dump_cmdline,
+            "environ": self.dump_environ, "cmdline": self.dump_cmdline,
             "auxv": self.dump_auxv, "syscall": self.dump_syscall, "stat": self.dump_stat,
-            "statm": self.dump_statm, "rt_acct": self.dump_rt_acct, "status": self.dump_status,
+            "statm": self.dump_statm, "net/rt_acct": self.dump_rt_acct, "status": self.dump_status,
         }
         parsers.update(dict.fromkeys(("mounts", "mountinfo", "mountstats", "net/unix", "net/protocols"), self.dump_mounts))
         parsers.update(dict.fromkeys((
@@ -23086,7 +23079,8 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
                 try:
                     if os.path.islink(path):
-                        self.out.append(Color.colorify("{:s} -> {:s}".format(path, os.readlink(path)), "blue"))
+                        link = String.repr_os_path(os.readlink(path))
+                        self.out.append(Color.colorify("{:s} -> {:s}".format(path, link), "blue"))
                     elif relative in ("pagemap", "mem"):
                         self.out.append("{:s} skipped".format(Color.colorify("[*]", "bold yellow"))) # too large
                     else:
@@ -23110,7 +23104,7 @@ class ProcDumpCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class CapabilityCommand(GenericCommand, BufferingOutput):
-    """Display the capabilities of the debugging process."""
+    """Display the capabilities of the debugged process."""
 
     _cmdline_ = "capability"
     _category_ = "02-f. Process Information - Security"
@@ -23118,7 +23112,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="also display detailed bit information other than cap_eff.")
+                        help="also display detailed bit information.")
     _syntax_ = parser.format_help()
 
     def get_thread_ids(self, pid):
@@ -23149,7 +23143,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             [24, "CAP_SYS_RESOURCE", "Override disk quota limits; override RLIMIT_NPROC resource limit; etc."],
             [23, "CAP_SYS_NICE", "Lower the process nice value and change the nice value for arbitrary processes; etc."],
             [22, "CAP_SYS_BOOT", "Allow reboot(2) and kexec_load(2)"],
-            [21, "CAP_SYS_ADMIN", "Allow various privileges operations"],
+            [21, "CAP_SYS_ADMIN", "Allow various privileged operations"],
             [20, "CAP_SYS_PACCT", "Allow acct(2)"],
             [19, "CAP_SYS_PTRACE", "Trace arbitrary processes using ptrace(2); etc."],
             [18, "CAP_SYS_CHROOT", "Allow chroot(2); change mount namespaces using setns(2)"],
@@ -23190,7 +23184,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
                 status_path = "/proc/{:d}/task/{:d}/status".format(pid, tid)
                 status = open(status_path, "r", errors="backslashreplace").read()
             except (FileNotFoundError, OSError):
-                self.err_add_out("Failed to get the information of capability from {:s}".format(status_path))
+                self.err_add_out("Failed to read capabilities from {:s}".format(status_path))
                 continue
 
             caps = {}
@@ -23211,17 +23205,17 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
                 caps["cap_amb"] = int(m.group(1), 16)
 
             if "cap_prm" in caps:
-                msg = "Upper bound for Effective; Inheritable is independent"
+                msg = "Upper bound for Effective, and for the bits added to Inheritable without CAP_SETPCAP"
                 self.out.append("Permitted  : {:#018x} - {:s}".format(caps["cap_prm"], msg))
                 if self.args.verbose:
                     self.print_cap_details("cap_prm", caps["cap_prm"])
             if "cap_inh" in caps:
-                msg = "Capability set that can be inherited when execve(2)"
+                msg = "Capability set that can be inherited across execve(2)"
                 self.out.append("Inheritable: {:#018x} - {:s}".format(caps["cap_inh"], msg))
                 if self.args.verbose:
                     self.print_cap_details("cap_inh", caps["cap_inh"])
             if "cap_amb" in caps:
-                msg = "Capability set that inherited when execve(2) not suid/sgid program"
+                msg = "Capability set that is kept across execve(2) of a program without set-ID or file capabilities"
                 self.out.append("Ambient    : {:#018x} - {:s}".format(caps["cap_amb"], msg))
                 if self.args.verbose:
                     self.print_cap_details("cap_amb", caps["cap_amb"])
@@ -23231,7 +23225,7 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
                 if self.args.verbose:
                     self.print_cap_details("cap_eff", caps["cap_eff"])
             if "cap_bnd" in caps:
-                msg = "Capability set that limits the capabilities set that can be acquired"
+                msg = "Capability set that limits the capabilities that can be acquired"
                 self.out.append("Bounding   : {:#018x} - {:s}".format(caps["cap_bnd"], msg))
                 if self.args.verbose:
                     self.print_cap_details("cap_bnd", caps["cap_bnd"])
@@ -23248,8 +23242,12 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify("File capability set [{:s}]".format(filepath)))
         try:
             raw_caps = os.getxattr(filepath, "security.capability")
-        except OSError:
-            self.err_add_out("No data available")
+        except OSError as e:
+            import errno
+            if e.errno == errno.ENODATA:
+                self.out.append("No file capabilities")
+            else:
+                self.err_add_out("Failed to read capabilities from {:s}: {:s}".format(filepath, e.strerror))
             return
 
         caps = {}
@@ -23268,19 +23266,19 @@ class CapabilityCommand(GenericCommand, BufferingOutput):
             cap_inh = (cap_inh_high << 32) | cap_inh_low
             caps["rootid"] = rootid
         else:
-            self.err_add_out("Invalid magic values: {:#x}".format(magic))
+            self.err_add_out("Invalid magic value: {:#x}".format(magic))
             return
         caps["cap_prm"] = cap_prm
         caps["cap_inh"] = cap_inh
 
         if "magic" in caps:
-            msg = "Magic number: ver1: 0x01000000, ver2:0x02000000, ver3:0x03000000"
+            msg = "Magic number: ver1: 0x01000000, ver2: 0x02000000, ver3: 0x03000000"
             self.out.append("Magic      : {:#010x} - {:s}".format(caps["magic"], msg))
         if "cap_eff" in caps:
             msg = "If 1, new cap_prm are added to new cap_eff after execve(2)"
             self.out.append("Effective  : {:#03x} - {:s}".format(caps["cap_eff"], msg))
         if "cap_prm" in caps:
-            msg = "Capability set that permitted to the thread, regardless of the thread's cap_inh"
+            msg = "Capability set that is permitted to the thread, regardless of the thread's cap_inh"
             self.out.append("Permitted  : {:#018x} - {:s}".format(caps["cap_prm"], msg))
             if self.args.verbose:
                 self.print_cap_details("cap_prm", caps["cap_prm"])
@@ -23418,6 +23416,9 @@ class SmartMemoryDumpCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if args.max_region_size < 0:
+            err("Maximum region size must not be negative")
+            return
         for name in ("prefix", "suffix"):
             value = getattr(args, name)
             if os.path.sep in value or "\0" in value:
