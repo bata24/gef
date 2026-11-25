@@ -12202,7 +12202,14 @@ class XTENSA(Architecture):
     infloop_insn = b"\x06\xff\xff" # j self
     trap_insn = None
     ret_insn = b"\x1d\xf0" # retw.n
-    syscall_insn = b"\x00\x50\x00" # syscall
+
+    @property
+    def syscall_insn(self):
+        # The users reverse the bytes for big endian, but the fields of big endian are placed in the mirrored
+        # positions instead. syscall is `00 05 00` (__XTENSA_EB__ in arch/xtensa/kernel/signal.c).
+        if Endian.is_big_endian():
+            return b"\x00\x05\x00" # syscall
+        return b"\x00\x50\x00" # syscall
 
     def is_syscall(self, insn):
         return insn.mnemonic in ["syscall"]
@@ -13324,6 +13331,9 @@ def write_memory(addr, data):
         # 3. heuristic addr search and try use it
         if is_qemu_user(): # not Intel Pin
             inner_section = ProcessMap.lookup(addr).section
+            if inner_section is None:
+                # the address is not mapped
+                raise gdb.MemoryError("Memory write error for qemu-user or Intel Pin")
             target_path = inner_section.path
 
             outer_maps = ProcessMap.get_process_maps(outer=True)
@@ -16661,6 +16671,21 @@ class ProcessMap:
                 if name in sect.path and sect.permission.value & perm_mask:
                     return sect
         return None
+
+    @staticmethod
+    def is_target_region(name, path):
+        """Return whether the region path matches the name given by the user (e.g., heap, libc or a full path).
+        None matches any region."""
+        if name is None:
+            return True
+        path = re.sub(r"(<[^<>]*>)+$", "", path) # e.g., `[stack]<tls-th1>` and `<stack-th2>` on x86
+        if path == name or path == "[{:s}]".format(name):
+            return True
+        # `libc` is libc.so.6 or libc-2.31.so, but not libcrypto.so.3
+        basename = os.path.basename(path)
+        if basename == name:
+            return True
+        return basename.startswith((name + ".so", name + "-"))
 
     @staticmethod
     @Cache.cache_until_next(per_inferior=True)
@@ -24226,18 +24251,6 @@ class ScanSectionCommand(GenericCommand):
                 return None
             return start, end
 
-        def is_target(name, path):
-            if name is None:
-                return True
-            path = re.sub(r"(<[^<>]*>)+$", "", path) # e.g., `[stack]<tls-th1>` and `<stack-th2>` on x86
-            if path == name or path == "[{:s}]".format(name):
-                return True
-            # `libc` is libc.so.6 or libc-2.31.so, but not libcrypto.so.3
-            basename = os.path.basename(path)
-            if basename == name:
-                return True
-            return basename.startswith((name + ".so", name + "-"))
-
         needle_sections = []
         haystack_sections = []
         width = current_arch.ptrsize
@@ -24260,10 +24273,10 @@ class ScanSectionCommand(GenericCommand):
 
         # ptrace reads PROT_NONE reservations too, but scanning their zeros is very slow
         for sect in ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True):
-            if sect.is_readable() and is_target(haystack, sect.path):
+            if sect.is_readable() and ProcessMap.is_target_region(haystack, sect.path):
                 haystack_sections.append((sect.page_start, sect.page_end, os.path.basename(sect.path)))
         for sect in ProcessMap.get_process_maps():
-            if is_target(needle, sect.path):
+            if ProcessMap.is_target_region(needle, sect.path):
                 needle_sections.append((sect.page_start, sect.page_end))
 
         if not haystack_sections:
@@ -24363,7 +24376,7 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
     parser.add_argument("size", metavar="SIZE", nargs="?",
                         help="search range size. valid only when a start address is specified.")
     parser.add_argument("-b", "--nb-insns-before", type=AddressUtil.parse_address, default=0,
-                        help="the number of previous lines when print syscall instruction.")
+                        help="the number of previous instructions when printing syscall instruction.")
     parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -24371,10 +24384,15 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
 
     _example_ = "\n".join([
         "{0:s} libc                   # search syscall from libc .text",
-        "{0:s} binary                 # 'binary' means the area executable itself (usermode only)",
+        "{0:s} binary                 # 'binary' means the area of the executable itself",
         "{0:s} 0x400000-0x404000      # search syscall from specific range",
         "{0:s} 0x400000 0x4000        # another valid format",
     ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "x86 searches `int 0x80`, `syscall` and `sysenter`, ARM32 searches both ARM and Thumb `svc #0`,",
+        "and SH4 searches `trapa #0x10`-`#0x1f`.",
+    ])
 
     def print_section(self, section):
         if isinstance(section, Address):
@@ -24392,9 +24410,18 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         return
 
     def print_loc(self, loc):
-        if current_arch.arch == "MIPS" and loc % 4:
-            return
         if not is_arm32():
+            # a match that is not at an instruction boundary cannot be executed
+            if current_arch.instruction_length:
+                alignment = current_arch.instruction_length
+            elif is_s390x() or is_riscv() or is_m68k() or is_csky() or is_cris():
+                alignment = 2
+            elif is_arc32() or is_arc64() or is_arm32_cortex_m():
+                alignment = 2
+            else:
+                alignment = 1 # x86 and Xtensa
+            if loc % alignment:
+                return
             self.print_loc_by_mode(loc)
             return
         mode = self.syscall_mode
@@ -24425,7 +24452,8 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                 else:
                     kwargs["instruction_length"] = 4
             a = Disasm.gdb_get_nth_previous_instruction_address(loc, self.args.nb_insns_before, **kwargs)
-            if a is not None:
+            # a fixed-length arch returns the address without reading it, so it may be unmapped
+            if a is not None and read_memory(a, loc - a, safe=True) is not None:
                 loc = a
                 nb_lines += self.args.nb_insns_before
 
@@ -24445,6 +24473,14 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
         step = 0x400 * get_pagesize()
         locations = []
 
+        if is_sh4() and Endian.is_big_endian():
+            # glibc uses `trapa #0x10`-`#0x16`, and the kernel accepts `trapa #0x10`-`#0x1f` as a syscall
+            regex = b"\xc3[\x10-\x1f]"
+        elif is_sh4():
+            regex = b"[\x10-\x1f]\xc3"
+        else:
+            regex = re.escape(pattern)
+
         old_mem = b""
         skipped = False
         reader = functools.partial(read_memory, safe=True)
@@ -24461,38 +24497,48 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             # cases where step boundaries are crossed
             if old_mem and mem:
                 ofs = len(pattern) - 1
+                # the previous chunk may be shorter than ofs (e.g., the first page of a range)
+                tmp_base = chunk_addr - len(old_mem[-ofs:])
                 tmp = old_mem[-ofs:] + mem[:ofs]
-                for match in re.finditer(re.escape(pattern), tmp):
-                    locations.append(chunk_addr - ofs + match.start())
+                for match in re.finditer(regex, tmp):
+                    locations.append(tmp_base + match.start())
 
             # normal case
-            for match in re.finditer(re.escape(pattern), mem):
+            for match in re.finditer(regex, mem):
                 start = chunk_addr + match.start()
                 locations.append(start)
 
             old_mem = mem
         return locations
 
-    def process_by_address(self, pattern, start_address, end_address):
-        info("Searching for {:s} in {:#x}-{:#x}".format(
-            Color.yellowify(pattern), start_address, end_address,
+    def process_by_address(self, pattern, title, start_address, end_address):
+        self.info_add_out("Searching for {:s} in {:#x}-{:#x}".format(
+            Color.yellowify(title), start_address, end_address,
         ))
         ret = self.search_pattern_by_address(pattern, start_address, end_address)
         for loc in ret:
             self.print_loc(loc)
         return
 
-    def process_by_section(self, pattern, section_name=None):
+    def process_by_section(self, pattern, title, section_name=None):
         """Search for a pattern within selected (or whole) memory."""
 
         if section_name is None:
-            self.info_add_out("Searching for {:s} in {:s}".format(Color.yellowify(pattern), "whole memory"))
+            self.info_add_out("Searching for {:s} in {:s}".format(Color.yellowify(title), "whole memory"))
         else:
-            self.info_add_out("Searching for {:s} in {:s}".format(Color.yellowify(pattern), section_name))
+            self.info_add_out("Searching for {:s} in {:s}".format(Color.yellowify(title), section_name))
 
         maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
         for section in maps_generator:
+            # permission filter
+            if not section.is_executable():
+                continue
+
+            # specific section name filter
+            if not ProcessMap.is_target_region(section_name, section.path):
+                continue
+
             # too big
             if self.args.max_region_size != 0:
                 if section.size > self.args.max_region_size:
@@ -24503,14 +24549,6 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                         )
                     )
                     continue
-
-            # permission filter
-            if not section.is_executable():
-                continue
-
-            # specific section name filter
-            if section_name and section_name not in section.path:
-                continue
 
             # search
             self.print_section(section)
@@ -24535,6 +24573,10 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             err("Unsupported arch")
             return
 
+        if args.max_region_size and args.max_region_size < 0x1000:
+            err("Invalid max-region-size")
+            return
+
         patterns = [(current_arch.syscall_insn, None)]
         if is_arm32():
             patterns = [
@@ -24549,15 +24591,22 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
             self.syscall_mode = mode
             if Endian.is_big_endian():
                 pattern = pattern[::-1]
+            # the bytes in memory order
+            title = pattern.hex()
+            if is_sh4():
+                title = title.replace("1f", "[10-1f]") # trapa #0x10-#0x1f, see search_pattern_by_address
             if args.section and args.size:
                 # the case `find-syscall 0x400000 0x4000`
                 try:
-                    start = int(args.section, 16)
-                    end = start + int(args.size, 16)
-                except ValueError:
+                    start = AddressUtil.parse_address(args.section)
+                    end = start + AddressUtil.parse_address(args.size)
+                except (gdb.error, ValueError):
                     self.usage()
                     return
-                self.process_by_address(pattern, start, end)
+                if end < start:
+                    err("Invalid range")
+                    return
+                self.process_by_address(pattern, title, start, end)
 
             elif args.section and re.match(r"(0x)?[0-9a-fA-F]+-(0x)?[0-9a-fA-F]+", args.section):
                 # the case `find-syscall 0x400000-0x404000` etc.
@@ -24566,7 +24615,15 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                 except ValueError:
                     self.usage()
                     return
-                self.process_by_address(pattern, start, end)
+                if end < start:
+                    err("Invalid range")
+                    return
+                self.process_by_address(pattern, title, start, end)
+
+            elif args.section and args.section.lower().startswith(("0x", "$")):
+                # the case `find-syscall 0x400000` lacks SIZE
+                self.usage()
+                return
 
             elif args.section:
                 # search from specific section
@@ -24576,11 +24633,11 @@ class FindSyscallCommand(GenericCommand, BufferingOutput):
                         return
                 else:
                     section_name = args.section
-                self.process_by_section(pattern, section_name)
+                self.process_by_section(pattern, title, section_name)
 
             else:
                 # search whole memory
-                self.process_by_section(pattern)
+                self.process_by_section(pattern, title)
 
         self.print_output(check_terminal_size=True)
         return
@@ -24613,19 +24670,19 @@ class SearchPatternCommand(GenericCommand):
     parser.add_argument("-l", "--limit", type=AddressUtil.parse_address,
                         help="the limit of the search result.")
     parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
-                        help="maximum search region size. (default: %(default)#x; 0: infinity)")
+                        help="maximum search region size, also for --hex-regex ranges. (default: %(default)#x; 0: infinity)")
     parser.add_argument("--phys", action="store_true",
-                        help="treat START_ADDR as a physical address (available in qemu-system).")
+                        help="treat START_ADDR as a physical address (available in qemu-system, vmware and kgdb).")
     group2 = parser.add_mutually_exclusive_group()
     group2.add_argument("-k", "--kernel-only", action="store_true",
                         help="search from kernel area (available in qemu-system).")
     group2.add_argument("-u", "--user-only", action="store_true",
                         help="search from user area (available in qemu-system).")
     parser.add_argument("-v", "--verbose", action="store_true",
-                        help="shows the section currently being searched.")
+                        help="show the section currently being searched.")
     parser.add_argument("-q", "--quiet", action="store_true", help="suppress warnings.")
     parser.add_argument("-Q", "--quiet-region", action="store_true", help="suppress region information.")
-    parser.add_argument("-S", "--quiet-symbol", action="store_true", help="not shown even if symbol exists.")
+    parser.add_argument("-S", "--quiet-symbol", action="store_true", help="do not show symbols even if they exist.")
     parser.add_argument("pattern", metavar="PATTERN",
                         help='search target value. "double-escaped string" or 0xXXXXXXXX style.')
     parser.add_argument("section", metavar="SECTION_OR_START_ADDR", nargs="?",
@@ -24642,7 +24699,7 @@ class SearchPatternCommand(GenericCommand):
         "{0:s} 0x44434241                  # search for 0x44434241 (='ABCD') from whole memory",
         "{0:s} 0x555555554000 stack        # search for 0x555555554000 (6byte) from stack",
         "{0:s} 0x0000555555554000 stack    # search for 0x0000555555554000 (8byte) from stack",
-        "{0:s} AAAA binary                 # 'binary' means the area executable itself (usermode only)",
+        "{0:s} AAAA binary                 # 'binary' means the area of the executable itself (usermode only)",
         "{0:s} AAAA 0x400000-0x404000      # search for 'AAAA' from specific range",
         "{0:s} AAAA 0x400000 0x4000        # another valid format",
         "{0:s} AAAA heap --aligned 16      # search for 'AAAA' with 16-byte alignment",
@@ -24669,8 +24726,9 @@ class SearchPatternCommand(GenericCommand):
         return align(addr, self.args.aligned or 1)
 
     def check_limit(self):
+        # a match over the limit is counted to tell that more matches exist, but it is not shown
         if self.args.limit is not None:
-            if self.args.limit <= self.found_count:
+            if self.args.limit < self.found_count:
                 return True
         return False
 
@@ -24705,17 +24763,20 @@ class SearchPatternCommand(GenericCommand):
                 mem = read_physmem(chunk_addr, read_size)
             else:
                 mem = read_memory(chunk_addr, read_size)
-        except (gdb.MemoryError, ValueError, OverflowError):
+        except (gdb.MemoryError, MemoryError, ValueError, OverflowError):
+            # MemoryError is raised by gdb when it fails to allocate the buffer for a huge range of --hex-regex
             return None
         return mem
 
     def find_matches(self, pattern, mem, pos, base, locations):
         # A rejected match must not consume the overlapping candidates, so the search restarts after it.
         # For hex regex, a match must start at an even position since 2 characters make a byte.
-        regex = re.compile(pattern)
         if self.args.hex_regex:
+            # lowering the pattern changes the meaning of \D, \W, \S and \B
+            regex = re.compile(pattern, re.IGNORECASE)
             unit = 2
         else:
+            regex = re.compile(pattern)
             unit = 1
         while pos <= len(mem):
             for match in regex.finditer(mem, pos):
@@ -24737,7 +24798,8 @@ class SearchPatternCommand(GenericCommand):
             return []
 
         if isinstance(pattern, str):
-            pattern = String.str2bytes(pattern)
+            # create_patterns checks the pattern encoded as UTF-8, e.g., `café` is not Latin-1
+            pattern = pattern.encode("utf-8")
 
         ofs = 0
         if not self.args.hex_regex:
@@ -24774,6 +24836,9 @@ class SearchPatternCommand(GenericCommand):
                 continue
             skipped = False
 
+            # the converted mem of --hex-regex has 2 characters per byte
+            chunk_end = chunk_addr + len(mem)
+
             # for regex
             if self.args.hex_regex:
                 mem = mem.hex().encode()
@@ -24797,11 +24862,13 @@ class SearchPatternCommand(GenericCommand):
                        -ofs     ofs
                 """
                 tmp_mem = old_mem[-ofs:] + mem[:ofs]
-                pos = max(last_end - (chunk_addr - ofs), 0)
-                m = next(self.find_matches(pattern, tmp_mem, pos, chunk_addr - ofs, locations), None)
+                # the previous chunk may be shorter than ofs (e.g., the first page of a range)
+                tmp_base = chunk_addr - len(old_mem[-ofs:])
+                pos = max(last_end - tmp_base, 0)
+                m = next(self.find_matches(pattern, tmp_mem, pos, tmp_base, locations), None)
                 if m:
                     r = m.start()
-                    last_end = chunk_addr - ofs + m.end()
+                    last_end = tmp_base + m.end()
                 else:
                     r = -1
                 if r >= 0:
@@ -24809,12 +24876,12 @@ class SearchPatternCommand(GenericCommand):
                     data = (old_mem[-ofs:] + mem[:ofs + 0x10])[r:][:0x10]
 
                     # add
-                    locations.append((chunk_addr - ofs + r, data))
+                    locations.append((tmp_base + r, data))
                     self.found_count += 1
 
                     # loop check
                     if self.check_limit():
-                        info("Limit reached, no more matches shown")
+                        locations.pop()
                         return locations
                 # fall through
 
@@ -24837,7 +24904,7 @@ class SearchPatternCommand(GenericCommand):
                 else:
                     data = mem[start_pos:start_pos + 0x10]
                 if len(data) < 0x10:
-                    lack = self.read_data(chunk_addr + len(mem), 0x10 - len(data), end_address)
+                    lack = self.read_data(chunk_end, 0x10 - len(data), end_address)
                     if lack:
                         data += lack
 
@@ -24847,7 +24914,7 @@ class SearchPatternCommand(GenericCommand):
 
                 # loop check
                 if self.check_limit():
-                    info("Limit reached, no more matches shown")
+                    locations.pop()
                     return locations
 
             old_mem = mem
@@ -24859,6 +24926,15 @@ class SearchPatternCommand(GenericCommand):
             extra = " (phys)"
         else:
             extra = ""
+
+        # --hex-regex reads the whole range at once
+        if self.args.hex_regex and self.args.max_region_size != 0:
+            if end - start > self.args.max_region_size:
+                err("{:#x}-{:#x} is skipped due to size ({:#x}) > MAX_REGION_SIZE ({:#x})".format(
+                    start, end, end - start, self.args.max_region_size,
+                ))
+                return
+
         self.found_count = 0
         for pattern in patterns:
             if not pattern:
@@ -24873,39 +24949,45 @@ class SearchPatternCommand(GenericCommand):
             ret = self.search_pattern_by_address(pattern, start, end)
             for found_loc in ret:
                 self.print_loc(found_loc)
+
+        if self.check_limit():
+            info("Limit reached, no more matches shown")
         return
 
     def search_pattern_by_section(self, pattern, section_name=None):
         """Search for a pattern within selected (or whole) memory."""
         if is_qemu_system():
-            entries = AddrMap.get_maps()
-            maps_generator = (
-                entry.to_section() for entry in entries
-                if is_valid_addr(entry.vstart) and (not is_x86() or entry.accessed)
-            )
+            maps_generator = []
+            for entry in AddrMap.get_maps():
+                # reading MMIO has side effects, and qemu-system-ppc64 (pseries) crashes on some of them
+                if "NON-IDEMPOTENT" in entry.flags:
+                    continue
+                if not is_valid_addr(entry.vstart):
+                    continue
+                if is_x86() and not entry.accessed:
+                    continue
+                # user or kernel memory filter
+                # use the page table flags since the address cannot tell it (e.g., s390x and 32-bit VMSPLIT_3G)
+                if self.args.user_only and not entry.is_userland():
+                    continue
+                if self.args.kernel_only and not entry.is_kernel():
+                    continue
+                section = entry.to_section()
+                # AddrMap.Entry.permission is the last one, which is `KERN/---` of a user page (e.g., PPC64 and s390x)
+                user_perms = re.findall(r"USER/([R-][W-][X-])", entry.flags)
+                if entry.is_userland() and user_perms:
+                    section.permission = Permission.from_process_maps(user_perms[0].lower())
+                # merge the virtually consecutive pages, otherwise a match across the pages is not found
+                if maps_generator:
+                    last = maps_generator[-1]
+                    if last.page_end == section.page_start and last.permission == section.permission:
+                        last.page_end = section.page_end
+                        continue
+                maps_generator.append(section)
         else:
             maps_generator = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
 
         for section in maps_generator:
-            # user or kernel memory address filter
-            if self.args.user_only:
-                if KernelAddressHeuristicFinderUtil.is_kernel_space(section.page_start):
-                    continue
-            if self.args.kernel_only:
-                if not KernelAddressHeuristicFinderUtil.is_kernel_space(section.page_start):
-                    continue
-
-            # too big
-            if self.args.max_region_size != 0:
-                if section.size > self.args.max_region_size:
-                    self.quiet_info(
-                        "{:#x}-{:#x} is skipped due to size ({:#x}) > MAX_REGION_SIZE ({:#x})".format(
-                            section.page_start, section.page_end,
-                            section.size, self.args.max_region_size,
-                        )
-                    )
-                    continue
-
             # permission filter
             if not section.is_readable():
                 continue
@@ -24919,8 +25001,19 @@ class SearchPatternCommand(GenericCommand):
                 continue
 
             # specific section name filter
-            if section_name and section_name not in section.path:
+            if not ProcessMap.is_target_region(section_name, section.path):
                 continue
+
+            # too big
+            if self.args.max_region_size != 0:
+                if section.size > self.args.max_region_size:
+                    self.quiet_info(
+                        "{:#x}-{:#x} is skipped due to size ({:#x}) > MAX_REGION_SIZE ({:#x})".format(
+                            section.page_start, section.page_end,
+                            section.size, self.args.max_region_size,
+                        )
+                    )
+                    continue
 
             # verbose: always print section before search
             if self.args.verbose:
@@ -24941,7 +25034,6 @@ class SearchPatternCommand(GenericCommand):
                 err("The process is dead")
                 break
             if self.check_limit():
-                info("Limit reached, no more matches shown")
                 break
         return
 
@@ -24967,6 +25059,9 @@ class SearchPatternCommand(GenericCommand):
                 Color.yellowify(pattern), area, extra,
             ))
             self.search_pattern_by_section(pattern, section_name)
+
+        if self.check_limit():
+            info("Limit reached, no more matches shown")
         return
 
     def create_patterns(self):
@@ -24975,7 +25070,7 @@ class SearchPatternCommand(GenericCommand):
             return None
 
         if self.args.hex_regex:
-            pattern = self.args.pattern.lower().replace(" ", "")
+            pattern = self.args.pattern.replace(" ", "")
             if not pattern:
                 err("Search pattern must not be empty")
                 return None
@@ -24986,6 +25081,11 @@ class SearchPatternCommand(GenericCommand):
                 return None
             return (pattern,)
 
+        # an odd number of digits is padded, e.g., 0x123 is 0x0123
+        value = self.args.pattern
+        if String.is_hex(value + "0"):
+            value = "0x0" + value[2:]
+
         # create normal pattern
         if self.args.hex: # "41414141" -> "\x41\x41\x41\x41"
             pattern = re.sub(r"[^0-9a-fA-F]", "", self.args.pattern)
@@ -24993,11 +25093,11 @@ class SearchPatternCommand(GenericCommand):
                 err("Hex pattern length is odd")
                 return None
             pattern = "".join(["\\x" + x for x in slicer(pattern, 2)])
-        elif String.is_hex(self.args.pattern): # "0x41414141" -> "\x41\x41\x41\x41"
+        elif String.is_hex(value): # "0x41414141" -> "\x41\x41\x41\x41"
             if self.args.big or Endian.is_big_endian():
-                pattern = "".join(["\\x" + x for x in slicer(self.args.pattern[2:], 2)])
+                pattern = "".join(["\\x" + x for x in slicer(value[2:], 2)])
             else:
-                pattern = "".join(["\\x" + x for x in slicer(self.args.pattern[2:], 2)[::-1]])
+                pattern = "".join(["\\x" + x for x in slicer(value[2:], 2)[::-1]])
         else:
             pattern = self.args.pattern
 
@@ -25025,6 +25125,10 @@ class SearchPatternCommand(GenericCommand):
             if not is_qemu_system():
                 err("Unsupported in this gdb mode (qemu-system only)")
                 return
+        if args.phys:
+            if not is_qemu_system() and not is_vmware() and not is_kgdb():
+                err("Unsupported in this gdb mode (qemu-system, vmware and kgdb only)")
+                return
 
         # check permission
         if args.phys:
@@ -25034,7 +25138,7 @@ class SearchPatternCommand(GenericCommand):
                 err("Invalid permission length")
                 return
             if args.perm[0] not in "rR":
-                err("Permission needs to start by `r`")
+                err("Permission needs to start with `r`")
                 return
             if args.perm[1] not in "wW-_?" or args.perm[2] not in "xX-_?":
                 err("Invalid permission")
@@ -25062,9 +25166,9 @@ class SearchPatternCommand(GenericCommand):
         if args.section and args.size:
             # the case `find AAAA 0x400000 0x4000`
             try:
-                start = int(args.section, 16)
-                end = start + int(args.size, 16)
-            except ValueError:
+                start = AddressUtil.parse_address(args.section)
+                end = start + AddressUtil.parse_address(args.size)
+            except (gdb.error, ValueError):
                 self.usage()
                 return
             if end < start:
@@ -25083,6 +25187,11 @@ class SearchPatternCommand(GenericCommand):
                 err("Invalid range")
                 return
             self.process_by_address(patterns, start, end)
+
+        elif args.section and args.section.lower().startswith(("0x", "$")):
+            # the case `find AAAA 0x400000` lacks SIZE
+            self.usage()
+            return
 
         else:
             if args.phys:
@@ -25152,17 +25261,30 @@ class ValueScanCommand(GenericCommand):
 
     @staticmethod
     def get_history():
-        # do not use the candidates of another process
+        # do not use the candidates of another process, but keep them for another inferior
         if ValueScanCommand.scan_context != PatchCommand.history_context():
-            ValueScanCommand.scan_history = []
+            return []
         return ValueScanCommand.scan_history
 
     @staticmethod
     def pack_value(fmt, value):
         try:
             if fmt[1] in "fd":
-                return struct.pack(fmt, float(value))
-            value = AddressUtil.parse_address(value)
+                try:
+                    value = float(value)
+                except ValueError:
+                    value = float(gdb.parse_and_eval(value)) # e.g., a variable
+                return struct.pack(fmt, value)
+            try:
+                value = int(value, 0)
+            except ValueError:
+                # AddressUtil.parse_address truncates the value to an unsigned pointer
+                value = gdb.parse_and_eval(value)
+                if value.type.strip_typedefs().code == gdb.TYPE_CODE_FLT:
+                    # do not truncate 100.7 to 100
+                    err("Invalid value")
+                    return None
+                value = int(value)
             bits = struct.calcsize(fmt) * 8
             if not (-(1 << (bits - 1)) <= value < (1 << bits)):
                 raise ValueError
@@ -25216,7 +25338,7 @@ class ValueScanNewCommand(ValueScanCommand):
     parser.add_argument("--signed", action="store_true",
                         help="treat the integer as signed for increased, decreased and display.")
     parser.add_argument("-a", "--aligned", type=AddressUtil.parse_address,
-                        help="alignment unit. (default: the size of the type)")
+                        help="alignment unit. (default: the ABI alignment of the type)")
     parser.add_argument("-s", "--max-region-size", type=AddressUtil.parse_address, default=0x1000_0000,
                         help="maximum search region size. (default: %(default)#x; 0: infinity)")
     parser.add_argument("value", metavar="VALUE", help="the value to search for.")
@@ -25227,6 +25349,7 @@ class ValueScanNewCommand(ValueScanCommand):
         "{0:s} -t byte -1       # search for the byte value 0xff",
         "{0:s} -t float 1.5     # search for the float value 1.5",
         "{0:s} -a 1 0x1234      # search for the dword value 0x1234 at any alignment",
+        "{0:s} -t word -- -0x10 # `--` is needed for a negative value other than decimal",
     ]).format(_cmdline_)
 
     def __init__(self):
@@ -25235,7 +25358,7 @@ class ValueScanNewCommand(ValueScanCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "core"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         codes = {"byte": "B", "word": "H", "dword": "I", "qword": "Q", "float": "f", "double": "d"}
@@ -25248,12 +25371,22 @@ class ValueScanNewCommand(ValueScanCommand):
         fmt = Endian.arrow_str() + code
         size = struct.calcsize(fmt)
 
-        if args.aligned is None:
-            aligned = size
-        else:
+        # the ABI may align a type to less than its size (offsetof in a struct by each cross compiler)
+        if args.aligned is not None:
             aligned = args.aligned
+        elif is_cris():
+            aligned = 1 # all types
+        elif is_m68k():
+            aligned = min(size, 2) # int, long long, float and double
+        elif is_x86_32() or is_arc32() or is_sh4() or is_or1k() or is_nios2() or is_microblaze() or is_csky():
+            aligned = min(size, 4) # long long and double
+        else:
+            aligned = size
         if aligned <= 0:
             err("Invalid alignment")
+            return
+        if args.max_region_size and args.max_region_size < 0x1000:
+            err("Invalid max-region-size")
             return
 
         target = ValueScanCommand.pack_value(fmt, args.value)
@@ -25265,11 +25398,13 @@ class ValueScanNewCommand(ValueScanCommand):
         addrs = array.array("Q")
         step = 0x400 * get_pagesize()
         reader = functools.partial(read_memory, safe=True)
+        found_writable = False
         for section in ProcessMap.get_process_maps_exclude_special_regions():
             if not section.is_readable():
                 continue
             if not section.is_writable():
                 continue
+            found_writable = True
 
             # too big
             if args.max_region_size != 0:
@@ -25298,10 +25433,14 @@ class ValueScanNewCommand(ValueScanCommand):
                     pos = mem.find(target, pos + aligned)
                 tail = mem[len(mem) - size + 1:]
 
+        # e.g., `info proc mappings` of rr on GDB 11 and earlier has no permissions
+        if not found_writable:
+            warn("Could not find a writable region")
+
         ValueScanCommand.scan_context = PatchCommand.history_context()
         ValueScanCommand.scan_format = fmt
         ValueScanCommand.scan_history = [(addrs, target * len(addrs))]
-        info("Found {:d} candidates".format(len(addrs)))
+        info("Found {:d} candidate(s)".format(len(addrs)))
         return
 
 
@@ -25323,6 +25462,7 @@ class ValueScanNextCommand(ValueScanCommand):
         "{0:s} unchanged    # keep only the candidates not changed since the last scan",
         "{0:s} increased    # keep only the candidates that increased since the last scan",
         "{0:s} decreased    # keep only the candidates that decreased since the last scan",
+        "{0:s} -- -0x10     # `--` is needed for a negative value other than decimal",
     ]).format(_cmdline_)
 
     def __init__(self):
@@ -25331,7 +25471,7 @@ class ValueScanNextCommand(ValueScanCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "core"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         history = ValueScanCommand.get_history()
@@ -25372,7 +25512,7 @@ class ValueScanNextCommand(ValueScanCommand):
                 values += cur
 
         history.append((addrs, values))
-        info("{:d} candidates remain".format(len(addrs)))
+        info("{:d} candidate(s) remain".format(len(addrs)))
         return
 
 
@@ -25401,7 +25541,7 @@ class ValueScanUndoCommand(ValueScanCommand):
             return
         history.pop()
         addrs, _ = history[-1]
-        info("Restored {:d} candidates".format(len(addrs)))
+        info("Restored {:d} candidate(s)".format(len(addrs)))
         return
 
 
@@ -25455,7 +25595,7 @@ class ValueScanListCommand(ValueScanCommand, BufferingOutput):
             spec = "{:#x}"
 
         self.out = []
-        self.info_add_out("{:d} candidates".format(len(addrs)))
+        self.info_add_out("{:d} candidate(s)".format(len(addrs)))
         for i, addr in enumerate(shown):
             if i in current:
                 cur = spec.format(struct.unpack(fmt, current[i])[0])
