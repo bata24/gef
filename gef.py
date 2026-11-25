@@ -15188,8 +15188,10 @@ def get_register(regname, use_mbed_exec=False, use_monitor=False, full_width=Fal
         # Note that attempting to read a non-existent register will jump to an Undefined exception
         try:
             r = gdb.execute("read-system-register-for-qemu-arm {:s}".format(regname), to_string=True)
-            if r:
-                return int(r.split("=")[1], 16)
+            # the output of a failure (e.g., "Unknown register name") has no value
+            match = re.search(re.escape(regname.lstrip("$").upper()) + r"\s*=\s*(0x[0-9a-fA-F]+)", Color.remove_color(r))
+            if match:
+                return int(match.group(1), 16)
         except gdb.error:
             pass
 
@@ -17287,18 +17289,31 @@ class UnicornKeystoneCapstone:
 
         extra_regs = []
         if add_sse:
-            if is_x86():
+            if is_x86_64():
                 extra_regs = ["$xmm{:d}".format(i) for i in range(16)]
+            elif is_x86_32() or is_x86_16():
+                # xmm8-15 exist only in 64-bit mode
+                extra_regs = ["$xmm{:d}".format(i) for i in range(8)]
         if is_arm64():
             extra_regs = ["$tpidr_el0"] # for tls
+            if add_sse:
+                extra_regs += ["$q{:d}".format(i) for i in range(32)]
         if is_arm32():
             extra_regs = ["$c13_c0_3"] # for tls
+            if add_sse:
+                extra_regs += ["$d{:d}".format(i) for i in range(32)]
 
         for reg in current_arch.all_registers + extra_regs:
             if arch == "ppc" and reg.startswith("$r"):
                 regname = "UC_{:s}_REG_{:s}".format(arch.upper(), reg.lstrip("$r").upper())
             elif arch == "arm64" and reg == "$cpsr":
                 regname = "UC_ARM64_REG_PSTATE"
+            elif arch == "m68k" and reg in ("$fp", "$sp", "$ps"):
+                # unicorn names them a6, a7 and sr
+                regname = "UC_M68K_REG_{:s}".format(current_arch.alias_registers[reg].lstrip("$").upper())
+            elif arch == "sparc" and reg == "$y":
+                # unicorn does not implement it (UC_ERR_ARG in 64-bit mode, a no-op with a warning in 32-bit mode)
+                continue
             else:
                 regname = "UC_{:s}_REG_{:s}".format(arch.upper(), reg.lstrip("$").upper())
             try:
@@ -27348,20 +27363,19 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
                 "insn": [[f"$x{i}", bytes([0x00 + i]) + b"\x41\x38\xd5"] for i in range(30)], # mrs x0, SP_EL0
             },
         },
+        # sscratch is always 0 in the kernel, and the trap of KGDB itself overwrites sepc, scause and stval.
+        # The values of the stopped context are $pc, $scause and $stval in the target description.
         "riscv": {
             name: {
                 "sym": symbols,
+                # the trap that stops the step uses sp, gp and tp, so they must not be clobbered
                 "insn": [
                     [RISCV.all_registers[rd], ((csr << 20) | (2 << 12) | (rd << 7) | 0x73).to_bytes(4, "little")]
-                    for rd in range(1, 32)
+                    for rd in range(1, 32) if rd not in (2, 3, 4)
                 ],
             }
             for name, csr, symbols in (
                 ("sstatus", 0x100, ["do_idle", "parse_args", "__handle_irq_event_percpu"]),
-                ("sscratch", 0x140, ["handle_exception"]),
-                ("sepc", 0x141, ["handle_exception"]),
-                ("scause", 0x142, ["handle_exception"]),
-                ("stval", 0x143, ["handle_exception"]),
                 ("satp", 0x180, ["suspend_save_csrs", "cpu_suspend", "do_page_fault"]),
                 ("stvec", 0x105, ["suspend_save_csrs", "cpu_suspend"]),
                 ("sie", 0x104, ["suspend_save_csrs", "cpu_suspend"]), # codespell:ignore
@@ -27482,20 +27496,43 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             # but succeeds with the use of breakpoints.
             use_bp = True
 
+        # KGDB skips the compiled break only on the first resume after it, and the run of the stub spends it.
+        # So the PC reverted to the compiled break must be moved past it, or the next continue stops there again.
+        pc = current_arch.pc
+        if is_arm64():
+            compiled_break = read_memory(pc, 4, safe=True) == b"\x20\x80\x20\xd4" # BRK #0x401
+        elif is_riscv():
+            if is_kdb():
+                address = Symbol.resolve_kdb_address("kgdb_compiled_break")
+            else:
+                address = Ksym.get_addr("kgdb_compiled_break")
+            compiled_break = pc == address
+        else:
+            compiled_break = False
+        resumed = False
+
         # It may fail on the first run, possibly due to gdb cache, but succeed on the second run.
-        for sentinel in (0xdead_beef, 0xbeef_dead):
-            regs[return_register] = sentinel
-            attempts = 0
-            while attempts < 2:
-                attempts += 1
-                ret = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp).exec_code(check_complete=True)
-                if ret is None:
-                    continue
-                if abs(ret["pc"] - stub_address) > 0x10:
-                    return None
-                if ret["reg"][return_register] != sentinel:
-                    return ret["reg"][return_register]
-        return None
+        # e.g., the first run from the compiled break starts at the next instruction of the stub.
+        try:
+            for sentinel in (0xdead_beef, 0xbeef_dead):
+                regs[return_register] = sentinel
+                attempts = 0
+                while attempts < 2:
+                    attempts += 1
+                    exec_asm = ExecAsm(codes, regs=regs, step=1, use_bp=use_bp)
+                    ret = exec_asm.exec_code(check_complete=True)
+                    if exec_asm.stops:
+                        resumed = True
+                    if ret is None:
+                        continue
+                    if abs(ret["pc"] - stub_address) > 0x10:
+                        return None
+                    if ret["reg"][return_register] != sentinel:
+                        return ret["reg"][return_register]
+            return None
+        finally:
+            if compiled_break and resumed:
+                gdb.execute("set $pc = {:#x}".format(pc + 4), to_string=True)
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -27521,8 +27558,11 @@ class ReadSystemRegisterForKgdbCommand(GenericCommand):
             return
 
         ret = self.execute_stub(*ret)
-        if ret is not None:
-            gef_print("{:s} = {:#x}".format(args.reg_name, ret))
+        if ret is None:
+            err("Failed to execute the target stub")
+            return
+
+        gef_print("{:s} = {:#x}".format(args.reg_name, ret))
         return
 
 
@@ -27543,6 +27583,7 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
 
     _note_ = "\n".join([
         "Attempting to read a non-existing register raises an undefined exception.",
+        "So does a register that the current mode cannot access (e.g., PL1 registers when stopped in USR mode).",
         "Context-dependent EL0 timer aliases CNTHPS_*, CNTHV_* and CNTHVS_* are not accepted.",
     ])
 
@@ -28174,6 +28215,9 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
 
     def get_coproc_info(self, target_reg_name):
         target_reg_name = target_reg_name.upper()
+        # N/A is not a name, but the placeholder of the unnamed encodings
+        if target_reg_name == "N/A":
+            return None
         # some names are also aliases of other encodings, so the encoding where the name comes first wins
         for primary_only in [True, False]:
             for k, v in self.AARCH32_COPROC_REGISTERS.items():
@@ -28201,14 +28245,23 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
         if cp_info is None:
             err("Unknown register name")
             return None
-        if reg_name == "DBGDTRTXINT":
-            err("DBGDTRTXint is write-only")
+        # MRC of the same encoding as DBGDTRTXint reads DBGDTRRXint, and that of the others is undefined
+        write_only_registers = (
+            "DBGDTRTXINT", "ICC_EOIR0", "ICV_EOIR0", "ICC_EOIR1", "ICV_EOIR1", "ICC_DIR", "ICV_DIR",
+            "DBGOSLAR", "RAMINDEX", "PLEFF", "PLEPC", "PLERC", "PLEKC",
+        )
+        if reg_name in write_only_registers:
+            err("{:s} is write-only".format(reg_name))
             return None
         if (
-            reg_name in ("NOP", "PMSWINC", "PMOVSSET") or
+            reg_name in ("NOP", "PMSWINC") or
             reg_name.startswith(("ICI", "BPI", "DCI", "DCC", "CP15", "ATS")) or "TLBI" in reg_name
         ):
             err("{:s} has no readable value".format(reg_name))
+            return None
+        # reading it acknowledges the highest priority pending interrupt, which stays active without EOI
+        if reg_name in ("ICC_IAR0", "ICV_IAR0", "ICC_IAR1", "ICV_IAR1"):
+            err("{:s} is not read, since reading it acknowledges an interrupt".format(reg_name))
             return None
         wide = False
         if reg_name in ("TTBR0", "TTBR1"):
@@ -28218,14 +28271,13 @@ class ReadSystemRegisterForQemuArmCommand(GenericCommand):
             wide = bool(ttbcr & (1 << 31))
         codes = [self.get_mrc_code(cp_info, wide=wide)]
 
-        before_pc = current_arch.pc
-        ret = ExecAsm(codes).exec_code()
-        after_pc = ret["reg"]["$pc"]
+        ret = ExecAsm(codes).exec_code(check_complete=True)
 
-        # It jumps to the undefined exception vector when an access is made to a non-existent register.
-        # Even when execution is single-stepped, the PC register values can differ significantly.
-        if abs(after_pc - before_pc) > 0x10:
-            err("Undefined register, it probably crashes the kernel")
+        # It jumps to the undefined exception vector when an access is made to a non-existent register,
+        # or to the one that the current mode cannot access (e.g., PL1 registers from USR mode).
+        # The vector may be near the PC (e.g., stopped at a vector), so see if it stops just after the MRC.
+        if ret is None:
+            err("Undefined register or not accessible from the current mode")
             return None
         value = ret["reg"][current_arch.return_register]
         if wide:
@@ -28278,6 +28330,7 @@ class UnicornEmulator:
                 "instruction limit reached",
                 "loop detected",
                 "node limit reached",
+                "recursion limit reached",
             )
             if reason in warnings:
                 return "yellow"
@@ -28323,7 +28376,7 @@ class UnicornEmulator:
 
             # a call that is not run or fails is skipped with the registers before the call
             if self.error:
-                if self.error == "depth limit reached":
+                if self.error in ("depth limit reached", "recursion limit reached"):
                     tag = "not run"
                 elif self.reason_color(self.error) == "yellow":
                     tag = "stopped"
@@ -28371,6 +28424,10 @@ class UnicornEmulator:
             self.registers = collections.OrderedDict(
                 UnicornKeystoneCapstone.get_unicorn_registers(add_sse=kwargs["add_sse"]),
             )
+            if is_x86_32():
+                # the segment registers are not written (see skip_register), so do not show them as 0
+                for reg in X86.special_registers:
+                    self.registers.pop(reg, None)
             if is_arm64():
                 try:
                     const = self.unicorn.arm64_const
@@ -28388,6 +28445,7 @@ class UnicornEmulator:
             self.pc_reg = next((self.regs[r] for r in ("$pc", "$rip", "$eip", "$ip") if r in self.regs), None)
             if self.pc_reg is None:
                 raise OSError("Unsupported program counter register")
+            self.sp_reg = next((self.regs[r] for r in ("$sp", "$rsp", "$esp") if r in self.regs), None)
             arch, mode = UnicornKeystoneCapstone.get_unicorn_arch()
             self.emu = self.unicorn.Uc(arch, mode)
 
@@ -28418,6 +28476,11 @@ class UnicornEmulator:
             else:
                 self.alias_stride = 0x2000_0000
             self.use_alias = is_64bit() and (is_in_kernel() or is_qemu_system() or is_kgdb() or is_vmware())
+            # the linear address of x86_16 is wider than its pointer
+            if is_x86_16():
+                self.memalign_size = 2.5
+            else:
+                self.memalign_size = None
             self.start_address = kwargs["start_insn"]
             self.fs_base = None
             self.gs_base = None
@@ -28465,7 +28528,8 @@ class UnicornEmulator:
                 fs_base = self.fs_base
                 gs_base = self.gs_base
                 if is_x86_64():
-                    if self.use_alias:
+                    # the userland of qemu-system etc. keeps the TLS in fs
+                    if self.use_alias and is_in_kernel():
                         if fs_base is not None:
                             fs_base = 0
                         else:
@@ -28585,6 +28649,19 @@ class UnicornEmulator:
                         except self.unicorn.UcError:
                             pass
 
+            # SIMD/FP registers (ARM: $d0-31, ARM64: $q0-31); written directly to avoid pointer normalization
+            if kwargs["add_sse"] and (is_arm32() or is_arm64()):
+                for reg in self.regs:
+                    if not reg.startswith(("$d", "$q")):
+                        continue
+                    value = FpuCommand.get_arm_value(reg)
+                    if value is None:
+                        continue
+                    try:
+                        self.emu.reg_write(self.regs[reg], value)
+                    except self.unicorn.UcError:
+                        pass
+
             # syscall table entries used by the optional mmap/munmap/brk emulation (-E)
             self.mmap_entry = None
             self.munmap_entry = None
@@ -28651,7 +28728,7 @@ class UnicornEmulator:
 
         def to_emu(self, address, create=True):
             """Translate a GDB address into the Unicorn address space."""
-            address = AddressUtil.normalize_address(address)
+            address = AddressUtil.normalize_address(address, memalign_size=self.memalign_size)
             anchor = self.anchor(address)
             if anchor is None:
                 return address
@@ -28663,7 +28740,7 @@ class UnicornEmulator:
 
         def from_emu(self, address):
             """Translate a Unicorn address back into the GDB address space."""
-            address = AddressUtil.normalize_address(address)
+            address = AddressUtil.normalize_address(address, memalign_size=self.memalign_size)
             for anchor, base in self.aliases.items():
                 if base <= address < base + self.alias_window:
                     return anchor + address - base
@@ -28673,7 +28750,7 @@ class UnicornEmulator:
                         return address - overflow
             if self.use_alias and is_x86_64() and address & (1 << 47):
                 address |= 0xffff_0000_0000_0000
-            return AddressUtil.normalize_address(address)
+            return AddressUtil.normalize_address(address, memalign_size=self.memalign_size)
 
         def translate_pointers(self, data):
             """Rewrite pointer-sized values in mapped data for Unicorn."""
@@ -28838,7 +28915,7 @@ class UnicornEmulator:
                 self.last_map_error = "address is None"
                 return False
             if emu_address:
-                emu_page = AddressUtil.normalize_address(address) & self.page_mask
+                emu_page = AddressUtil.normalize_address(address, memalign_size=self.memalign_size) & self.page_mask
             else:
                 emu_page = self.to_emu(address) & self.page_mask
             page = self.from_emu(emu_page) & self.page_mask
@@ -28887,7 +28964,8 @@ class UnicornEmulator:
                     self.emu.mem_write(emu_page, self.translate_pointers(data))
                 else:
                     self.emu.mem_write(emu_page, data)
-                if section is not None:
+                # the maps of a core file come from NT_FILE without permissions, so all of them are r--
+                if section is not None and not is_core_file():
                     self.emu.mem_protect(emu_page, self.page_size, section.permission.value)
             except self.unicorn.UcError as e:
                 self.last_map_error = "mem_write {:#x}: {!s}".format(emu_page, e)
@@ -28902,6 +28980,13 @@ class UnicornEmulator:
                 return
             if is_arm32() and self.regs[name] == self.pc_reg:
                 return self.write_pc(value)
+            # the registers of x86_16 are 32-bit (wider than its pointer), and need no translation
+            if is_x86_16():
+                try:
+                    self.emu.reg_write(self.regs[name], value & 0xffff_ffff)
+                except self.unicorn.UcError:
+                    pass
+                return
             value = AddressUtil.normalize_address(value)
             for candidate in self.arm64_kernel_address_candidates(value):
                 try:
@@ -28950,6 +29035,9 @@ class UnicornEmulator:
                         value |= 1
                 except self.unicorn.UcError:
                     pass
+            # x86_16: Unicorn keeps the offset from CS in EIP, while gdb uses the linear address
+            if is_x86_16():
+                value = (value - (self.emu.reg_read(self.unicorn.x86_const.UC_X86_REG_CS) << 4)) & 0xffff_ffff
             self.emu.reg_write(self.pc_reg, value)
             return
 
@@ -29083,11 +29171,11 @@ class UnicornEmulator:
                                 btmp.append("{:02x}".format(b))
                                 atmp.append("{:02x}".format(a))
                             else:
-                                btmp.append("\033[2m{:02x}\033[0m".format(b))
-                                atmp.append("\033[2m{:02x}\033[0m".format(a))
+                                btmp.append(Color.colorify("{:02x}".format(b), "highlight"))
+                                atmp.append(Color.colorify("{:02x}".format(a), "highlight"))
                         else:
-                            btmp.append("\033[2m\033[1m{:02x}\033[0m".format(b))
-                            atmp.append("\033[2m\033[1m{:02x}\033[0m".format(a))
+                            btmp.append(Color.colorify("{:02x}".format(b), "highlight bold"))
+                            atmp.append(Color.colorify("{:02x}".format(a), "highlight bold"))
                     before += "0x" + "".join(btmp[::-1]) + " "
                     after += "0x" + "".join(atmp[::-1]) + " "
                 line = "{:s} | {:s}| {:s}|".format(prefix, before, after)
@@ -29095,15 +29183,19 @@ class UnicornEmulator:
                     gef_print("*")
                 gef_print(line)
                 prev_address = address
-            gef_print("\033[2m00\033[0m: write accessed, \033[2m\033[1m00\033[0m: value changes")
+            gef_print("{:s}: write accessed, {:s}: value changes".format(
+                Color.colorify("00", "highlight"), Color.colorify("00", "highlight bold"),
+            ))
             return
 
         def patch_got(self):
             """Patch GOT entries to avoid avx/neon optimized functions Unicorn can't emulate."""
             if is_x86_64():
                 re_opt = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_avx2?.*)>")
+                suffixes = ("sse2_unaligned", "sse2")
             elif is_arm32():
                 re_opt = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_neon.*)>")
+                suffixes = ("arm", "noneon")
             else:
                 return
 
@@ -29119,13 +29211,14 @@ class UnicornEmulator:
                 except ValueError:
                     continue
 
-                # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
-                base_func_addr = Symbol.resolve_address(base_func_name)
-                if base_func_addr is None:
-                    base_func_name = "__" + base_func_name # e.g., __memmove_chk
-                    base_func_addr = Symbol.resolve_address(base_func_name)
-                    if base_func_addr is None:
-                        continue
+                # get the implementation without SIMD (e.g., __memmove_avx_unaligned_erms -> __memmove_sse2_unaligned),
+                # since the original function is an IFUNC (e.g., `memmove` is the address of its resolver)
+                for suffix in suffixes:
+                    base_func_addr = Symbol.resolve_address("__{:s}_{:s}".format(base_func_name, suffix))
+                    if base_func_addr is not None:
+                        break
+                else:
+                    continue
 
                 if not self.map_page(got):
                     continue
@@ -29670,6 +29763,10 @@ class UnicornEmulator:
             # the instruction is a single byte at an odd address (common on x86), otherwise
             # Unicorn stops immediately without executing anything.
             end = start + max(1, insn.size)
+            if is_mips():
+                # Unicorn does not update the PC of MIPS when it stops at the end bound, and the end of a branch is
+                # its delay slot. So use count=1 with the end that is never reached (a branch runs with its delay slot).
+                end = 0
             self.write_pc(insn.address)
             # ARM: emu_start selects Thumb mode from bit 0 of the start address, so it
             # must be set when single-stepping Thumb code (otherwise Unicorn drops to ARM
@@ -29700,16 +29797,23 @@ class UnicornEmulator:
             end = kwargs["end_insn"]
             nb_gadget = kwargs["nb_gadget"]
 
+            # ARM32: bit 0 of the start address selects Thumb, so update the cpsr T bit that write_pc keeps
+            if is_arm32():
+                cpsr = self.emu.reg_read(self.regs["$cpsr"])
+                self.emu.reg_write(self.regs["$cpsr"], (cpsr & ~0x20) | ((start & 1) << 5))
+            self.write_pc(start)
+
             if not kwargs["only_insns"]:
                 gef_print("========================= Initial registers =========================")
                 self.print_regs()
                 gef_print("========================= Starting emulation =========================")
 
-            self.write_pc(start)
             failed = None
             try:
                 while True:
                     pc = self.from_emu(self.emu.reg_read(self.pc_reg))
+                    if is_x86_16():
+                        pc += self.emu.reg_read(self.unicorn.x86_const.UC_X86_REG_CS) << 4
                     if nb_gadget is None:
                         if end is not None and pc == end:
                             break
@@ -29741,7 +29845,8 @@ class UnicornEmulator:
                 failed = "interrupted"
             self.failed = failed
 
-            if failed is not None and not kwargs["quiet"]:
+            # -q also shows the reason, otherwise an abnormal end looks like a complete run
+            if failed is not None:
                 gef_print("========================= Emulation failed =========================")
                 gef_print("  --> {:s}".format(failed))
 
@@ -29896,11 +30001,11 @@ class UnicornEmulateCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="displays the register values for each executed instruction.")
     parser.add_argument("-S", "--add-sse", action="store_true",
-                        help="initialization and display XMM registers (x64/x86 only).")
+                        help="initialize and display XMM registers (x64/x86 only).")
     parser.add_argument("-A", "--avoid-avx-neon-opt-func", action="store_true",
                         help="patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.")
     parser.add_argument("-E", "--emulate-mmap", action="store_true",
-                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
+                        help="emulate mmap/munmap/brk on a best-effort basis (e.g., for main_arena expansion).")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -29926,8 +30031,28 @@ class UnicornEmulateCommand(GenericCommand):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
+    @staticmethod
+    def get_start_address(location):
+        """Return the start address. On ARM32, bit 0 is set to start in Thumb mode."""
+        if location is None:
+            return current_arch.pc
+        if is_arm32() and (location & 1) == 0:
+            # gdb returns an even address for a Thumb symbol, so follow the mode gdb decodes it in (by mapping symbols etc.)
+            arch = GefUtil.get_architecture()
+            try:
+                with ContextManager.gdb_parameter("arm force-mode", "thumb"):
+                    thumb_insn = arch.disassemble(location)[0]
+                if arch.disassemble(location)[0] == thumb_insn:
+                    return location | 1
+            except gdb.MemoryError:
+                pass # the emulation tells that it cannot map
+        return location
+
     def get_unicorn_end_addr(self, start_addr, nb):
-        dis = list(Disasm.gef_disassemble(start_addr, nb))
+        try:
+            dis = list(Disasm.gef_disassemble(start_addr, nb))
+        except gdb.MemoryError:
+            return None
         last_insn = dis[-1]
         return last_insn.address + last_insn.size
 
@@ -29936,15 +30061,20 @@ class UnicornEmulateCommand(GenericCommand):
     @ModuleLoader.load_capstone
     @ModuleLoader.load_unicorn
     @Decorator.require_arch_set
+    @Decorator.exclude_specific_arch(arch=("ARM32M",))
     def do_invoke(self, args):
         if current_arch.unicorn_support is False:
             warn("This command is not supported on this architecture")
             return
+        if args.nb_gadget is not None and args.nb_gadget <= 0:
+            err("NB_GADGET must be positive")
+            return
+        if args.nb_insn is not None and args.nb_insn <= 0:
+            err("NB_INSN must be positive")
+            return
 
         # start_insn
-        start_insn = args.from_location
-        if start_insn is None:
-            start_insn = current_arch.pc
+        start_insn = UnicornEmulateCommand.get_start_address(args.from_location)
 
         # nb_gadget
         if (args.to_location, args.nb_insn, args.nb_gadget) == (None, None, None):
@@ -29957,6 +30087,9 @@ class UnicornEmulateCommand(GenericCommand):
             end_insn = 0
         elif args.nb_insn is not None:
             end_insn = self.get_unicorn_end_addr(start_insn, args.nb_insn)
+            if end_insn is None:
+                err("Memory read error")
+                return
         else:
             end_insn = args.to_location
         if is_arm32() and end_insn:
@@ -30050,11 +30183,11 @@ class UnicornEmulateScriptCommand(GenericCommand):
     parser.add_argument("-v", "--verbose", action="store_true",
                         help="displays the register values for each executed instruction.")
     parser.add_argument("-S", "--add-sse", action="store_true",
-                        help="initialization and display XMM registers (x64/x86 only).")
+                        help="initialize and display XMM registers (x64/x86 only).")
     parser.add_argument("-A", "--avoid-avx-neon-opt-func", action="store_true",
                         help="patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.")
     parser.add_argument("-E", "--emulate-mmap", action="store_true",
-                        help="[FOR DEVELOPER] used internally in gef, please don't use it.")
+                        help="emulate mmap/munmap/brk on a best-effort basis (e.g., for main_arena expansion).")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -30065,7 +30198,7 @@ class UnicornEmulateScriptCommand(GenericCommand):
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
-        "unicorn does not support emulating syscall.",
+        "unicorn does not support emulating syscall. (use -E for a best-effort mmap/munmap/brk emulation)",
         "unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)",
         "unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.",
         "see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt",
@@ -30076,17 +30209,22 @@ class UnicornEmulateScriptCommand(GenericCommand):
         return
 
     def get_unicorn_end_addr(self, start_addr, nb):
-        dis = list(Disasm.gef_disassemble(start_addr, nb + 1))
+        try:
+            dis = list(Disasm.gef_disassemble(start_addr, nb + 1))
+        except gdb.MemoryError:
+            return None
         last_insn = dis[-1]
         return last_insn.address
 
     def get_filename(self):
         if is_remote_debug():
             filepath = Path.get_remote_filepath()
-            filename = os.path.basename(filepath)
         else:
-            filename = Path.get_filename()
-        return filename
+            filepath = Path.get_filepath()
+        # e.g., a remote target without `file`; it is also the prefix of the memory dump files
+        if filepath is None:
+            return "unknown"
+        return os.path.basename(filepath)
 
     def make_script(self, kwargs):
         arch, mode = UnicornKeystoneCapstone.get_unicorn_arch(to_string=True)
@@ -30174,6 +30312,13 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "        # this causes memory read error, so we need to fix the size.\n"
         content += "        if size >= 0x40:\n"
         content += "            size = 0x10\n"
+        if is_m68k():
+            content += "        # unicorn passes 2 as size, but capstone decodes the missing extension words as 0xaaaa.\n"
+            content += "        size = 22 # the maximum instruction length\n"
+            content += "        for start, end, perm in emu.mem_regions():\n"
+            content += "            if start <= address <= end:\n"
+            content += "                size = min(size, end + 1 - address)\n"
+            content += "                break\n"
         content += "        # from unicorn 2.1.0, size as 4 if opcode is unsupported.\n"
         content += "        for i in range(10):\n"
         content += "            code = emu.mem_read(address, size + i)\n"
@@ -30208,7 +30353,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "        if accessed_address not in changed_mem:\n"
         content += "            changed_mem[accessed_address] = {}\n"
         content += "            changed_mem[accessed_address]['before'] = before[i]\n"
-        content += "        changed_mem[accessed_address]['after'] = (value >> (8 * i)) & 0xff\n"
+        if Endian.is_big_endian():
+            content += "        changed_mem[accessed_address]['after'] = (value >> (8 * (size - 1 - i))) & 0xff\n"
+        else:
+            content += "        changed_mem[accessed_address]['after'] = (value >> (8 * i)) & 0xff\n"
         content += "        changed_mem[accessed_address]['type'] = 'modified'\n"
         content += "    return\n"
         content += "\n"
@@ -30530,8 +30678,12 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "                else:\n"
         content += "                    btmp.append('\\033[2m\\033[1m{:02x}\\033[0m'.format(b))\n"
         content += "                    atmp.append('\\033[2m\\033[1m{:02x}\\033[0m'.format(a))\n"
-        content += "            before += '0x' + ''.join(btmp[::-1]) + ' '\n"
-        content += "            after += '0x' + ''.join(atmp[::-1]) + ' '\n"
+        if Endian.is_big_endian():
+            content += "            before += '0x' + ''.join(btmp) + ' '\n"
+            content += "            after += '0x' + ''.join(atmp) + ' '\n"
+        else:
+            content += "            before += '0x' + ''.join(btmp[::-1]) + ' '\n"
+            content += "            after += '0x' + ''.join(atmp[::-1]) + ' '\n"
         content += "        line = '{:s} | {:s}| {:s}|'.format(prefix, before, after)\n"
         content += "        if prev_address is not None and prev_address + 0x10 != address:\n"
         content += "            print('*')\n"
@@ -30582,6 +30734,16 @@ class UnicornEmulateScriptCommand(GenericCommand):
             if cpsr is not None:
                 content += "    # need first. because other register values may be broken when $cpsr is set.\n"
                 content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$cpsr"], cpsr)
+        if is_m68k():
+            ps = get_register("$ps")
+            if ps is not None:
+                content += "    # need first. because $sp (a7) is switched between usp and ssp when $ps is set.\n"
+                content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$ps"], ps)
+        if is_sparc32() or is_sparc32plus():
+            psr = get_register("$psr")
+            if psr is not None:
+                content += "    # need first. because the register window is switched when $psr is set.\n"
+                content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers["$psr"], psr)
         if is_arm64():
             tpidr = get_register("$TPIDR_EL0")
             if tpidr is None:
@@ -30611,9 +30773,19 @@ class UnicornEmulateScriptCommand(GenericCommand):
                 continue
             if is_arm() and reg == "$cpsr":
                 continue
+            if is_m68k() and reg == "$ps":
+                continue
+            if (is_sparc32() or is_sparc32plus()) and reg == "$psr":
+                continue
+            # unicorn has no such register (e.g., $sr of MIPS, $wim of SPARC)
+            if reg not in unicorn_registers:
+                continue
             regvalue = get_register(reg)
             if regvalue is None:
                 continue
+            # ARM: writing an even PC clears the cpsr T bit
+            if is_arm32() and reg == "$pc" and current_arch.is_thumb():
+                regvalue |= 1
             content += "    emu.reg_write({:s}, {:#x})\n".format(unicorn_registers[reg], regvalue)
         content += "    return\n"
         content += "\n"
@@ -30626,11 +30798,17 @@ class UnicornEmulateScriptCommand(GenericCommand):
             content += "    # Mapping {!r}: {:#x}-{:#x} [{!s}]\n".format(
                 sect.path, sect.page_start, sect.page_end, sect.permission,
             )
+            # the maps of a core file come from NT_FILE without permissions, so all of them are r--
+            if is_core_file():
+                permission = Permission.ALL
+            else:
+                permission = sect.permission.value
             content += "    emu.mem_map({:#x}, {:#x}, {})\n".format(
-                sect.page_start, sect.size, oct(sect.permission.value),
+                sect.page_start, sect.size, oct(permission),
             )
             if sect.permission & Permission.READ:
-                code = read_memory(sect.page_start, sect.size)
+                # some pages may not be readable (e.g., beyond the EOF of a mapped file), so they are zero-filled
+                code = GefUtil.read_memory_padded(sect.page_start, sect.size)
                 loc = os.path.join(kwargs["dloc"], "{:s}-{:#x}.raw".format(filename, sect.page_start))
                 with open(loc, "wb") as fdw:
                     fdw.write(bytes(code))
@@ -30640,8 +30818,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
         if kwargs["patch_got"] and (is_x86_64() or is_arm32()):
             if is_x86_64():
                 RE_OPT = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_avx2?.*)>")
+                suffixes = ("sse2_unaligned", "sse2")
             elif is_arm32():
                 RE_OPT = re.compile(r"^(?:\*ABS\*|__str|__mem|str|mem).* \| .+ \| (0x\S+) \| (0x\S+) <(__(\w+)_neon.*)>")
+                suffixes = ("arm", "noneon")
 
             res = gdb.execute("got-all --no-pager", to_string=True)
             content += "    # memory patch to avoid avx/neon optimized function\n"
@@ -30659,16 +30839,18 @@ class UnicornEmulateScriptCommand(GenericCommand):
                 except ValueError:
                     continue
 
-                # get original function (e.g., __memmove_avx_unaligned_erms -> __memmove)
-                base_func_addr = Symbol.resolve_address(base_func_name)
-                if base_func_addr is None:
-                    base_func_name = "__" + base_func_name # e.g., __memmove_chk
-                    base_func_addr = Symbol.resolve_address(base_func_name)
-                    if base_func_addr is None:
-                        continue
+                # get the implementation without SIMD (e.g., __memmove_avx_unaligned_erms -> __memmove_sse2_unaligned),
+                # since the original function is an IFUNC (e.g., `memmove` is the address of its resolver)
+                for suffix in suffixes:
+                    func_name = "__{:s}_{:s}".format(base_func_name, suffix)
+                    base_func_addr = Symbol.resolve_address(func_name)
+                    if base_func_addr is not None:
+                        break
+                else:
+                    continue
 
                 content += "    emu.mem_write({:#x}, ({:#x}).to_bytes({:d}, byteorder='little')) # {!r} -> {!r}\n".format(
-                    got, base_func_addr, current_arch.ptrsize, current_func_name, base_func_name,
+                    got, base_func_addr, current_arch.ptrsize, current_func_name, func_name,
                 )
 
         content += "    return\n"
@@ -30708,6 +30890,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "                pc = start_addr\n"
         content += "                if count:\n"
         content += "                    pc = emu.reg_read(pc_reg)\n"
+        if is_arm32():
+            content += "                    # emu_start selects Thumb from bit 0 of the address\n"
+            content += "                    if emu.reg_read(registers['$cpsr']) & 0x20:\n"
+            content += "                        pc |= 1\n"
         content += "                region_end = None\n"
         content += "                for start, end, perm in emu.mem_regions():\n"
         content += "                    if start <= pc <= end:\n"
@@ -30720,7 +30906,10 @@ class UnicornEmulateScriptCommand(GenericCommand):
         content += "                if count == before:\n"
         content += "                    raise RuntimeError('Emulation stopped before executing an instruction')\n"
         content += "        else:\n"
-        content += "            emu.emu_start(start_addr, end_addr, count=limit)\n"
+        content += "            # safety cap so -t/-n runs cannot loop forever (the same as unicorn-emulate)\n"
+        content += "            emu.emu_start(start_addr, end_addr, count={:d})\n".format(UnicornEmulator.Emulator.MAX_INSNS)
+        content += "            if count >= {:d}:\n".format(UnicornEmulator.Emulator.MAX_INSNS)
+        content += "                raise RuntimeError('Instruction limit reached')\n"
         content += "    except Exception:\n"
         content += "        emu.emu_stop()\n"
         content += "        print('========================= Emulation failed =========================')\n"
@@ -30779,11 +30968,15 @@ class UnicornEmulateScriptCommand(GenericCommand):
         if current_arch.unicorn_support is False:
             warn("This command is not supported on this architecture")
             return
+        if args.nb_gadget is not None and args.nb_gadget <= 0:
+            err("NB_GADGET must be positive")
+            return
+        if args.nb_insn is not None and args.nb_insn <= 0:
+            err("NB_INSN must be positive")
+            return
 
         # start_insn
-        start_insn = args.from_location
-        if start_insn is None:
-            start_insn = current_arch.pc
+        start_insn = UnicornEmulateCommand.get_start_address(args.from_location)
 
         # nb_gadget
         if (args.to_location, args.nb_insn, args.nb_gadget) == (None, None, None):
@@ -30796,6 +30989,9 @@ class UnicornEmulateScriptCommand(GenericCommand):
             end_insn = 0
         elif args.nb_insn is not None:
             end_insn = self.get_unicorn_end_addr(start_insn, args.nb_insn)
+            if end_insn is None:
+                err("Memory read error")
+                return
         else:
             end_insn = args.to_location
         if is_arm32() and end_insn:
@@ -30820,8 +31016,8 @@ class UnicornEmulateScriptCommand(GenericCommand):
 
         saved = False
         try:
-            # thread locking
-            with ContextManager.gdb_parameter("scheduler-locking", "on"):
+            # thread locking (a core does not support it, but nothing runs except the syscall of -E)
+            with ContextManager.gdb_parameter("scheduler-locking", "on", ignore_error=True):
                 script = self.make_script(kwargs)
             if script is None:
                 return
@@ -30880,6 +31076,9 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         "unicorn does not support some instructions. (e.g., xsavec, xrstor, AVX-512, vldr, etc.)",
         "The AVX2 instructions used by the glibc string functions are emulated in gef.",
     ])
+
+    # the maximum nesting of walk (the default recursion limit of Python is 1000)
+    MAX_LEVEL = 500
 
     def __init__(self):
         """Initialize the GDB command with location completion."""
@@ -30987,7 +31186,7 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 regs.append(None)
         return tuple(regs), self.mem_digest
 
-    def walk(self, parent, tracer, start_address, depth, return_address=None):
+    def walk(self, parent, tracer, start_address, depth, return_address=None, return_sp=None):
         """Walk one concrete path and recursively collect future calls."""
         if not self.valid_target(start_address):
             self.mark_truncated(parent, "invalid target")
@@ -31005,8 +31204,10 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 return False
 
             pc = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
+            # an inner recursive call may come to the return address without returning, so the stack is checked too
             if return_address is not None and pc == return_address:
-                return True
+                if tracer.emu.reg_read(tracer.sp_reg) >= return_sp:
+                    return True
             # a finite loop changes its state, so only a repeated state means an infinite loop
             if pc in seen_pcs:
                 state = self.get_state(tracer)
@@ -31033,13 +31234,18 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 self.mark_truncated(parent, "cannot disassemble {:#x}".format(pc))
                 return False
 
+            # capstone decodes one instruction at a time, so an instruction in a Thumb IT block has no condition
+            conditional = current_arch.is_conditional_branch(insn)
+            if is_arm32() and tracer.emu.reg_read(tracer.regs["$cpsr"]) & 0x0600_fc00: # ITSTATE (bit 10-15, 25-26)
+                conditional = True
+
             if current_arch.is_ret(insn):
                 retval = None
                 if self.args.show_args:
                     retval = tracer.from_emu(tracer.emu.reg_read(tracer.regs[current_arch.return_register]))
                 node = UnicornEmulator.Node(return_address, insn.address, kind="ret", retval=retval)
                 # a conditional return falls through if it is not taken
-                if current_arch.is_conditional_branch(insn):
+                if conditional:
                     if not self.step(tracer, parent, insn):
                         return False
                     if tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg)) == insn.address + len(insn.opcodes):
@@ -31052,16 +31258,13 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
 
             if current_arch.is_call(insn):
                 next_pc = AddressUtil.normalize_address(insn.address + max(1, len(insn.opcodes)))
-                try:
-                    static_target = ContextCodeCommand.get_branch_addr(insn)
-                except Exception:
-                    static_target = None
                 regs = {}
                 for reg, uc_reg in tracer.regs.items():
                     try:
                         regs[reg] = tracer.emu.reg_read(uc_reg)
                     except tracer.unicorn.UcError:
                         pass
+                call_sp = tracer.emu.reg_read(tracer.sp_reg)
 
                 # guess up to 6 arguments from the registers and the stack before the call
                 args = None
@@ -31089,17 +31292,35 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 if self.step(tracer, parent, insn):
                     target = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
                     # a conditional call falls through if it is not taken
-                    if target == next_pc and current_arch.is_conditional_branch(insn):
+                    if target == next_pc and conditional:
                         continue
+                    # x86_32 PIC code calls a thunk (e.g., __x86.get_pc_thunk.bx) to load its own address,
+                    # so apply it without a node regardless of the depth and the node limit
+                    if is_x86_32():
+                        # mov reg, [esp]; ret
+                        m = re.match(rb"\x8b([\x04\x0c\x14\x1c\x2c\x34\x3c])\x24\xc3", tracer.read_code(target))
+                        if m:
+                            # the reg field of ModR/M
+                            reg = ("$eax", "$ecx", "$edx", "$ebx", "$esp", "$ebp", "$esi", "$edi")[m.group(1)[0] >> 3]
+                            regs[reg] = next_pc
+                            tracer.skip_to(regs, next_pc)
+                            continue
                 else:
                     reason = parent.error
                     if self.stop_reasons.intersection(("node limit reached", "instruction limit reached")):
                         return False
                     parent.error = None
                     parent.truncated = False
-                    if self.valid_target(static_target):
-                        target = static_target
+                    # the registers of gdb are not those of the emulation, so use the fetch fault or an immediate target
+                    fault = tracer.last_fault
+                    if fault is not None and fault["access"] in ("UC_MEM_FETCH_UNMAPPED", "UC_MEM_FETCH_PROT"):
+                        target = fault["address"]
                     else:
+                        try:
+                            target = ContextCodeCommand.get_branch_addr(insn, use_regs=False)
+                        except Exception:
+                            target = None
+                    if not self.valid_target(target):
                         target = None
 
                 label = None
@@ -31121,11 +31342,19 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                     self.mark_truncated(child, "depth limit reached")
                     tracer.skip_to(regs, next_pc)
                     continue
+                # walk and Node.lines recurse at each level, so it must stay within the recursion limit of Python
+                if self.level >= self.MAX_LEVEL:
+                    self.mark_truncated(child, "recursion limit reached")
+                    tracer.skip_to(regs, next_pc)
+                    continue
                 if depth is None:
                     next_depth = None
                 else:
                     next_depth = depth - 1
-                if not self.walk(child, tracer, target, next_depth, next_pc):
+                self.level += 1
+                walked = self.walk(child, tracer, target, next_depth, next_pc, call_sp)
+                self.level -= 1
+                if not walked:
                     if self.stop_reasons.intersection(("node limit reached", "instruction limit reached")):
                         return False
                     tracer.skip_to(regs, next_pc)
@@ -31162,11 +31391,13 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.insn_count = 0
         self.node_count = 1
+        self.level = 0
         self.stop_reasons = set()
         self.truncated_reasons = set()
         self.debug_events = []
         if self.args.address is None:
-            start_address = current_arch.pc
+            # current_arch.pc sets bit 0 in Thumb mode, but write_pc keeps the cpsr T bit
+            start_address = get_register("$pc")
         else:
             start_address = self.args.address
         root = UnicornEmulator.Node(start_address, kind="root")
@@ -31175,7 +31406,8 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
             "start_insn": start_address,
             "end_insn": 0,
             "nb_gadget": None,
-            "add_sse": False,
+            # the SIMD/FP registers are needed for the path and the loop detection
+            "add_sse": True,
             "verbose": False,
             "quiet": True,
             "only_insns": True,
@@ -69094,15 +69326,16 @@ class FpuCommand(GenericCommand):
                         help="also display bit information of fpu control registers.")
     _syntax_ = parser.format_help()
 
-    def get_arm_value(self, regname):
+    @staticmethod
+    def get_arm_value(regname):
         try:
             value = gdb.parse_and_eval(regname)
             if value.type.code == gdb.TYPE_CODE_VOID:
                 return None
             if is_arm32() and regname.startswith("$q"):
                 index = int(regname[2:]) * 2
-                low = self.get_arm_value("$d{:d}".format(index))
-                high = self.get_arm_value("$d{:d}".format(index + 1))
+                low = FpuCommand.get_arm_value("$d{:d}".format(index))
+                high = FpuCommand.get_arm_value("$d{:d}".format(index + 1))
                 if low is not None and high is not None:
                     return (high << 64) | low
                 return None
@@ -69134,9 +69367,9 @@ class FpuCommand(GenericCommand):
             regname1 = "$s{:d}".format(i)
             regname2 = "$d{:d}".format(i)
             regname3 = "$q{:d}".format(i)
-            reg1 = self.get_arm_value(regname1)
-            reg2 = self.get_arm_value(regname2)
-            reg3 = self.get_arm_value(regname3)
+            reg1 = FpuCommand.get_arm_value(regname1)
+            reg2 = FpuCommand.get_arm_value(regname2)
+            reg3 = FpuCommand.get_arm_value(regname3)
 
             if reg1 is None:
                 fmt1 = "{:s}: {:s}".format(red(regname1), "Access denied")
@@ -117342,6 +117575,10 @@ class ExecAsm:
                 if u2i(regs[orig_reg], bits) >= 0 and u2i(regs[ret_reg], bits) == -38: # -ENOSYS
                     regs = regs.copy()
                     regs[ret_reg] = -513 & ((1 << bits) - 1) # -ERESTARTNOINTR
+            # $sp and $lr are banked by the current mode, so return from the mode of an exception (e.g., UND) first.
+            # Otherwise the original $sp and $lr are written to the banked ones of the exception mode.
+            if is_arm32() and "$cpsr" in regs:
+                regs = {"$cpsr": regs["$cpsr"], **regs}
             for reg, v in regs.items():
                 # writing a pc register (e.g., $pcoqh) may leave an outer frame selected
                 gdb.newest_frame().select()
