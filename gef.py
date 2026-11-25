@@ -6380,7 +6380,7 @@ GH = GlibcHeap # noqa: V107
 
 
 @Cache.cache_this_session(until_new_objfile=True)
-def get_libc_version(verbose=False, silent=False):
+def get_libc_version(verbose=False, silent=False, use_system=True):
     """Detect and return the glibc version as a tuple, using cache, configuration,
     process maps, or system fallback."""
 
@@ -6438,7 +6438,7 @@ def get_libc_version(verbose=False, silent=False):
         return libc_version
 
     # resolve from system libc
-    if not is_remote_debug() and not is_container_attach():
+    if use_system and not is_remote_debug() and not is_container_attach():
         libc_version = get_system_libc_version()
         if libc_version is not None:
             if verbose:
@@ -9747,7 +9747,20 @@ class PPC64(PPC):
             key = reg
             return key, val
         else:
-            i += 4 # ???
+            # the parameter save area follows the frame header, which is 48 bytes in ELFv1 and 32 bytes in ELFv2
+            codebase = ProcessMap.get_codebase()
+            if codebase is None:
+                elf = None
+            else:
+                elf = Elf.get_elf(codebase) # from memory, since the file may be only on the remote target
+            if elf and elf.is_valid() and elf.e_flags & 3: # EF_PPC64_ABI
+                is_elfv1 = (elf.e_flags & 3) == 1
+            else:
+                is_elfv1 = Endian.is_big_endian() # the default when unspecified
+            if is_elfv1:
+                i += 6
+            else:
+                i += 4
             if sp is None:
                 sp = current_arch.sp
             sz = current_arch.ptrsize
@@ -12160,6 +12173,7 @@ class XTENSA(Architecture):
     flag_register = None
     return_register = "$a2"
     function_parameters = ["$a10", "$a11", "$a12", "$a13", "$a14", "$a15"]
+    function_parameters_infunc = ["$a2", "$a3", "$a4", "$a5", "$a6", "$a7"]
     syscall_register = "$a2"
     syscall_parameters = ["$a6", "$a3", "$a4", "$a5", "$a8", "$a9"]
 
@@ -12315,6 +12329,20 @@ class XTENSA(Architecture):
             v1 = int(ops[1])
             taken, reason = ((v0 >> v1) & 1) == 0, "Bit {:s} of {:s} is 0".format(ops[1], ops[0])
         return taken, reason
+
+    def get_ith_parameter(self, i, in_func=True, sp=None):
+        if i < len(self.function_parameters):
+            reg = self.function_parameters[i]
+            if in_func:
+                # `entry`, the first instruction of a windowed function, rotates the caller's a10-a15 (call8) into a2-a7.
+                # The call0 ABI has no `entry` and passes them in a2-a7.
+                insn = get_insn()
+                if insn is not None and insn.mnemonic != "entry":
+                    reg = self.function_parameters_infunc[i]
+            val = get_register(reg)
+            key = reg
+            return key, val
+        return super().get_ith_parameter(i, in_func=in_func, sp=sp)
 
     def get_ra(self, insn, frame):
         ra = None
@@ -19998,15 +20026,23 @@ class CanaryCommand(GenericCommand):
         if is_in_kernel():
             return None
 
-        libc_version = get_libc_version(silent=True)
+        # the host libc tells nothing about a static binary, which has no interpreter
+        auxval = Auxv.get_auxiliary_values()
+        if auxval and auxval.get("AT_BASE") == 0:
+            libc_version = get_libc_version(silent=True, use_system=False)
+        else:
+            libc_version = get_libc_version(silent=True)
+        # 0 means that the guard is not set yet (e.g., ld.so before security_init) or not used (e.g., Go),
+        # so fall back to the next source
         canary_offset = current_arch.get_canary_offset()
         if canary_offset is not None:
             try:
                 tls = current_arch.get_tls()
                 if tls is not None:
                     canary = read_int_from_memory(tls + canary_offset)
-                    # The canary address in TLS differs between threads, so only cache its value.
-                    return canary, None
+                    if canary != 0:
+                        # The canary address in TLS differs between threads, so only cache its value.
+                        return canary, None
             except Exception:
                 pass
 
@@ -20014,7 +20050,8 @@ class CanaryCommand(GenericCommand):
             canary_location = Symbol.resolve_address("__stack_chk_guard")
             if canary_location is not None:
                 canary = read_int_from_memory(canary_location)
-                return canary, canary_location
+                if canary != 0:
+                    return canary, canary_location
         except (gdb.error, OverflowError):
             pass
 
@@ -20056,6 +20093,10 @@ class CanaryCommand(GenericCommand):
         info("The canary is {:s}".format(Color.colorify_hex(canary, "bold")))
 
         gef_print(titlify("Found canaries"))
+        if is_core_file():
+            # the maps of a core file come from NT_FILE, which has no permissions or anonymous regions
+            warn("Canary copies cannot be scanned in a core file")
+            return
         vmmap = ProcessMap.get_process_maps_exclude_special_regions(allow_vdso=True)
         unpack = GefUtil.get_unpack()
         sp = current_arch.sp
@@ -20097,13 +20138,17 @@ class CanaryCommand(GenericCommand):
                         if prev_addr <= sp <= addr and not printed_flag_sp:
                             info("(Stack pointer is at {!s})".format(ProcessMap.lookup(sp)))
                             printed_flag_sp = True
-                        if path == "[stack]":
+                        # not "[stack]", which is the stack of the main thread
+                        if m.page_start <= sp < m.page_end:
                             info("Found at {!s} in {!r} (sp{:+#x})".format(
                                 ProcessMap.lookup(addr), path, addr - sp,
                             ))
                         else:
                             info("Found at {!s} in {!r}".format(ProcessMap.lookup(addr), path))
                         prev_addr = addr
+            if end < m.page_end:
+                warn("Canary scan limit reached after {:#x} bytes".format(scanned))
+                break
         return
 
     @Decorator.parse_args
@@ -20372,7 +20417,9 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         return layout
 
     def query(self, syscall_number, signal_number, address, layout):
-        write_memory(address, b"\x00" * layout["size"])
+        # not zeros, which look like SIG_DFL when seccomp skips the syscall (SECCOMP_RET_TRAP or SECCOMP_RET_ERRNO|0)
+        sentinel = b"\xff" * layout["size"]
+        write_memory(address, sentinel)
         sigsetsize = layout["nsig"] // 8
         if is_alpha():
             args = [signal_number, 0, address, sigsetsize, 0] # the restorer follows sigsetsize
@@ -20386,6 +20433,8 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
             return errno, None
 
         data = read_memory(address, layout["size"])
+        if data == sentinel:
+            return None, None
         ptrsize = current_arch.ptrsize
         unpack = GefUtil.get_unpack(ptrsize)
         unpack_flags = GefUtil.get_unpack(layout["flags_size"])
@@ -20394,9 +20443,11 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         for i in range(layout["nsig"] // (ptrsize * 8)):
             offset = layout["mask"] + i * ptrsize
             mask |= unpack(data[offset:offset + ptrsize]) << (i * ptrsize * 8)
+        # the libc sign-extends its int sa_flags (e.g., SA_RESETHAND), and old kernels and qemu-user return it as is
+        flags = unpack_flags(data[layout["flags"]:layout["flags"] + layout["flags_size"]]) & 0xffff_ffff
         action = {
             "handler": unpack(data[layout["handler"]:layout["handler"] + ptrsize]),
-            "flags": unpack_flags(data[layout["flags"]:layout["flags"] + layout["flags_size"]]),
+            "flags": flags,
             "mask": mask,
         }
         return None, action
@@ -20436,8 +20487,16 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         else:
             names.update(LinuxSignal.get_libc_names(libc))
 
+        # ExecSyscall runs in the innermost frame even if another frame is selected
+        frame = gdb.newest_frame()
+        sp = int(frame.read_register("sp")) & AddressUtil.get_vmem_end_mask()
         # below the stack pointer, since ExecSyscall restores the stack argument slots above it on MIPS o32
-        address = (current_arch.sp - 0x100) & ~0xf
+        address = (sp - 0x100) & ~0xf
+        # apart from the code that ExecSyscall writes at pc and restores (e.g., shellcode on the stack)
+        pc = frame.pc()
+        code_size = len(ExecSyscall(syscall_number, []).code)
+        if address < pc + code_size and pc < address + layout["size"]:
+            address = (pc - layout["size"]) & ~0xf
         with ContextManager.temporary_memory(address, length=layout["size"], safe=True) as backup:
             if backup is None:
                 err("Could not reserve scratch space on the inferior stack")
@@ -20452,6 +20511,9 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
                     elif errno is not None:
                         err("rt_sigaction({:d}) failed with errno {:d}".format(signal_number, errno))
                         return
+                    elif action is None:
+                        err("rt_sigaction({:d}) did not write the result (blocked by seccomp?)".format(signal_number))
+                        return
                     actions.append((signal_number, action))
 
         rows = []
@@ -20463,8 +20525,9 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
             ))
 
         handler_width = max(30, max(len(Color.remove_color(row[2])) for row in rows))
-        fmt = "{:<3s} {:<14s} {:s}{:s} {:<42s} {:s}"
-        header = fmt.format("Num", "Signal", "Handler", " " * (handler_width - len("Handler")), "Flags", "Mask")
+        flags_width = max(42, max(len(row[3]) for row in rows))
+        fmt = "{:<3s} {:<14s} {:s}{:s} {:<{:d}s} {:s}"
+        header = fmt.format("Num", "Signal", "Handler", " " * (handler_width - len("Handler")), "Flags", flags_width, "Mask")
         if libc:
             title = "Signal dispositions ({:s})".format(libc)
         else:
@@ -20472,7 +20535,7 @@ class SignalHandlersCommand(GenericCommand, BufferingOutput):
         self.out = [titlify(title), GefUtil.make_legend(header)]
         for number, name, handler, flags, mask in rows:
             padding = " " * (handler_width - len(Color.remove_color(handler)))
-            self.out.append(fmt.format(number, name, handler, padding, flags, mask).rstrip())
+            self.out.append(fmt.format(number, name, handler, padding, flags, flags_width, mask).rstrip())
         self.print_output(check_terminal_size=True)
         return
 
@@ -20951,7 +21014,8 @@ class DumpArgsCommand(GenericCommand):
     _aliases_ = ["args"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-c", "--count", type=AddressUtil.parse_address, help="number of arguments to guess.")
+    parser.add_argument("-c", "--count", type=lambda x: AddressUtil.parse_address(x, signed=True),
+                        help="number of arguments to guess.")
     parser.add_argument("-o", "--out-of-function", action="store_true", help="assume here is out of the function.")
     _syntax_ = parser.format_help()
 
@@ -20962,6 +21026,10 @@ class DumpArgsCommand(GenericCommand):
     @staticmethod
     def get_entry_sp():
         """Return the stack pointer at the function entry, recovered from the caller frame (or None)."""
+        if is_x86_16():
+            return None # the caller frame gives sp without the SS base, which current_arch.sp adds
+        if is_sparc():
+            return None # the current sp is the entry sp until `save`, after which the stack arguments are read from fp
         try:
             caller = gdb.selected_frame().older()
             if caller is None:
@@ -20977,6 +21045,10 @@ class DumpArgsCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        if args.count is not None and args.count < 0:
+            err("--count must not be negative")
+            return
+
         gef_print(titlify("info args (snapshot)"))
         gdb.execute("info args")
 
@@ -20985,22 +21057,41 @@ class DumpArgsCommand(GenericCommand):
         if args.count is not None:
             count = args.count
         else:
-            function = gdb.selected_frame().function()
-            if function is None:
-                count = len(current_arch.function_parameters)
+            if args.out_of_function:
+                # the callee of the call instruction at pc, resolved like `context args`
+                function = None
+                insn = get_insn()
+                if insn is not None and current_arch.is_call(insn):
+                    block = ContextArgumentsCommand.get_call_destination_function_block(insn)
+                    if block:
+                        function = block.function
             else:
+                function = gdb.selected_frame().function()
+            if function is not None:
                 count = len(function.type.fields())
+            elif is_x86_32() or is_x86_16() or is_m68k():
+                # their function_parameters is a placeholder, since all arguments are passed on the stack
+                count = Config.get("context_args.nb_guessed_arguments")
+            else:
+                count = len(current_arch.function_parameters)
         if args.out_of_function:
             entry_sp = None
         else:
             entry_sp = self.get_entry_sp()
-        params = [current_arch.get_ith_parameter(i, in_func=not args.out_of_function, sp=entry_sp) for i in range(count)]
+        params = []
+        for i in range(count):
+            try:
+                params.append(current_arch.get_ith_parameter(i, in_func=not args.out_of_function, sp=entry_sp))
+            except gdb.MemoryError:
+                break
         if entry_sp is not None and entry_sp != current_arch.sp and any(key.startswith("[sp") for key, _ in params):
             info("Stack arguments are read from the stack pointer at the function entry ({:#x})".format(entry_sp))
 
         for key, val in params:
             width = align(len(key), 4)
             gef_print("{:>{:d}s} = {:s}".format(key, width, AddressUtil.recursive_dereference_to_string(val)))
+        if len(params) < count:
+            err("Memory read error at argument {:d}".format(len(params) + 1))
         return
 
 
@@ -45419,7 +45510,8 @@ class ContextArgumentsCommand(GenericCommand):
         self.add_setting("nb_guessed_arguments", 6, "Number to display when guessing functions arguments")
         return
 
-    def get_got_value(self, addr):
+    @staticmethod
+    def get_got_value(addr):
         # GOT cannot be detected in kernel mode
         if is_qemu_system() or is_vmware() or is_kgdb():
             return None
@@ -45462,14 +45554,15 @@ class ContextArgumentsCommand(GenericCommand):
 
         return got_value
 
-    def get_call_destination_function_block(self, insn):
+    @staticmethod
+    def get_call_destination_function_block(insn):
         # call insn -> destination addr
         addr = ContextCodeCommand.get_branch_addr(insn)
         if addr is None:
             return None
 
         # check if addr is PLT or not
-        ret = self.get_got_value(addr)
+        ret = ContextArgumentsCommand.get_got_value(addr)
         if ret:
             # use got value
             addr = ret
