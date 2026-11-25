@@ -16767,6 +16767,10 @@ class EventHandler:
     def detect_target_handler(_event):
         if EventHandler.__gef_check_target_once__:
             EventHandler.__gef_check_target_once__ = False
+            # gdb 9.2 has already selected the thread when it starts a native process, and crashes on `gdb.execute` here.
+            # A remote target has no selected thread yet, and a native process needs no detection.
+            if gdb.selected_thread() is not None:
+                return
             QemuMonitor.set_mips_architecture()
             QemuMonitor.set_ppc_endian()
             QemuMonitor.set_s390x_endian()
@@ -19613,16 +19617,16 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
     _note_ = "\n".join([
         "This command is designed for several purposes.",
-        "1. When displaying very large struct, you may want to go through a pager because the results will not fit on one screen.",
-        "   However, using a pager, the color information disappears. This command calls the pager with preserving colors.",
-        "2. When `ptype /ox TYPE`, interpreting member type recursively often result is too long and difficult to read.",
-        "   This command keeps result compact by displaying only top-level members.",
-        "3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the gdb setting of `max-value-size` is too small to display.",
+        "1. When displaying a very large struct, you may want to use a pager because the results will not fit on one screen.",
+        "   However, using a pager, the color information disappears. This command calls the pager while preserving colors.",
+        "2. When `ptype /ox TYPE`, expanding member types recursively often makes the result too long and difficult to read.",
+        "   This command keeps the result compact by displaying only top-level members.",
+        "3. When `p ((TYPE*) ADDRESS)[0]` for a large struct, the gdb setting of `max-value-size` is too small to display.",
         "   This command adjusts it automatically.",
-        "4. When debugging a binary written in the Golang, the offset information of the type is not displayed.",
+        "4. When debugging a binary written in Go, the offset information of the type is not displayed.",
         "   This command also displays the offset.",
-        "5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.",
-        "   This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.",
+        "5. When debugging a binary written in Go, the `p ((TYPE*) ADDRESS)[0]` command fails with a syntax error.",
+        "   This is because the expression parser of gdb for Go does not accept the C-style cast.",
         "   This command creates the display results on the python side, so we can display it without any problems.",
     ])
 
@@ -19634,7 +19638,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
         elif tp.code == gdb.TYPE_CODE_ENUM:
             type_prefix = "enum"
         else:
-            err("{:s} is not struct or union".format(tp.name or args_type))
+            err("{:s} is not a struct, union, or enum".format(tp.name or args_type))
             return False
 
         self.out = [
@@ -19650,21 +19654,29 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
                 pass
         for name, field in tp.items():
             if tp.code in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION]:
-                if field.bitsize and getattr(field, "bitpos", None) is not None and hasattr(field.type, "sizeof"):
+                bitpos = getattr(field, "bitpos", None)
+                if bitpos is not None and bitpos < 0:
+                    # gdb 9.x folds the dynamic location (e.g. a virtual base class) into a negative value instead of None
+                    bitpos = None
+                if field.bitsize and bitpos is not None and hasattr(field.type, "sizeof"):
                     offsz_str = "/* {:#06x}:{:#x} | {:#06x} */".format(
-                        field.bitpos // 8, field.bitpos % 8, field.type.sizeof,
+                        bitpos // 8, bitpos % 8, field.type.sizeof,
                     )
-                elif getattr(field, "bitpos", None) is not None and hasattr(field.type, "sizeof"):
-                    offsz_str = "/* {:#06x} | {:#06x} */".format(field.bitpos // 8, field.type.sizeof)
+                elif bitpos is not None and hasattr(field.type, "sizeof"):
+                    offsz_str = "/* {:#06x} | {:#06x} */".format(bitpos // 8, field.type.sizeof)
                 elif hasattr(field.type, "sizeof"):
                     offsz_str = "/*        | {:#06x} */".format(field.type.sizeof)
-                elif getattr(field, "bitpos", None) is not None:
-                    offsz_str = "/* {:#06x} |        */".format(field.bitpos // 8)
+                elif bitpos is not None:
+                    offsz_str = "/* {:#06x} |        */".format(bitpos // 8)
                 else:
                     offsz_str = "/*        |        */"
                 type_str = Instruction.smartify_text(str(field.type))
                 name_str = Color.cyanify(Instruction.smartify_text(name))
-                if field.bitsize == 0:
+                if field.is_base_class: # the same notation as `p`
+                    msg = "    {:s}    <{}>;".format(offsz_str, type_str)
+                elif not hasattr(field, "bitpos"): # static member (bitpos is None at a dynamic location instead)
+                    msg = "    {:s}    static {} {:s};".format(offsz_str, type_str, name_str)
+                elif field.bitsize == 0:
                     msg = "    {:s}    {} {:s};".format(offsz_str, type_str, name_str)
                 else:
                     msg = "    {:s}    {} {:s} : {:d};".format(offsz_str, type_str, name_str, field.bitsize)
@@ -19693,7 +19705,16 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
                 stack.enter_context(ContextManager.gdb_parameter("max-value-size", str(tp.sizeof)))
             v = gdb.Value(args_address)
             s = v.cast(tp.pointer()).dereference()
-            self.out = s.format_string(styling=True).splitlines()
+            try:
+                try:
+                    self.out = s.format_string(styling=not Color.disable_color()).splitlines()
+                except TypeError:
+                    # before gdb 12.x: TypeError: 'styling' is an invalid keyword argument for this function
+                    self.out = s.format_string().splitlines()
+            except gdb.error as e:
+                # `is_valid_addr` checks only the first byte
+                err(e)
+                return False
         return True
 
     @Decorator.parse_args
@@ -19704,7 +19725,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         # lookup type
         tp = GefUtil.cached_lookup_type(args.type)
-        if not args.type.startswith(("struct", "union", "enum")):
+        if not args.type.startswith(("struct ", "union ", "enum ")):
             if tp is None:
                 tp = GefUtil.cached_lookup_type("struct {:s}".format(args.type))
             if tp is None:
@@ -19723,7 +19744,7 @@ class DisplayTypeCommand(GenericCommand, BufferingOutput):
 
         # check if valid type
         if tp.code not in [gdb.TYPE_CODE_STRUCT, gdb.TYPE_CODE_UNION, gdb.TYPE_CODE_ENUM]:
-            err("{:s} is not struct or union or enum".format(tp.name or args.type))
+            err("{:s} is not a struct, union, or enum".format(tp.name or args.type))
             return
 
         with ContextManager.config("context.smart_cpp_function_name", True, enabled=args.smart):
@@ -234623,7 +234644,7 @@ class TypesCommand(GenericCommand, BufferingOutput):
             for type_name in ProgressBar(type_names):
                 if self.args.verbose:
                     ret = gdb.execute("dt -n -- {:s}".format(GefUtil.quote_gdb_argument(type_name)), to_string=True)
-                    if not ret or (" is not struct or union" in ret) or ("Could not find " in ret):
+                    if not ret or (" is not a struct, union, or enum" in ret) or ("Could not find " in ret):
                         self.out.append(Instruction.smartify_text(type_name))
                         self.out.append("")
                         continue

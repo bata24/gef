@@ -1179,16 +1179,16 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `dt`: makes it easier to use `ptype /ox TYPE` and `p ((TYPE*) ADDRESS)[0]`.
     - ![](images/dt.png)
     - This command is designed for several purposes.
-        1. When displaying very large struct, you may want to go through a pager because the results will not fit on one screen.
-           However, using a pager, the color information disappears. This command calls the pager with preserving colors.
-        2. When `ptype /ox TYPE`, interpreting member type recursively often result is too long and difficult to read.
-           This command keeps result compact by displaying only top-level members.
-        3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the setting of `max-value-size` is too small to display.
+        1. When displaying a very large struct, you may want to use a pager because the results will not fit on one screen.
+           However, using a pager, the color information disappears. This command calls the pager while preserving colors.
+        2. When `ptype /ox TYPE`, expanding member types recursively often makes the result too long and difficult to read.
+           This command keeps the result compact by displaying only top-level members.
+        3. When `p ((TYPE*) ADDRESS)[0]` for a large struct, the setting of `max-value-size` is too small to display.
            This command adjusts it automatically.
-        4. When debugging a binary written in the Golang, the offset information of the type is not displayed.
+        4. When debugging a binary written in Go, the offset information of the type is not displayed.
            This command also displays the offset.
-        5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.
-           This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.
+        5. When debugging a binary written in Go, the `p ((TYPE*) ADDRESS)[0]` command fails with a syntax error.
+           This is because the expression parser of gdb for Go does not accept the C-style cast.
            This command creates the display results on the Python side, so we can display it without any problems.
 
 </details>
