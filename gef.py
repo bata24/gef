@@ -25822,6 +25822,17 @@ class PtrDemangleCommand(GenericCommand):
         if is_qiling():
             return None
 
+        libc_version = get_libc_version(silent=True)
+
+        # Before glibc 2.44, s390x libc used the stack guard in the TCB as the pointer guard.
+        # rtld also set __pointer_chk_guard_local, but used it only within rtld.
+        if is_s390x() and libc_version is not None and libc_version < (2, 44):
+            res = CanaryCommand.gef_read_canary()
+            if res is None:
+                return None
+            cookie, _ = res
+            return cookie
+
         if not force_heuristic:
             # glibc 2.44 stores the pointer guard in a RELRO variable on every architecture.
             # rtld and several architectures used these variables before 2.44.
@@ -25841,16 +25852,16 @@ class PtrDemangleCommand(GenericCommand):
                 except (gdb.error, OverflowError):
                     pass
 
-        libc_version = get_libc_version(silent=True)
         if libc_version is None:
             return None
 
-        # rtld keeps a RELRO copy of the pointer guard.
-        cookie = PtrDemangleCommand.get_cookie_from_rtld_relro(libc_version)
-        if cookie is not None:
-            return cookie
-
         if libc_version >= (2, 44):
+            # rtld keeps a RELRO copy of the pointer guard.
+            # Before 2.44, AT_RANDOM[1] is used instead, since the slot next to _dl_argv is estimated from
+            # the x86 layout (e.g., ppc64 has __libc_stack_end there).
+            cookie = PtrDemangleCommand.get_cookie_from_rtld_relro(libc_version)
+            if cookie is not None:
+                return cookie
             return PtrDemangleCommand.get_cookie_from_static_relro()
 
         # fast path for x86/x64
@@ -25875,11 +25886,7 @@ class PtrDemangleCommand(GenericCommand):
                 auxv = Auxv.get_auxiliary_values()
             # The pointer guard is derived from the second uintptr_t at AT_RANDOM.
             if auxv and "AT_RANDOM" in auxv:
-                # Old s390x instead reused the stack guard with its least significant byte cleared.
-                if is_s390x():
-                    cookie = read_int_from_memory(auxv["AT_RANDOM"]) & 0x00ff_ffff_ffff_ffff
-                else:
-                    cookie = read_int_from_memory(auxv["AT_RANDOM"] + current_arch.ptrsize)
+                cookie = read_int_from_memory(auxv["AT_RANDOM"] + current_arch.ptrsize)
                 if cookie != 0:
                     return cookie
         except gdb.error:
@@ -25890,8 +25897,19 @@ class PtrDemangleCommand(GenericCommand):
             return PtrDemangleCommand.get_cookie_from_static_relro()
         return None
 
+    @staticmethod
+    def print_cookie_error():
+        if GefUtil.get_libc() == "musl":
+            err("musl does not mangle pointers")
+        elif get_libc_version(silent=True) is None:
+            err("Failed to get the cookie of PTR_MANGLE since the libc version could not be determined")
+            err("Please specify it with the following command: `gef config libc.assume_version (2,39)`")
+        else:
+            err("Failed to get the cookie of PTR_MANGLE")
+        return
+
     @Decorator.parse_args
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "qiling"))
     @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -25907,12 +25925,19 @@ class PtrDemangleCommand(GenericCommand):
             warn("No debugging session active")
             return
 
+        width = current_arch.ptrsize * 8
+        if not AddressUtil.fits_width(args.value, width):
+            err("Value out of range for {:d}-bit target".format(width))
+            return
+        value = args.value & ((1 << width) - 1)
+
         cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
         if cookie is None:
+            PtrDemangleCommand.print_cookie_error()
             return
         info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
 
-        decoded = current_arch.decode_cookie(args.value, cookie)
+        decoded = current_arch.decode_cookie(value, cookie)
         if is_valid_addr(decoded):
             valid_msg = Color.colorify("valid", "bold green")
         else:
@@ -25938,7 +25963,7 @@ class PtrMangleCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     @Decorator.parse_args
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "qiling"))
     @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -25954,12 +25979,19 @@ class PtrMangleCommand(GenericCommand):
             warn("No debugging session active")
             return
 
+        width = current_arch.ptrsize * 8
+        if not AddressUtil.fits_width(args.value, width):
+            err("Value out of range for {:d}-bit target".format(width))
+            return
+        value = args.value & ((1 << width) - 1)
+
         cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
         if cookie is None:
+            PtrDemangleCommand.print_cookie_error()
             return
         info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
 
-        encoded = current_arch.encode_cookie(args.value, cookie)
+        encoded = current_arch.encode_cookie(value, cookie)
         info("Encoded value is {:#x}".format(encoded))
         return
 
@@ -26025,38 +26057,33 @@ class SearchMangledPtrCommand(GenericCommand):
             step = 0x400 * get_pagesize()
         locations = []
 
-        for chunk_addr in range(start_address, end_address, step):
-            if chunk_addr + step > end_address:
-                chunk_size = end_address - chunk_addr
-            else:
-                chunk_size = step
+        # check the decoded value with the maps, since reading it grows the stack if it is just below [stack]
+        starts, maps = ProcessMap.get_process_map_index()
 
-            mem = read_memory(chunk_addr, chunk_size, safe=True)
-            if mem is not None:
-                mems = [(chunk_addr, mem)]
-            else:
-                # part of the range may have been unmapped after the maps were read, so retry per page
-                mems = []
-                for page in range(chunk_addr, chunk_addr + chunk_size, get_pagesize()):
-                    mem = read_memory(page, min(get_pagesize(), chunk_addr + chunk_size - page), safe=True)
-                    if mem is not None:
-                        mems.append((page, mem))
-
-            for mem_addr, mem in mems:
-                for i, value in enumerate(slice_unpack(mem, current_arch.ptrsize)):
-                    decoded = current_arch.decode_cookie(value, cookie)
-                    if not is_valid_addr(decoded):
+        # part of the range may have been unmapped after the maps were read, so retry per page
+        reader = functools.partial(read_memory, safe=True)
+        for mem_addr, mem in GefUtil.iter_readable_chunks(start_address, end_address, step, reader):
+            if mem is None:
+                continue
+            for i, value in enumerate(slice_unpack(mem, current_arch.ptrsize)):
+                decoded = current_arch.decode_cookie(value, cookie)
+                if starts is None:
+                    # regions overlap
+                    if not any(section.page_start <= decoded < section.page_end for section in maps):
                         continue
-                    addr = mem_addr + i * current_arch.ptrsize
-                    locations.append((addr, value, decoded))
-                    if max_results and len(locations) >= max_results:
-                        return locations
-            del mems
+                else:
+                    index = bisect.bisect_right(starts, decoded) - 1
+                    if index < 0 or maps[index].page_end <= decoded:
+                        continue
+                addr = mem_addr + i * current_arch.ptrsize
+                locations.append((addr, value, decoded))
+                if max_results and len(locations) >= max_results:
+                    return locations
         return locations
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine", "qiling"))
     @Decorator.exclude_specific_arch(arch=("XTENSA", "CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -26067,16 +26094,17 @@ class SearchMangledPtrCommand(GenericCommand):
             err("Maximum results must not be negative")
             return
 
-        # init
-        cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
-        if cookie is None:
-            return
-        info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
-
         # check
         if current_arch.decode_cookie(0, 1) == 0:
             err("In this architecture, the value is not encrypted with cookies")
             return
+
+        # init
+        cookie = PtrDemangleCommand.get_cookie(force_heuristic=args.force_heuristic)
+        if cookie is None:
+            PtrDemangleCommand.print_cookie_error()
+            return
+        info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
 
         # search
         maps_generator = ProcessMap.get_process_maps()
@@ -26086,12 +26114,14 @@ class SearchMangledPtrCommand(GenericCommand):
                 continue
             if not section.permission & Permission.WRITE:
                 continue
+            # mangled pointers are aligned to the pointer size
             start = section.page_start
             if args.start is not None:
-                start = max(start, args.start)
+                start = max(start, align_to_ptrsize(args.start))
             end = section.page_end
             if args.length is not None:
                 end = min(end, args.start + args.length)
+                end -= end % current_arch.ptrsize
             if start >= end:
                 continue
             if args.verbose:
@@ -26152,45 +26182,53 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
         return addrs
 
     def filter_gadgets(self, endbr_addrs, end):
-        filtered_addrs = []
+        filtered_gadgets = []
 
         for addr in endbr_addrs:
-            start = addr
-            inscount = 0
+            insns = []
             valid = True
 
             while addr < end:
                 try:
-                    insn = get_insn(addr)
+                    # the checks below expect the gdb syntax, so do not follow context_code.use_capstone
+                    insn = next(Disasm.gdb_disassemble(addr, nb_insn=1), None)
                 except (gdb.MemoryError, gdb.error, MemoryError):
                     valid = False
                     break
                 if insn is None:
                     valid = False
                     break
-                inscount += 1
+                insns.append(insn)
                 length = len(insn.opcodes)
                 if not length or addr + length > end:
                     valid = False
                     break
                 addr += length
 
+                # skip prefixes such as bnd and notrack
+                mnemo, operands = X86.get_mnemonic_operands(insn)
+
+                # these always raise an exception in user space
+                if not insn.is_valid() or mnemo in ("ud0", "ud1", "ud2", "hlt", "int1", "int3"):
+                    valid = False
+                    break
+
                 if current_arch.is_ret(insn):
                     break
 
                 if current_arch.is_call(insn) or current_arch.is_jump(insn):
-                    if not insn.operands or insn.operands[0].startswith("0x"):
+                    if not operands or operands.startswith("0x"):
                         valid = False
                     else:
                         # A fixed pointer in read-only memory cannot redirect an indirect branch.
-                        pointer = re.search(r"(?:#\s*|\bds:)(0x[0-9a-fA-F]+)", insn.operands[0])
+                        pointer = re.search(r"(?:#\s*|\bds:)(0x[0-9a-fA-F]+)", operands)
                         if pointer:
                             section = ProcessMap.lookup(int(pointer.group(1), 16)).section
                             if section is None or not section.is_writable():
                                 valid = False
                     break
 
-                if "XMMWORD" in "".join(insn.operands):
+                if "XMMWORD" in operands:
                     valid = False
                     break
 
@@ -26198,18 +26236,15 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
                 valid = False
 
             if valid:
-                filtered_addrs.append([start, inscount])
-        return filtered_addrs
+                filtered_gadgets.append(insns)
+        return filtered_gadgets
 
-    def disasm_addrs(self, candidates):
-        try:
-            __import__("capstone")
-            for start, inscount in candidates:
-                res = gdb.execute("capstone-disassemble {:#x} --length {:d}".format(start, inscount), to_string=True)
-                self.out.append(res)
-        except ImportError:
-            for start, inscount in candidates:
-                self.out.extend([str(x) for x in Disasm.gdb_disassemble(start, nb_insn=inscount)])
+    def disasm_addrs(self, gadgets):
+        # print the instructions used for the checks, since another disassembler may decode them differently
+        for insns in gadgets:
+            for insn in insns:
+                self.out.append("    {:s}".format(insn.colored_text(10, use_regs=False)))
+            self.out.append("")
         return
 
     def exec_search(self, maps):
@@ -26217,8 +26252,9 @@ class SearchCfiGadgetsCommand(GenericCommand, BufferingOutput):
             info("Search from {!r}".format(entry.path))
             self.out.append(titlify(repr(entry.path)))
             addrs = self.find_endbr(start, end)
-            filtered_addrs = self.filter_gadgets(addrs, end)
-            self.disasm_addrs(filtered_addrs)
+            # a gadget starting in the range may end beyond it
+            filtered_gadgets = self.filter_gadgets(addrs, entry.page_end)
+            self.disasm_addrs(filtered_gadgets)
         return
 
     @Decorator.parse_args
@@ -237354,7 +237390,8 @@ class GefUtil:
         """Return the inferior's libc ("glibc" or "musl"), or None if it is unknown."""
         for objfile in gdb.objfiles():
             name = os.path.basename(objfile.filename or "")
-            if re.fullmatch(r"libc\.so\.6|libc-2\.\d+\.so", name):
+            # libc.so.6.1 is for Alpha
+            if re.fullmatch(r"libc\.so\.6(\.1)?|libc-2\.\d+\.so", name):
                 return "glibc"
             if re.fullmatch(r"(?:ld-musl|libc\.musl)-\w+\.so\.1", name):
                 return "musl"
