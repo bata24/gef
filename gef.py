@@ -7583,8 +7583,11 @@ class Checksec:
         sp = current_arch.sp
         with ContextManager.temporary_memory(sp, length=current_arch.ptrsize * 3):
             res = gdb.execute("call-syscall arch_prctl 0x3001 {:#x}".format(sp), to_string=True) # ARCH_CET_STATUS
-            output_line = res.splitlines()[-1]
-            ret = int(output_line.split()[2], 0)
+            try:
+                output_line = res.splitlines()[-1]
+                ret = int(output_line.split()[2], 0)
+            except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
+                return None
             sp_value = read_int_from_memory(sp)
 
         # check ret
@@ -7599,8 +7602,11 @@ class Checksec:
         sp = current_arch.sp
         with ContextManager.temporary_memory(sp, length=current_arch.ptrsize):
             res = gdb.execute("call-syscall arch_prctl 0x5005 {:#x}".format(sp), to_string=True) # ARCH_SHSTK_STATUS
-            output_line = res.splitlines()[-1]
-            ret = int(output_line.split()[2], 0)
+            try:
+                output_line = res.splitlines()[-1]
+                ret = int(output_line.split()[2], 0)
+            except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
+                return None
             sp_value = read_int_from_memory(sp)
 
         if ret != 0:
@@ -7650,8 +7656,11 @@ class Checksec:
         if auxv and "AT_HWCAP2" in auxv and (auxv["AT_HWCAP2"] & HWCAP2_MTE) == 0:
             return None # Unsupported
         res = gdb.execute("call-syscall prctl 0x38 0 0 0 0", to_string=True) # PR_GET_TAGGED_ADDR_CTRL
-        output_line = res.splitlines()[-1]
-        ret = int(output_line.split()[2], 0)
+        try:
+            output_line = res.splitlines()[-1]
+            ret = int(output_line.split()[2], 0)
+        except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
+            return None
         return u2i(ret)
 
     @staticmethod
@@ -7662,8 +7671,11 @@ class Checksec:
         if auxv and "AT_HWCAP" in auxv and (auxv["AT_HWCAP"] & (HWCAP_PACA | HWCAP_PACG)) == 0:
             return None # Unsupported
         res = gdb.execute("call-syscall prctl 0x3d 0 0 0 0", to_string=True) # PR_PAC_GET_ENABLED_KEYS
-        output_line = res.splitlines()[-1]
-        ret = int(output_line.split()[2], 0)
+        try:
+            output_line = res.splitlines()[-1]
+            ret = int(output_line.split()[2], 0)
+        except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
+            return None
         return u2i(ret)
 
     @staticmethod
@@ -26835,7 +26847,10 @@ class CallSyscallCommand(GenericCommand):
         title = "{:s}({:s})".format(args.syscall_name, ", ".join(["{:#x}".format(x) for x in args.syscall_args]))
         gef_print(titlify(title))
 
-        ret = ExecSyscall(nr, values).exec_code()
+        ret = ExecSyscall(nr, values).exec_code(check_complete=True)
+        if ret is None:
+            err("Failed to execute the syscall (e.g., the page of $pc is not executable)")
+            return
 
         if isinstance(current_arch.return_register, list):
             for ret_regs in current_arch.return_register:
@@ -26898,7 +26913,7 @@ class MmapMemoryCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine", "core"))
     @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -26915,7 +26930,9 @@ class MmapMemoryCommand(GenericCommand):
             if len(entry.arg_regs) != 6:
                 continue
             mmap_syscall_name = entry.name
-            break
+            # prefer mmap2, since qemu-user takes the mmap of MicroBlaze as the old one with a pointer to the arguments
+            if mmap_syscall_name == "mmap2":
+                break
         if mmap_syscall_name is None and is_s390x():
             mmap_syscall_name = "mmap" # takes a pointer to the six arguments
         if mmap_syscall_name is None:
@@ -26925,6 +26942,9 @@ class MmapMemoryCommand(GenericCommand):
         # location
         page_size = get_pagesize()
         if args.location:
+            if args.location < 0 or AddressUtil.get_vmem_end() <= args.location:
+                err("Invalid address")
+                return
             auxval = Auxv.get_auxiliary_values()
             if not auxval or "AT_PAGESZ" not in auxval:
                 err("Could not get the page size from auxv; omit LOCATION to let the kernel choose the address")
@@ -26943,6 +26963,13 @@ class MmapMemoryCommand(GenericCommand):
         if args.size % page_size:
             err("Size is not a multiple of {:#x}".format(page_size))
             return
+
+        # MAP_FIXED silently replaces the existing mappings
+        if args.location:
+            for sect in ProcessMap.get_process_maps():
+                if sect.page_start < args.location + args.size and args.location < sect.page_end:
+                    err("It overlaps the existing mapping {:#x}-{:#x}".format(sect.page_start, sect.page_end))
+                    return
 
         # permission
         if len(args.permission) != 3:
@@ -26969,10 +26996,10 @@ class MmapMemoryCommand(GenericCommand):
         elif is_hppa32():
             flags = 0x12
             map_fixed = 0x04
+        elif is_mips() or is_xtensa():
+            flags = 0x802 # MAP_ANONYMOUS is 0x800 (0x20 is MAP_RENAME)
         if args.location:
             flags |= map_fixed
-        if is_mips():
-            flags |= 0x800 # MAP_DENYWRITE (why?)
 
         # doit
         if is_s390x():
@@ -26988,13 +27015,17 @@ class MmapMemoryCommand(GenericCommand):
                 mmap_syscall_name, args.location or 0, args.size, perm, flags,
             )
             gdb.execute(cmd)
-        Cache.reset_gef_caches()
+        if is_qemu_user():
+            # the memory map is changed, so retry memory exploring in get_process_maps()
+            Cache.reset_gef_caches(all=True)
+        else:
+            Cache.reset_gef_caches()
         return
 
 
 @register_command
 class MunmapMemoryCommand(GenericCommand):
-    """Unmap a mapped memory."""
+    """Unmap a memory mapping."""
 
     _cmdline_ = "munmap"
     _category_ = "01-g. Debugging Support - Syscall"
@@ -27003,17 +27034,17 @@ class MunmapMemoryCommand(GenericCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the address to unmap.")
     parser.add_argument("size", metavar="SIZE", nargs="?", type=AddressUtil.parse_address,
-                        help="the size to unmap.")
+                        help="the size to unmap (must be a multiple of the page size). (default: the entire map)")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        "{0:s} $sp                    # unmap whole stack area",
+        "{0:s} 0x7ffff7ff8000         # unmap the entire map containing the address",
         "{0:s} 0x7ffffffde000 0x1000  # unmap specified area",
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
-        "By default, the entire map containing the specified address is freed.",
-        "If a size is specified, the area from the specified address to that size will be unmapped.",
+        "By default, the entire map containing the specified address is unmapped.",
+        "If a size is specified, the area of that size starting at the specified address will be unmapped.",
     ])
 
     def __init__(self):
@@ -27033,12 +27064,6 @@ class MunmapMemoryCommand(GenericCommand):
             err("Cannot unmap memory in a core file")
             return
 
-        # location
-        sect = ProcessMap.process_lookup_address(args.location)
-        if sect is None:
-            err("Unmapped address")
-            return
-
         # size
         if args.size is not None:
             auxval = Auxv.get_auxiliary_values()
@@ -27046,91 +27071,11 @@ class MunmapMemoryCommand(GenericCommand):
                 err("Could not get the page size from auxv; omit SIZE to unmap the entire map")
                 return
             page_size = auxval["AT_PAGESZ"]
-            if args.location % page_size:
-                err("Address is not a multiple of {:#x}".format(page_size))
-                return
             if args.location < 0:
                 err("Invalid address")
                 return
-            if args.size % page_size:
-                err("Size is not a multiple of {:#x}".format(page_size))
-                return
-            if args.size < 0 or AddressUtil.get_vmem_end() <= args.size:
-                err("Invalid size")
-                return
-            # not estimation
-            location = args.location
-            size = args.size
-        else:
-            # use estimation
-            location = sect.page_start
-            size = sect.page_end - sect.page_start
-
-        # doit
-        cmd = "call-syscall munmap {:#x} {:#x}".format(location, size)
-        gdb.execute(cmd)
-        Cache.reset_gef_caches()
-        return
-
-
-@register_command
-class MprotectCommand(GenericCommand):
-    """Change a page permission (default: RWX)."""
-
-    _cmdline_ = "mprotect"
-    _category_ = "01-g. Debugging Support - Syscall"
-
-    parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the address to change the permission.")
-    parser.add_argument("permission", metavar="PERMISSION", nargs="?", default="rwx",
-                        help="the permission you set to the LOCATION. (default: %(default)s)")
-    parser.add_argument("-s", "--size", type=AddressUtil.parse_address,
-                        help="the size to change the permission (0x1000 align).")
-    _syntax_ = parser.format_help()
-
-    _example_ = "\n".join([
-        "{0:s} $sp rwx",
-        "{0:s} 0x7ffff7e1b000 ___           # '_' means '-'",
-        "{0:s} 0x7ffff7e1b000 ___ -s 0x1000 # change only first 0x1000 bytes",
-    ]).format(_cmdline_)
-
-    _note_ = "\n".join([
-        "By default, the permissions will be changed for the entire map including the specified address.",
-        "If a size is specified, the permissions will only be changed for the range of the specified address up to the size.",
-    ])
-
-    def __init__(self):
-        super().__init__(complete=gdb.COMPLETE_LOCATION)
-        return
-
-    # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
-    # So even if the assembly code is correct, it should not use this command.
-
-    @Decorator.parse_args
-    @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
-    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
-    @Decorator.require_arch_set
-    def do_invoke(self, args):
-        # location
-        sect = ProcessMap.process_lookup_address(args.location)
-        if sect is None:
-            err("Unmapped address")
-            return
-
-        # size
-        if args.size is not None:
-            auxval = Auxv.get_auxiliary_values()
-            if not auxval or "AT_PAGESZ" not in auxval:
-                err("Could not get the page size from auxv; omit `-s` to change the entire map")
-                return
-            page_size = auxval["AT_PAGESZ"]
             if args.location % page_size:
                 err("Address is not a multiple of {:#x}".format(page_size))
-                return
-            if args.location < 0:
-                err("Invalid address")
                 return
             if args.size % page_size:
                 err("Size is not a multiple of {:#x}".format(page_size))
@@ -27143,6 +27088,113 @@ class MprotectCommand(GenericCommand):
             size = args.size
         else:
             # use estimation
+            if not ProcessMap.get_process_maps():
+                err("Failed to get maps; specify SIZE")
+                return
+            sect = ProcessMap.process_lookup_address(args.location)
+            if sect is None:
+                err("Unmapped address")
+                return
+            location = sect.page_start
+            size = sect.page_end - sect.page_start
+
+        # ExecSyscall runs in the innermost frame even if another frame is selected
+        frame = gdb.newest_frame()
+        # the code that ExecSyscall writes at pc and restores
+        pc = frame.pc()
+        code_size = len(ExecSyscall(0, []).code)
+        if location < pc + code_size and pc < location + size:
+            err("Cannot unmap $pc, where the syscall is executed")
+            return
+        # the stack argument slots that ExecSyscall restores on MIPS o32
+        if is_mips32():
+            sp = int(frame.read_register("sp")) & AddressUtil.get_vmem_end_mask()
+            if location < sp + 0x20 and sp + 0x10 < location + size:
+                err("Cannot unmap $sp+0x10-0x20, where the syscall takes the stack arguments")
+                return
+
+        # doit
+        cmd = "call-syscall munmap {:#x} {:#x}".format(location, size)
+        gdb.execute(cmd)
+        if is_qemu_user():
+            # the memory map is changed, so retry memory exploring in get_process_maps()
+            Cache.reset_gef_caches(all=True)
+        else:
+            Cache.reset_gef_caches()
+        return
+
+
+@register_command
+class MprotectCommand(GenericCommand):
+    """Change the permission of a memory mapping (default: rwx)."""
+
+    _cmdline_ = "mprotect"
+    _category_ = "01-g. Debugging Support - Syscall"
+
+    parser = argparse.ArgumentParser(prog=_cmdline_)
+    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+                        help="the address to change the permission.")
+    parser.add_argument("permission", metavar="PERMISSION", nargs="?", default="rwx",
+                        help="the permission you set to the LOCATION. (default: %(default)s)")
+    parser.add_argument("-s", "--size", type=AddressUtil.parse_address,
+                        help="the size to change the permission (must be a multiple of the page size).")
+    _syntax_ = parser.format_help()
+
+    _example_ = "\n".join([
+        "{0:s} $sp rwx",
+        "{0:s} 0x7ffff7e1b000 ___           # '_' means '-'",
+        "{0:s} 0x7ffff7e1b000 ___ -s 0x1000 # change only first 0x1000 bytes",
+    ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "By default, the permissions will be changed for the entire mapping containing the specified address.",
+        "If a size is specified, the permissions will only be changed for SIZE bytes starting at the specified address.",
+    ])
+
+    def __init__(self):
+        super().__init__(complete=gdb.COMPLETE_LOCATION)
+        return
+
+    # On the CRIS architecture, setting a value to a register using the gdb `set` command will cause strange behavior.
+    # So even if the assembly code is correct, it should not use this command.
+
+    @Decorator.parse_args
+    @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine", "core"))
+    @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
+    @Decorator.require_arch_set
+    def do_invoke(self, args):
+        # size
+        if args.size is not None:
+            auxval = Auxv.get_auxiliary_values()
+            if not auxval or "AT_PAGESZ" not in auxval:
+                err("Could not get the page size from auxv; omit `-s` to change the entire map")
+                return
+            page_size = auxval["AT_PAGESZ"]
+            if args.location < 0:
+                err("Invalid address")
+                return
+            if args.location % page_size:
+                err("Address is not a multiple of {:#x}".format(page_size))
+                return
+            if args.size % page_size:
+                err("Size is not a multiple of {:#x}".format(page_size))
+                return
+            if args.size <= 0 or AddressUtil.get_vmem_end() <= args.size:
+                err("Invalid size")
+                return
+            # not estimation
+            location = args.location
+            size = args.size
+        else:
+            # use estimation
+            if not ProcessMap.get_process_maps():
+                err("Failed to get maps; specify `-s`")
+                return
+            sect = ProcessMap.process_lookup_address(args.location)
+            if sect is None:
+                err("Unmapped address")
+                return
             location = sect.page_start
             size = sect.page_end - sect.page_start
 
@@ -27162,7 +27214,11 @@ class MprotectCommand(GenericCommand):
         # doit
         cmd = "call-syscall mprotect {:#x} {:#x} {:#x}".format(location, size, perm)
         gdb.execute(cmd)
-        Cache.reset_gef_caches()
+        if is_qemu_user():
+            # the memory map is changed, so retry memory exploring in get_process_maps()
+            Cache.reset_gef_caches(all=True)
+        else:
+            Cache.reset_gef_caches()
         return
 
 
@@ -117404,6 +117460,16 @@ class ExecSyscall(ExecAsm):
                 reg = reg + "b0" # since r0-r7 cannot be changed directly, use bank 0
             gdb.execute("set {:s} = {:#x}".format(reg, self.syscall_nr), to_string=True)
         return
+
+    def is_complete(self):
+        # Stepping a syscall may stop past the instruction, so only reject a signal at the instruction.
+        # It means that the instruction was not executed (e.g., SIGSEGV of fetching it from a non-executable page).
+        if not self.stops or not isinstance(self.stops[-1], gdb.SignalEvent):
+            return True
+        if self.stops[-1].stop_signal == "SIGTRAP":
+            return True
+        gdb.newest_frame().select()
+        return current_arch.pc != self.pc
 
 
 @register_command
