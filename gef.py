@@ -9065,23 +9065,25 @@ class X86(Architecture):
         key = "[sp + {:#x}]".format(i * sz)
         return key, val
 
-    def read28(self, addr):
+    def read24(self, addr):
         codes = [
             b"\x8b\x00", # mov eax, dword ptr [eax]
             b"\x8b\x1b", # mov ebx, dword ptr [ebx]
             b"\x8b\x09", # mov ecx, dword ptr [ecx]
             b"\x8b\x12", # mov edx, dword ptr [edx]
-            b"\x8b\x24\x24", # mov esp, dword ptr [esp]
+            # Rewriting ESP changes the frame, so gdb deletes a watchpoint on a local variable.
+            #b"\x8b\x24\x24", # mov esp, dword ptr [esp]
             # Rewriting EBP triggers an error message, which is noisy, so it is skipped.
             #b"\x8b\x6d\x00", # mov ebp, dword ptr [ebp]
             b"\x8b\x36", # mov esi, dword ptr [esi]
             b"\x8b\x3f", # mov edi, dword ptr [edi]
         ]
         regs = [
-            "$eax", "$ebx", "$ecx", "$edx", "$esp", "$esi", "$edi",
+            "$eax", "$ebx", "$ecx", "$edx", "$esi", "$edi",
         ]
         regs = {reg: addr + i * current_arch.ptrsize for i, reg in enumerate(regs)}
-        ret = ExecAsm(codes, regs=regs, step=len(codes)).exec_code(check_complete=True)
+        # gdb also deletes the watchpoint if a stepi leaves the function, so resume only once
+        ret = ExecAsm(codes, regs=regs, step=len(codes), use_bp=True).exec_code(check_complete=True)
         if ret is None:
             raise gdb.error("Could not complete the vvar read")
         values = [ret["reg"][reg] for reg in regs]
@@ -9234,14 +9236,15 @@ class X86_64(X86):
             key = "[sp + {:#x}]".format(i * sz)
             return key, val
 
-    def read128(self, addr):
+    def read112(self, addr):
         codes = [
             b"\x48\x8b\x00", # mov rax, qword ptr [rax]
             b"\x48\x8b\x09", # mov rcx, qword ptr [rcx]
             b"\x48\x8b\x12", # mov rdx, qword ptr [rdx]
             b"\x48\x8b\x1b", # mov rbx, qword ptr [rbx]
-            b"\x48\x8b\x24\x24", # mov rsp, qword ptr [rsp]
-            b"\x48\x8b\x6d\x00", # mov rbp, qword ptr [rbp]
+            # Rewriting RSP or RBP changes the frame, so gdb deletes a watchpoint on a local variable.
+            #b"\x48\x8b\x24\x24", # mov rsp, qword ptr [rsp]
+            #b"\x48\x8b\x6d\x00", # mov rbp, qword ptr [rbp]
             b"\x48\x8b\x36", # mov rsi, qword ptr [rsi]
             b"\x48\x8b\x3f", # mov rdi, qword ptr [rdi]
             b"\x4d\x8b\x00", # mov r8, qword ptr [r8]
@@ -9254,11 +9257,12 @@ class X86_64(X86):
             b"\x4d\x8b\x3f", # mov r15, qword ptr [r15]
         ]
         regs = [
-            "$rax", "$rcx", "$rdx", "$rbx", "$rsp", "$rbp", "$rsi", "$rdi",
+            "$rax", "$rcx", "$rdx", "$rbx", "$rsi", "$rdi",
             "$r8", "$r9", "$r10", "$r11", "$r12", "$r13", "$r14", "$r15",
         ]
         regs = {reg: addr + i * current_arch.ptrsize for i, reg in enumerate(regs)}
-        ret = ExecAsm(codes, regs=regs, step=len(codes)).exec_code(check_complete=True)
+        # gdb also deletes the watchpoint if a stepi leaves the function, so resume only once
+        ret = ExecAsm(codes, regs=regs, step=len(codes), use_bp=True).exec_code(check_complete=True)
         if ret is None:
             raise gdb.error("Could not complete the vvar read")
         values = [ret["reg"][reg] for reg in regs]
@@ -21230,11 +21234,11 @@ class VvarCommand(GenericCommand, BufferingOutput):
 
     def read(self, addr, size):
         if is_x86_64():
-            block_size = 128
-            dynamic_read = current_arch.read128
+            block_size = 112
+            dynamic_read = current_arch.read112
         elif is_x86_32():
-            block_size = 28
-            dynamic_read = current_arch.read28
+            block_size = 24
+            dynamic_read = current_arch.read24
 
         out = b""
         pos = 0
@@ -21274,7 +21278,7 @@ class VvarCommand(GenericCommand, BufferingOutput):
             if bp.type == gdb.BP_BREAKPOINT:
                 # the address is unknown for a breakpoint by a symbol until gdb 13, so disable it
                 addrs = GefUtil.get_breakpoint_addresses(bp)
-                if addrs and not any(pc <= addr < pc + 0x40 for addr in addrs): # 0x40 >= 54 bytes injected by read128
+                if addrs and not any(pc <= addr < pc + 0x40 for addr in addrs): # 0x40 >= 46 bytes injected by read112
                     continue
             breakpoints.append(bp)
         try:
@@ -22110,6 +22114,7 @@ class PidCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
     def do_invoke(self, args):
         if is_core_file():
             gef_print("Core PID: {:d}".format(Pid.get_pid(remote=True)))
@@ -22124,6 +22129,13 @@ class PidCommand(GenericCommand):
 
         if is_remote_debug():
             pid = Pid.get_pid(remote=True)
+            # gdb gives a fake PID 42000 if the stub does not report it (e.g., without the multiprocess extensions)
+            if pid == 42000:
+                try:
+                    gdb.execute("info proc", to_string=True)
+                except gdb.error as e:
+                    if str(e).startswith("Can't determine the current process's PID"):
+                        pid = None
             if pid:
                 gef_print("Remote PID: {:d}".format(pid))
                 return
@@ -22153,7 +22165,7 @@ class TidCommand(GenericCommand):
 
 @register_command
 class FilenameCommand(GenericCommand):
-    """Display current debugged filename."""
+    """Display the filename of the program being debugged."""
 
     _cmdline_ = "filename"
     _category_ = "02-d. Process Information - Trivial Information"
@@ -22168,12 +22180,17 @@ class FilenameCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
         if args.runtime:
-            filepath = Path.get_filepath_from_info_proc()
-            if filepath is None and is_remote_debug():
+            if is_core_file():
+                # `info proc` of a core file shows pr_psargs, which includes the arguments
                 filepath = Path.get_binary_map_path()
+            else:
+                filepath = Path.get_filepath_from_info_proc()
+                if filepath is None and is_remote_debug():
+                    filepath = Path.get_binary_map_path()
         else:
             filepath = Path.get_filepath()
-        if filepath is None and is_remote_debug() and not args.symbol and not args.runtime:
+        # the filename of the progspace keeps `target:` even after the remote target exits
+        if filepath is None and not args.symbol and not args.runtime:
             filepath = Path.get_remote_filepath()
         if filepath:
             gef_print(repr(filepath))
