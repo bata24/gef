@@ -3886,8 +3886,9 @@ class Instruction:
         opcodes_hex = "{:{:d}}".format(opcodes_hex, opcodes_len * 2)
         return opcodes_hex
 
-    def colored_text(self, opcodes_len=0, highlight=False, disable_color=False):
-        """Color the entire instruction, format it as a string and return it."""
+    def colored_text(self, opcodes_len=0, highlight=False, disable_color=False, use_regs=True):
+        """Color the entire instruction, format it as a string and return it.
+        Set use_regs=False not to resolve a branch target by the current registers (e.g., not at pc)."""
         if opcodes_len == 0:
             return str(self)
 
@@ -3935,7 +3936,7 @@ class Instruction:
         if self.is_branch:
             if "<" not in operands_text and "<" not in comment:
                 if self.operands and self.operands[-1]:
-                    addr = ContextCodeCommand.get_branch_addr(self)
+                    addr = ContextCodeCommand.get_branch_addr(self, use_regs=use_regs)
                     # Not using += is intentional; useless comments are discarded
                     comment = Symbol.format(addr)
 
@@ -13264,25 +13265,26 @@ def write_memory(addr, data):
         """Write `data` at address `addr` for qemu-user or Intel Pin."""
 
         def read_memory_via_proc_mem(pid, addr, length):
-            with open("/proc/{:d}/mem".format(pid), "rb") as fd:
-                try:
+            # open fails for a process that is not a child of gdb (e.g., Pin started separately) under ptrace_scope=1
+            try:
+                with open("/proc/{:d}/mem".format(pid), "rb") as fd:
                     fd.seek(addr)
                     return fd.read(length)
-                except OSError:
-                    return None
+            except OSError:
+                return None
 
         def write_memory_via_proc_mem(pid, addr, data, length):
-            with open("/proc/{:d}/mem".format(pid), "wb") as fd:
-                try:
+            try:
+                with open("/proc/{:d}/mem".format(pid), "wb") as fd:
                     fd.seek(addr)
                     ret = fd.write(data[:length])
                     fd.flush()
                     gdb.execute("maintenance flush dcache", to_string=True)
                     return ret
-                except (OSError, gdb.error):
-                    return None
-                finally:
-                    MemoryCache.reset() # it may be written partially even on failure
+            except (OSError, gdb.error):
+                return None
+            finally:
+                MemoryCache.reset() # it may be written partially even on failure
 
         def write_with_check(pid, addr, data, length, offset=0):
             before = read_memory_via_proc_mem(pid, addr + offset, length)
@@ -13326,7 +13328,7 @@ def write_memory(addr, data):
                 if ret:
                     return ret
 
-        raise Exception("Memory write error for qemu-user or Intel Pin")
+        raise gdb.MemoryError("Memory write error for qemu-user or Intel Pin")
 
     # ----
 
@@ -13349,7 +13351,7 @@ def write_memory(addr, data):
         if pid:
             return write_memory_qemu_user(pid, addr, data, length)
 
-    raise Exception("Memory write error")
+    raise gdb.MemoryError("Memory write error")
 
 
 def read_memory(addr, length, safe=False):
@@ -15590,7 +15592,11 @@ class Pid:
         def decode(addr):
             ip, port = addr.split(":")
             import socket
-            ip = socket.inet_ntop(socket.AF_INET, bytes.fromhex(ip)[::-1])
+            # the kernel prints the address in network byte order as a host-endian integer
+            ip = bytes.fromhex(ip)
+            if sys.byteorder == "little":
+                ip = ip[::-1]
+            ip = socket.inet_ntop(socket.AF_INET, ip)
             port = int(port, 16)
             return (ip, port)
 
@@ -16128,6 +16134,12 @@ class ProcessMap:
             if elf is None:
                 return []
 
+            # QEMU user-mode VDSOs may use absolute p_vaddr values.
+            # Subtract the PT_LOAD image base so those addresses are not rebased twice.
+            load_bases = [phdr.p_vaddr - phdr.p_offset for phdr in elf.phdrs if phdr.p_type == Elf.Phdr.PT_LOAD]
+            if not load_bases:
+                return []
+
             pages = []
             for phdr in elf.phdrs:
                 if not phdr.p_memsz:
@@ -16135,7 +16147,7 @@ class ProcessMap:
 
                 vaddr = phdr.p_vaddr
                 if elf.is_pie():
-                    vaddr += elf.addr
+                    vaddr += elf.addr - min(load_bases)
                 vaddr_end = vaddr + phdr.p_memsz
 
                 offset = phdr.p_offset
@@ -21142,29 +21154,54 @@ class VdsoCommand(GenericCommand, BufferingOutput):
         text_size = shdr.sh_size
         text_end = text_start + text_size
 
+        pc = current_arch.pc
+        kwargs = {}
+        if is_arm32():
+            pc &= ~1 # Thumb sets the LSB of current_arch.pc
+            # The CPSR T bit is for the current pc, so use the Thumb bit of the exported functions.
+            kwargs["mode"] = "ARM"
+            dynsym = elf.get_shdr(".dynsym")
+            if dynsym:
+                dynsym_start = entry.page_start + dynsym.sh_addr - min(load_bases)
+                data = read_memory(dynsym_start, dynsym.sh_size, safe=True) or b""
+                for sym in slicer(data, 16): # Elf32_Sym: st_name, st_value, st_size, st_info, st_other, st_shndx
+                    if sym[12] & 0xf == 2 and u32(sym[4:8]) & 1: # STT_FUNC with the Thumb bit
+                        kwargs["mode"] = "THUMB"
+                        break
+
         # disassemble
+        result_lines = []
         try:
             __import__("capstone")
-            result_lines = []
             code = read_memory(text_start, text_size, safe=True)
             if code is None:
                 err("Memory read error")
                 return
-            for insn in Disasm.capstone_disassemble(text_start, text_size, code=code):
-                if insn.address >= text_end:
-                    break
-                if insn.address == current_arch.pc:
-                    result_lines.append(" -> {:s}".format(insn.colored_text(10, highlight=True)))
-                else:
-                    result_lines.append("    {:s}".format(insn.colored_text(10, highlight=False)))
-        except ImportError:
-            gen = Disasm.gdb_disassemble(text_start, end_pc=text_end - 1)
-            result_lines = []
-            for insn in gen:
-                if insn.address == current_arch.pc:
-                    result_lines.append(" -> {!s}".format(insn))
-                else:
-                    result_lines.append("    {!s}".format(insn))
+            # the call (not the iteration) of the generator updates `capstone_support`
+            insns = Disasm.capstone_disassemble(text_start, text_size, code=code, **kwargs)
+            # e.g., LoongArch needs capstone v6.x~
+            if current_arch.capstone_support:
+                for insn in insns:
+                    if insn.address >= text_end:
+                        break
+                    if insn.address == pc:
+                        result_lines.append(" -> {:s}".format(insn.colored_text(10, highlight=True)))
+                    else:
+                        # other lines are not executed now, so the current registers do not tell the branch target
+                        result_lines.append("    {:s}".format(insn.colored_text(10, highlight=False, use_regs=False)))
+        except (ImportError, AttributeError): # AttributeError: e.g., capstone has no mode for MIPS n32
+            pass
+
+        if not result_lines:
+            with contextlib.ExitStack() as force_mode:
+                if is_arm32():
+                    force_mode.enter_context(ContextManager.gdb_parameter("arm force-mode", kwargs["mode"].lower()))
+                gen = Disasm.gdb_disassemble(text_start, end_pc=text_end - 1)
+                for insn in gen:
+                    if insn.address == pc:
+                        result_lines.append(" -> {!s}".format(insn))
+                    else:
+                        result_lines.append("    {!s}".format(insn))
 
         self.out = []
         for line in result_lines:
@@ -21227,10 +21264,19 @@ class VvarCommand(GenericCommand, BufferingOutput):
         # dump
         # The data is at +0x80 until Linux 6.12 (arch/x86/include/asm/vvar.h) and at +0x0 since 6.13.
         # Before 6.13, +0x20-0x7f is unused (jiffies and vgetcpu_mode used +0x0-0x13 until 3.18).
+        # A breakpoint in the code injected at pc interrupts the read, but enabling it again resets `enable count`.
+        pc = current_arch.pc
         breakpoints = []
         for bp in gdb.breakpoints() or []:
-            if bp.enabled and bp.number > 0:
-                breakpoints.append(bp)
+            if not bp.enabled or bp.number <= 0:
+                continue
+            # a watchpoint is not in the code but may stop the read (e.g., rwatch on vvar)
+            if bp.type == gdb.BP_BREAKPOINT:
+                # the address is unknown for a breakpoint by a symbol until gdb 13, so disable it
+                addrs = GefUtil.get_breakpoint_addresses(bp)
+                if addrs and not any(pc <= addr < pc + 0x40 for addr in addrs): # 0x40 >= 54 bytes injected by read128
+                    continue
+            breakpoints.append(bp)
         try:
             for bp in breakpoints:
                 bp.enabled = False
@@ -22176,31 +22222,33 @@ class ProcInfoCommand(GenericCommand):
         try:
             cmdline = open("/proc/{:d}/cmdline".format(pid), "rb").read()
         except (FileNotFoundError, OSError):
-            return []
+            return "[]"
         if not cmdline:
-            return []
+            return "[]"
         args = cmdline.split(b"\0")
         if args[-1] == b"":
             args.pop()
-        return [arg.decode("utf-8", "backslashreplace") for arg in args]
+        # repr_os_path shows a raw byte 0xff as \xff, which differs from the literal "\xff" shown as \\xff
+        args = [String.repr_os_path(arg.decode("utf-8", "surrogateescape")) for arg in args]
+        return "[{:s}]".format(", ".join(args))
 
     def get_process_path_of(self, pid):
         try:
-            return os.readlink("/proc/{:d}/exe".format(pid))
+            return String.repr_os_path(os.readlink("/proc/{:d}/exe".format(pid)))
         except (FileNotFoundError, OSError):
-            return "Not found"
+            return repr("Not found")
 
     def get_process_cwd(self, pid):
         try:
-            return os.readlink("/proc/{:d}/cwd".format(pid))
+            return String.repr_os_path(os.readlink("/proc/{:d}/cwd".format(pid)))
         except (FileNotFoundError, OSError):
-            return "Not found"
+            return repr("Not found")
 
     def get_process_root(self, pid):
         try:
-            return os.readlink("/proc/{:d}/root".format(pid))
+            return String.repr_os_path(os.readlink("/proc/{:d}/root".format(pid)))
         except (FileNotFoundError, OSError):
-            return "Not found"
+            return repr("Not found")
 
     def get_thread_ids(self, pid):
         try:
@@ -22210,19 +22258,15 @@ class ProcInfoCommand(GenericCommand):
             return []
 
     def get_children_pids(self, pid):
-        try:
-            ps = GefUtil.which("ps")
-        except FileNotFoundError as e:
-            err("{}".format(e))
-            return []
-
-        # Trick: If there are no child processes, `ps` exit code will be non-zero,
-        # causing a subprocess.CalledProcessError exception to be raised.
-        cmd = [ps, "-o", "pid", "--ppid", str(pid), "--noheaders"]
-        try:
-            return [int(x) for x in GefUtil.gef_execute_external(cmd, as_list=True)]
-        except (subprocess.CalledProcessError, ValueError):
-            return []
+        # `ps --ppid` is not supported by some ps (e.g., busybox), so read the ppid of each process
+        children = []
+        for x in os.listdir("/proc"):
+            if not x.isdigit():
+                continue
+            proc_stat = self.get_stat_of(int(x))
+            if proc_stat and proc_stat[3] == pid:
+                children.append(int(x))
+        return sorted(children)
 
     def get_uid_map(self, pid):
         try:
@@ -22239,20 +22283,6 @@ class ProcInfoCommand(GenericCommand):
         return slicer([int(x) for x in gid_map.split()], 3)
 
     def get_tty_str(self, major, minor):
-        try:
-            devices = open("/proc/devices", "r").read()
-        except (FileNotFoundError, OSError):
-            return "Not found"
-        for line in devices.splitlines():
-            if not line or line.endswith(":"):
-                continue
-            n, name = line.strip().split()
-            if major == int(n):
-                if not name.startswith("/dev"):
-                    name = os.path.join("/dev", name)
-                break
-        else:
-            return "Not found"
 
         def get_major_minor(name):
             try:
@@ -22263,19 +22293,11 @@ class ProcInfoCommand(GenericCommand):
                 return os.major(device.st_rdev), os.minor(device.st_rdev)
             return None
 
-        if not os.path.exists(name):
-            return "Not found"
-
-        if os.path.islink(name):
-            return "Not found"
-
-        if get_major_minor(name) == (major, minor):
-            return name
-
-        if os.path.isdir(name):
-            for path in GefUtil.walk(name):
-                if get_major_minor(path) == (major, minor):
-                    return path
+        # /proc/devices has no minor, and the first name of a major may not exist
+        # (e.g., /dev/vc/0, tty and ttyS of major 4 for /dev/tty1 and /dev/ttyS0), so search /dev.
+        for path in GefUtil.walk("/dev"):
+            if get_major_minor(path) == (major, minor):
+                return path
         return "Not found"
 
     def show_info_proc(self):
@@ -22287,10 +22309,10 @@ class ProcInfoCommand(GenericCommand):
         cwd = self.get_process_cwd(pid)
         root = self.get_process_root(pid)
         gef_print("{:30s}  ->  {:d}".format("PID", pid))
-        gef_print("{:30s}  ->  {!r}".format("  Executable", executable))
-        gef_print("{:30s}  ->  {!r}".format("  Command Line", cmdline))
-        gef_print("{:30s}  ->  {!r}".format("  Current Working Directory", cwd))
-        gef_print("{:30s}  ->  {!r}".format("  Root Directory", root))
+        gef_print("{:30s}  ->  {:s}".format("  Executable", executable))
+        gef_print("{:30s}  ->  {:s}".format("  Command Line", cmdline))
+        gef_print("{:30s}  ->  {:s}".format("  Current Working Directory", cwd))
+        gef_print("{:30s}  ->  {:s}".format("  Root Directory", root))
         uids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Uid"])
         gids = re.sub(r"\s+", " : ", self.get_state_of(pid)["Gid"])
         gef_print("{:30s}  ->  {:s}".format("  RUID:EUID:SavedUID:FSUID", uids))
@@ -22310,22 +22332,22 @@ class ProcInfoCommand(GenericCommand):
         pgid_exec = self.get_process_path_of(pgid)
         pgid_cmdline = self.get_cmdline_of(pgid)
         gef_print("{:30s}  ->  {:d}".format("Process Group ID", pgid))
-        gef_print("{:30s}  ->  {!r}".format("  Executable", pgid_exec))
-        gef_print("{:30s}  ->  {!r}".format("  Command Line", pgid_cmdline))
+        gef_print("{:30s}  ->  {:s}".format("  Executable", pgid_exec))
+        gef_print("{:30s}  ->  {:s}".format("  Command Line", pgid_cmdline))
         sid = stat[5]
         sid_exec = self.get_process_path_of(sid)
         sid_cmdline = self.get_cmdline_of(sid)
         gef_print("{:30s}  ->  {:d}".format("Session ID", sid))
-        gef_print("{:30s}  ->  {!r}".format("  Executable", sid_exec))
-        gef_print("{:30s}  ->  {!r}".format("  Command Line", sid_cmdline))
+        gef_print("{:30s}  ->  {:s}".format("  Executable", sid_exec))
+        gef_print("{:30s}  ->  {:s}".format("  Command Line", sid_cmdline))
         tpgid = stat[7]
         tpgid_exec = self.get_process_path_of(tpgid)
         tpgid_cmdline = self.get_cmdline_of(tpgid)
         gef_print("{:30s}  ->  {:d}".format("TTY Process Group ID", tpgid))
-        gef_print("{:30s}  ->  {!r}".format("  Executable", tpgid_exec))
-        gef_print("{:30s}  ->  {!r}".format("  Command Line", tpgid_cmdline))
+        gef_print("{:30s}  ->  {:s}".format("  Executable", tpgid_exec))
+        gef_print("{:30s}  ->  {:s}".format("  Command Line", tpgid_cmdline))
         ttynr = stat[6]
-        major, minor = (ttynr >> 8) & 0xff, ((ttynr >> 20) << 8) | (ttynr & 0xff)
+        major, minor = (ttynr >> 8) & 0xfff, ((ttynr >> 20) << 8) | (ttynr & 0xff) # new_encode_dev()
         ttystr = self.get_tty_str(major, minor)
         gef_print("{:30s}  ->  {:d} ({!r})".format("  TTY Device Number", ttynr, ttystr))
         return
@@ -22336,8 +22358,8 @@ class ProcInfoCommand(GenericCommand):
         ppid_exec = self.get_process_path_of(ppid)
         ppid_cmdline = self.get_cmdline_of(ppid)
         gef_print("{:30s}  ->  {:d}".format("Parent PID", ppid))
-        gef_print("{:30s}  ->  {!r}".format("  Executable", ppid_exec))
-        gef_print("{:30s}  ->  {!r}".format("  Command Line", ppid_cmdline))
+        gef_print("{:30s}  ->  {:s}".format("  Executable", ppid_exec))
+        gef_print("{:30s}  ->  {:s}".format("  Command Line", ppid_cmdline))
         return
 
     def show_childs(self):
@@ -22352,8 +22374,8 @@ class ProcInfoCommand(GenericCommand):
             cpid_exec = self.get_process_path_of(cpid)
             cpid_cmdline = self.get_cmdline_of(cpid)
             gef_print("{:30s}  ->  {:d}".format("Child {:d} PID".format(i), cpid))
-            gef_print("{:30s}  ->  {!r}".format("  Executable", cpid_exec))
-            gef_print("{:30s}  ->  {!r}".format("  Command Line", cpid_cmdline))
+            gef_print("{:30s}  ->  {:s}".format("  Executable", cpid_exec))
+            gef_print("{:30s}  ->  {:s}".format("  Command Line", cpid_cmdline))
         return
 
     def show_info_thread(self):
@@ -22499,14 +22521,18 @@ class ProcInfoCommand(GenericCommand):
         ip, port = addr.split(":")
 
         import socket
+        # the kernel prints each 32-bit word of the address in network byte order as a host-endian integer
         if len(ip) == 8: # ipv4
-            # 0100007F -> 127.0.0.1
-            ip = bytes.fromhex(ip)[::-1]
+            # 0100007F -> 127.0.0.1 (little endian host)
+            ip = bytes.fromhex(ip)
+            if sys.byteorder == "little":
+                ip = ip[::-1]
             ip = socket.inet_ntop(socket.AF_INET, ip)
         else: # ipv6
-            # 00000000000000000000000001000000 -> ::1
+            # 00000000000000000000000001000000 -> ::1 (little endian host)
             ip = bytes.fromhex(ip)
-            ip = b"".join([x[::-1] for x in slicer(ip, 4)])
+            if sys.byteorder == "little":
+                ip = b"".join([x[::-1] for x in slicer(ip, 4)])
             ip = socket.inet_ntop(socket.AF_INET6, ip)
             ip = "[{:s}]".format(ip)
 
@@ -30863,7 +30889,8 @@ class CapstoneDisassembleCommand(GenericCommand):
                 if insn.address == current_arch.pc:
                     msg = " -> {:s}".format(insn.colored_text(10, highlight=True))
                 else:
-                    msg = "    {:s}".format(insn.colored_text(10, highlight=False))
+                    # other lines are not executed now, so the current registers do not tell the branch target
+                    msg = "    {:s}".format(insn.colored_text(10, highlight=False, use_regs=False))
                 gef_print(msg)
         except AttributeError:
             err("Maybe unsupported architecture")
@@ -44914,7 +44941,8 @@ class ContextCodeCommand(GenericCommand):
     RE_SUB_BRANCH_ADDR7 = re.compile(r".*(0x[a-fA-F0-9]+).*")
 
     @staticmethod
-    def get_branch_addr(insn, to_str=False):
+    def get_branch_addr(insn, to_str=False, use_regs=True):
+        """Return the branch target of `insn`. Set use_regs=False to return None for a target by registers."""
         ops = " ".join(insn.operands)
         ops = re.sub(r"<.*?>", "", ops)
 
@@ -44950,6 +44978,8 @@ class ContextCodeCommand(GenericCommand):
             if " PTR [" in ops or " ptr [" in ops:
                 addr = ContextCodeCommand.RE_SUB_BRANCH_ADDR3.sub(r"\2", ops)
                 addr = re.sub(r"\b([a-z][a-z0-9]*)\b", r"$\1", addr)
+                if not use_regs and "$" in addr: # e.g., [rip + 0x2fe2] by capstone is relative to the current rip
+                    return None
                 addr = addr.replace("$eiz", "0").replace("$riz", "0")
                 if is_x86_64():
                     addr = re.sub(r"\$(rip|eip)\b", r"($\1+{:#x})".format(len(insn.opcodes)), addr)
@@ -45056,6 +45086,8 @@ class ContextCodeCommand(GenericCommand):
                 maybe_reg = maybe_reg[1:-1]
             ptr = get_register(maybe_reg)
             if ptr is not None:
+                if not use_regs:
+                    return None
                 if to_str:
                     return "{:#x}".format(ptr)
                 else:
@@ -45065,6 +45097,8 @@ class ContextCodeCommand(GenericCommand):
         #   ppc: bctr
         if is_ppc():
             if insn.mnemonic == "bctr":
+                if not use_regs:
+                    return None
                 addr = get_register("ctr")
                 if addr is None:
                     return None
@@ -45077,6 +45111,8 @@ class ContextCodeCommand(GenericCommand):
         #   loongarch64: jirl $ra, $ra, 0
         if is_loongarch64():
             if insn.mnemonic == "jirl":
+                if not use_regs:
+                    return None
                 if len(insn.operands) >= 3:
                     reg = insn.operands[1]
                     off = int(insn.operands[2], 0)
@@ -116727,7 +116763,13 @@ class ExecAsm:
             bp = None
             try:
                 bp = gdb.Breakpoint("*{:#x}".format(d["pc"]), gdb.BP_BREAKPOINT, internal=True)
-                with ContextManager.suspend_stop_handler():
+                with contextlib.ExitStack() as output:
+                    if not self.debug:
+                        # to_string=True does not capture the stop message (e.g., "Breakpoint -10, main () at a.c:4")
+                        gdb.flush() # do not discard the buffered output of the user
+                        output.enter_context(ContextManager.redirect_output(stderr=False))
+                        output.callback(gdb.flush) # discard the buffered stop message
+                    output.enter_context(ContextManager.suspend_stop_handler())
                     gdb.execute("c", to_string=True)
             finally:
                 if bp is not None:
