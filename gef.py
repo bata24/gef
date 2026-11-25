@@ -191,6 +191,7 @@ GEF_RC                      = os.getenv("GEF_RC") or os.path.join(os.getenv("HOM
 GEF_TEMP_DIR                = os.path.join(tempfile.gettempdir(), "gef")
 GEF_FILEPATH                = os.path.abspath(os.path.expanduser(http_get.__code__.co_filename)) # the full path of GEF
                             # note: __file__ will no longer be available from gdb 15
+GDB_VERSION                 = tuple(map(int, re.search(r"(\d+)[^\d]+(\d+)", gdb.VERSION).groups()))
 
 
 def get_current_arch():
@@ -621,6 +622,14 @@ class MemoryCache:
         if QemuMonitor.check_gic_address(addr, length, physical=MemoryCache.default_namespace == "physical"):
             raise gdb.MemoryError("Refused to read a device that QEMU cannot read: {:#x}+{:#x}".format(addr, length))
         try:
+            if GDB_VERSION < (15, 0) and length > 0x100_0000:
+                # before gdb 15.x, gdb allocates the whole buffer first and dies by internal-error
+                # if it fails (PR python/31631), so read a large range in pieces
+                out = bytearray()
+                while len(out) < length:
+                    size = min(0x100_0000, length - len(out))
+                    out += gdb.selected_inferior().read_memory(addr + len(out), size).tobytes()
+                return bytes(out)
             return gdb.selected_inferior().read_memory(addr, length).tobytes()
         except gdb.MemoryError as e:
             out = bytearray()
@@ -1892,8 +1901,8 @@ class AddressUtil:
         return AddressUtil.get_vmem_end() - 1
 
     @staticmethod
-    def parse_address(addr):
-        """Parse an address and return it as an Integer."""
+    def parse_address(addr, signed=False):
+        """Parse an address (or a signed value if `signed` is True) and return it as an Integer."""
         try:
             return int(addr, 0)
         except ValueError:
@@ -1903,6 +1912,9 @@ class AddressUtil:
             raise ValueError
         # Don't enclose it in a try-catch. This is because it is used with argparse,
         # and is intended to raise an exception if parsing fails.
+        if signed:
+            # e.g., a length of `0-1` or a negative `$len` should be rejected, not masked to a huge value
+            return int(gdb.parse_and_eval(addr))
         return to_unsigned_long(gdb.parse_and_eval(addr))
 
     @staticmethod
@@ -19811,7 +19823,7 @@ class BreakRelativeVirtualAddressCommand(GenericCommand):
 
 @register_command
 class PrintFormatCommand(GenericCommand):
-    """Print bytes format in high level languages."""
+    """Print memory as hex or as data literals for Python, C, JavaScript, or assembly."""
 
     _cmdline_ = "print-format"
     _category_ = "07-c. Misc - Generation"
@@ -19822,12 +19834,12 @@ class PrintFormatCommand(GenericCommand):
                         choices=["py", "c", "js", "asm", "hex", "hexn", "hexs", "hexsn"],
                         help="the output format. (default: %(default)s)")
     parser.add_argument("-b", dest="bitlen", type=int, default=8, choices=[8, 16, 32, 64],
-                        help="the size of bit. (default: %(default)s)")
+                        help="the bit width of each element. (default: %(default)s)")
     group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("-l", dest="length", type=AddressUtil.parse_address, default=256,
-                        help="the length of array. (default: %(default)s)")
+    group.add_argument("-l", dest="length", type=lambda x: AddressUtil.parse_address(x, signed=True), default=256,
+                        help="the number of elements. (default: %(default)s)")
     group.add_argument("-t", dest="to_addr", type=AddressUtil.parse_address,
-                        help="specify the end address instead of the length.")
+                        help="the end address (exclusive) instead of the length.")
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the address of data to dump.")
     _syntax_ = parser.format_help()
@@ -19863,15 +19875,12 @@ class PrintFormatCommand(GenericCommand):
             err("Range size must be a multiple of {:d}".format(unit_size))
             return None
 
-        bit_format = Endian.arrow_str() + {8: "B", 16: "H", 32: "I", 64: "Q"}[self.args.bitlen]
-        data = []
-        for address in range(self.args.location, end_addr, unit_size):
-            mem = read_memory(address, unit_size, safe=True)
-            if mem is None:
-                err("Memory read error")
-                return None
-            value = struct.unpack(bit_format, mem)[0]
-            data.append(value)
+        # read at once, since reading each element up to the end of a huge range takes a long time
+        mem = read_memory(self.args.location, size, safe=True)
+        if mem is None:
+            err("Memory read error")
+            return None
+        data = slice_unpack(mem, unit_size)
         return data
 
     def parse_data(self, data):
@@ -19926,7 +19935,7 @@ class PrintFormatCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
         if args.format in ["hex", "hexn", "hexs", "hexsn"] and args.bitlen != 8:
-            err("{:s} must be bit == 8".format(args.format))
+            err("-f {:s} requires -b 8".format(args.format))
             return
 
         data = self.extract_memory()
@@ -238280,7 +238289,6 @@ class Gef:
     @staticmethod
     def main():
         # check gdb version
-        GDB_VERSION = tuple(map(int, re.search(r"(\d+)[^\d]+(\d+)", gdb.VERSION).groups()))
         GDB_MIN_VERSION = (9, 2) # ubuntu 20.04
         if GDB_VERSION < GDB_MIN_VERSION:
             err("GDB version ({:s}) is too old (<{:d}.{:d}). Try upgrading it.".format(
