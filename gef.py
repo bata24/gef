@@ -9327,7 +9327,12 @@ class X86_16(Architecture):
         gdb.execute("gef config context_code.use_capstone True")
         return
 
-    flag_register_to_human = X86.flag_register_to_human
+    def flag_register_to_human(self, val=None):
+        # the real mode has no privilege level, so do not show the ring of X86
+        if val is None:
+            reg = self.flag_register
+            val = get_register(reg) & 0xffff_ffff
+        return Architecture.flags_to_human(val, self.flags_table)
 
     def is_syscall(self, insn):
         mnemo, operands = X86.get_mnemonic_operands(insn)
@@ -12705,21 +12710,46 @@ class ARC(Architecture):
     }
 
     flag_register = "$status32"
-    flags_table = {
-        0: "halt",
-        1: "e1",
-        2: "e2",
-        3: "a1",
-        4: "a2",
-        5: "ae",
-        6: "de",
-        7: "user",
-        8: "overflow",
-        9: "carry",
-        10: "negative",
-        11: "zero",
-        12: "loop",
-    }
+
+    @property
+    def flags_table(self):
+        # ARCompact (ARC600/ARC700) has E1, E2, A1 and A2 at bit 1-4.
+        # ARCv2 and later have the interrupt priority level E there, and RB (bit 16-18), both of which have multiple bits.
+        if get_arch().upper() in ("ARC600", "ARC601", "ARC700"):
+            return {
+                0: "halt",
+                1: "e1",
+                2: "e2",
+                3: "a1",
+                4: "a2",
+                5: "ae",
+                6: "de",
+                7: "user",
+                8: "overflow",
+                9: "carry",
+                10: "negative",
+                11: "zero",
+                12: "loop",
+            }
+        else:
+            return {
+                0: "halt",
+                5: "ae",
+                6: "de",
+                7: "user",
+                8: "overflow",
+                9: "carry",
+                10: "negative",
+                11: "zero",
+                12: "loop",
+                13: "dz",
+                14: "sc",
+                15: "es",
+                19: "ad",
+                20: "us",
+                31: "ie",
+            }
+
     return_register = "$r0"
     function_parameters = ["$r0", "$r1", "$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]
     syscall_register = "$r8"
@@ -26341,7 +26371,7 @@ class EditFlagsCommand(GenericCommand):
     _category_ = "04-b. Register - Modify"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("flagname", metavar="[FLAGNAME(+|-|~) ...]", nargs="*", help="the flag name to edit.")
+    parser.add_argument("flagname", metavar="FLAGNAME(+|-|~)", nargs="*", help="the flag name to edit.")
     parser.add_argument("-v", "--verbose", action="store_true", help="show the bit information of the flag register.")
     _syntax_ = parser.format_help()
 
@@ -26361,8 +26391,9 @@ class EditFlagsCommand(GenericCommand):
     def edit_flags(self, flag_names):
         operations = []
         for flag in flag_names:
+            # SH4 and C-SKY have only one flag, so an empty name would match it
             if len(flag) < 2:
-                err("Too short length of the name")
+                err("Invalid flag '{:s}' (expected NAME+, NAME- or NAME~)".format(flag))
                 return
 
             if flag[-1] not in ("+", "-", "~"):
@@ -26417,7 +26448,17 @@ class EditFlagsCommand(GenericCommand):
                 else:
                     new_flags = old_flag ^ (1 << off)
 
-                gdb.execute("set ({:s}) = {:#x}".format(current_arch.flag_register, new_flags))
+                # gdb does not cast an int to the flags type of another size (e.g., 8-byte $status32 of ARCv3)
+                if gdb.parse_and_eval(current_arch.flag_register).type.sizeof == 8:
+                    reg_type = "unsigned long long"
+                else:
+                    reg_type = "unsigned int"
+                try:
+                    gdb.execute("set ({:s}) = ({:s}){:#x}".format(current_arch.flag_register, reg_type, new_flags))
+                except gdb.error as e:
+                    # e.g., a core file, or Linux rejects I and F of cpsr on ARM
+                    err("Failed to write {:s}: {:s}".format(current_arch.flag_register, str(e)))
+                    return
         return
 
     def verbose_x86(self):
@@ -26553,7 +26594,7 @@ class EditFlagsCommand(GenericCommand):
             "|||| |||| |||| |||| |||| |||| ||||       " + "   Supervisor:0b0011 Monitor:0b0110 Abort:0b0111",
             "|||| |||| |||| |||| |||| |||| ||||       " + "   Hyp:0b1010 Undefined:0b1011 System:0b1111",
             "|||| |||| |||| |||| |||| |||| ||||",
-            "|||| |||| |||| |||| |||| |||| |||+------ " + c("0x00000010 [M.S]   Execution state (AAch64:0, AArch32:1)"),
+            "|||| |||| |||| |||| |||| |||| |||+------ " + c("0x00000010 [M.S]   Execution state (AArch64:0, AArch32:1)"),
             "|||| |||| |||| |||| |||| |||| ||+------- " + c("0x00000020 [T]     T32 instruction set (Thumb) state bit"),
             "|||| |||| |||| |||| |||| |||| |+-------- " + c("0x00000040 [F]     FIQ interrupt mask bit"),
             "|||| |||| |||| |||| |||| |||| +--------- " + c("0x00000080 [I]     IRQ interrupt mask bit"),
@@ -26639,11 +26680,12 @@ class KillThreadsCommand(GenericCommand):
     parser.add_argument("thread_id", metavar="THREAD_ID", nargs="*", type=int, help="the thread id (not TID) to kill.")
     parser.add_argument("-a", "--all", action="store_true", help="kill all threads except current thread.")
     parser.add_argument("-e", "--exclude", action="append", type=int, default=[], help="the thread id not to kill.")
-    parser.add_argument("-c", "--commit", action="store_true", help="commit to kill.")
+    parser.add_argument("-c", "--commit", action="store_true", help="actually perform the kill.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        '{0:s} 2 3   # kill threads that `Thread Id` is 2 or 3',
+        '{0:s} 2 3            # show threads that `Thread Id` is 2 or 3 without killing them',
+        '{0:s} 2 3 --commit   # kill threads that `Thread Id` is 2 or 3',
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
@@ -26653,7 +26695,7 @@ class KillThreadsCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "qemu-user", "kgdb", "vmware", "wine", "core"))
     @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -26691,10 +26733,12 @@ class KillThreadsCommand(GenericCommand):
             with ContextManager.gdb_parameter("scheduler-locking", "on"), ContextManager.threads(target_threads) as threads:
                 # kill
                 for thread in threads:
+                    # the killed thread exits during the call, so gdb aborts it and thread.num is no longer readable
+                    num = thread.num
                     try:
                         gdb.execute("call (void)pthread_exit(0)")
                     except (gdb.error, RuntimeError) as error:
-                        failures[thread.num] = str(error)
+                        failures[num] = str(error)
             for thread in target_threads:
                 if thread.is_valid():
                     reason = failures.get(thread.num)
@@ -26726,7 +26770,7 @@ class CallSyscallCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine", "core"))
     @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -26756,17 +26800,42 @@ class CallSyscallCommand(GenericCommand):
             gef_print("Prototype: {:s}{:s}".format(Color.boldify(args.syscall_name), params))
             return
 
-        width = current_arch.ptrsize * 8
-        for index, value in enumerate(args.syscall_args, 1):
+        values = []
+        for index, (value, arg_full) in enumerate(zip(args.syscall_args, entry.args_full), 1):
+            if "*" not in arg_full and re.search(r"\b(loff_t|u64|unsigned long long)\b|\barg_u32p\(", arg_full):
+                width = 64
+            else:
+                width = current_arch.ptrsize * 8
             if not AddressUtil.fits_width(value, width):
-                err("Argument {:d} out of range for {:d}-bit target".format(index, width))
+                err("Argument {:d} out of range for {:d} bits".format(index, width))
                 return
+            value &= (1 << width) - 1
+            # n32 passes a 64-bit argument in one 64-bit register
+            if width == current_arch.ptrsize * 8 or is_mipsn32():
+                values.append(value)
+                continue
+            # The 32-bit ABIs pass a 64-bit argument in two registers (the upper one first on big-endian),
+            # and ARM32 EABI, MIPS o32, PPC32 and Xtensa align them to an even/odd pair
+            if is_arm32() or is_mips32() or is_ppc32() or is_xtensa():
+                values += [0] * (len(values) % 2)
+            if Endian.is_big_endian():
+                values += [value >> 32, value & 0xffff_ffff]
+            else:
+                values += [value & 0xffff_ffff, value >> 32]
+        if len(values) > len(current_arch.syscall_parameters):
+            err("Too many arguments for the syscall registers")
+            return
+
+        thread = gdb.selected_thread()
+        if thread is None or not thread.is_stopped():
+            err("Stop the selected thread before calling a syscall")
+            return
 
         # title
         title = "{:s}({:s})".format(args.syscall_name, ", ".join(["{:#x}".format(x) for x in args.syscall_args]))
         gef_print(titlify(title))
 
-        ret = ExecSyscall(nr, args.syscall_args).exec_code()
+        ret = ExecSyscall(nr, values).exec_code()
 
         if isinstance(current_arch.return_register, list):
             for ret_regs in current_arch.return_register:
@@ -26782,6 +26851,20 @@ class CallSyscallCommand(GenericCommand):
                 else:
                     line += " (-{:d})".format(errno)
             gef_print(line)
+
+            # these syscalls return the second value in another register (e.g., the write end of pipe)
+            if current_arch.arch == "MIPS" and args.syscall_name == "pipe":
+                second_register = "$v1"
+            elif current_arch.arch == "SPARC" and args.syscall_name == "pipe":
+                second_register = "$o1"
+            elif current_arch.arch == "SH4" and args.syscall_name == "pipe":
+                second_register = "$r1"
+            elif current_arch.arch == "ALPHA" and args.syscall_name in ("pipe", "getxpid", "getxuid", "getxgid"):
+                second_register = "$a4"
+            else:
+                second_register = None
+            if second_register is not None and errno is None:
+                gef_print("{:s} = {:#x}".format(second_register, ret["reg"][second_register]))
         return
 
 
@@ -65246,7 +65329,7 @@ class SyscallARM32Emulated(Syscall):
             "unsigned int fd", "u32 __pad", "arg_u32p(length)",
         ], # arch/arm64/kernel/sys32.c
         "compat_sys_aarch32_readahead": [
-            "int fd", "u32 __pad", "arg_u32(offset)", "size_t count",
+            "int fd", "u32 __pad", "arg_u32p(offset)", "size_t count",
         ], # arch/arm64/kernel/sys32.c
         "compat_sys_aarch32_statfs64": [
             "const char *pathname", "compat_size_t sz", "struct compat_statfs64 *buf",
@@ -116919,7 +117002,21 @@ class ExecAsm:
             write_memory(d["pc"], d["code"])
         finally:
             # reg
-            for reg, v in d["reg"].items():
+            regs = d["reg"]
+            # At a syscall entry stop, x86 has -ENOSYS in rax and the number in orig_rax. Since modify_code discarded
+            # the pending syscall, let the kernel restart it on resume like a syscall interrupted by a signal.
+            if is_x86_64():
+                ret_reg, orig_reg = "$rax", "$orig_rax"
+            elif is_x86_32():
+                ret_reg, orig_reg = "$eax", "$orig_eax"
+            else:
+                ret_reg, orig_reg = None, None
+            if orig_reg in regs:
+                bits = current_arch.ptrsize * 8
+                if u2i(regs[orig_reg], bits) >= 0 and u2i(regs[ret_reg], bits) == -38: # -ENOSYS
+                    regs = regs.copy()
+                    regs[ret_reg] = -513 & ((1 << bits) - 1) # -ERESTARTNOINTR
+            for reg, v in regs.items():
                 # writing a pc register (e.g., $pcoqh) may leave an outer frame selected
                 gdb.newest_frame().select()
                 if get_register(reg) == v:
@@ -117205,6 +117302,11 @@ class ExecSyscall(ExecAsm):
         value = regs[current_arch.return_register]
         if current_arch.arch in ("MIPS", "ALPHA"):
             if regs.get("$a3"):
+                return value
+            return None
+        if current_arch.arch == "NIOS2":
+            # the kernel sets the positive errno to r2 and 1 to r7 on failure
+            if regs.get("$r7"):
                 return value
             return None
         if current_arch.arch == "PPC":
