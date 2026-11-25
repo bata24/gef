@@ -28257,26 +28257,18 @@ class UnicornEmulator:
     class Node:
         """A node in the future-calls tree."""
 
-        def __init__(self, address, insn_address=None, kind="call", label=None):
+        def __init__(self, address, insn_address=None, kind="call", label=None, args=None, retval=None):
             """Create a tree node for a call, return, or root entry."""
             self.address = address
             self.insn_address = insn_address
             self.kind = kind
             self.label = label
+            self.args = args
+            self.retval = retval
             self.children = []
             self.truncated = False
             self.error = None
             return
-
-        @staticmethod
-        def format_address(address):
-            """Format an address with the best symbol information available."""
-            if address is None:
-                return "UNKNOWN"
-            try:
-                return Symbol.format(address, missing="NO_SYMBOL", show_address=True)
-            except Exception:
-                return "{:#x} <NO_SYMBOL>".format(address)
 
         @staticmethod
         def reason_color(reason):
@@ -28299,34 +28291,62 @@ class UnicornEmulator:
             ))
 
         def lines(self):
-            """Render this node and its children as tree lines."""
-            text = self.label or self.format_address(self.address)
-            if self.kind == "ret":
-                if self.address is None:
-                    text = "ret"
+            """Render this node and its children as pairs of the instruction address and the tree text."""
+            if self.kind == "root":
+                address = self.address
+                text = "(start)"
+                symbol = Symbol.format(self.address)
+                if symbol:
+                    text += " " + symbol
+            elif self.kind == "ret":
+                address = self.insn_address
+                text = "ret"
+                if self.retval is not None:
+                    text += " = {:#x}".format(self.retval)
+            else:
+                address = self.insn_address
+                if self.label is not None:
+                    target = self.label
                 else:
-                    text = "ret -> {:s}".format(text)
-            if self.insn_address is not None:
-                if self.kind == "ret":
-                    tag = "at"
-                else:
-                    tag = "from"
-                text += " [{:s} {:s}]".format(tag, self.format_address(self.insn_address))
-            if self.truncated:
-                text += " " + Color.colorify("[truncated]", "bold yellow")
-            if self.error:
-                color = self.reason_color(self.error)
-                text += " " + Color.colorify("[{:s}]".format(self.error), "bold {:s}".format(color))
+                    target = Symbol.format(self.address, bracket="")
+                    if not target:
+                        target = AddressUtil.format_address(self.address)
+                text = "call " + target
+                if self.args is not None:
+                    values = []
+                    for value in self.args:
+                        if value is None:
+                            values.append("?")
+                        else:
+                            values.append("{:#x}".format(value))
+                    text += "({:s})".format(", ".join(values))
 
-            lines = [text]
+            # a call that is not run or fails is skipped with the registers before the call
+            if self.error:
+                if self.error == "depth limit reached":
+                    tag = "not run"
+                elif self.reason_color(self.error) == "yellow":
+                    tag = "stopped"
+                else:
+                    tag = "failed"
+                color = "bold {:s}".format(self.reason_color(self.error))
+                text += "  " + Color.colorify("[{:s}: {:s}]".format(tag, self.error), color)
+            elif self.truncated:
+                text += "  " + Color.colorify("[not run: invalid target]", "bold red")
+
+            lines = [(address, text)]
             for i, child in enumerate(self.children):
-                child_lines = child.lines()
-                lines.append("+- " + child_lines[0])
                 if i == len(self.children) - 1:
+                    mark = "└─ "
                     prefix = "   "
                 else:
-                    prefix = "|  "
-                lines.extend(prefix + line for line in child_lines[1:])
+                    mark = "├─ "
+                    prefix = "│  "
+                child_lines = child.lines()
+                child_address, child_text = child_lines[0]
+                lines.append((child_address, mark + child_text))
+                for child_address, child_text in child_lines[1:]:
+                    lines.append((child_address, prefix + child_text))
             return lines
 
     class Emulator:
@@ -29124,7 +29144,12 @@ class UnicornEmulator:
             if is_x86_64():
                 return mnemonic == "syscall"
             if is_x86_32():
-                return mnemonic == "int" and insn.op_str.strip() == "0x80"
+                # future-calls passes a gef Instruction, which has operands instead of op_str
+                if hasattr(insn, "op_str"):
+                    operands = insn.op_str
+                else:
+                    operands = ", ".join(insn.operands)
+                return mnemonic == "int" and operands.strip() == "0x80"
             if is_arm64():
                 return mnemonic == "svc"
             if is_arm32():
@@ -29145,7 +29170,8 @@ class UnicornEmulator:
                     if emulate(sysno):
                         self.write_pc(insn.address + insn.size)
                         return None
-            gef_print("  --> syscall={!s} (not emulated)".format(sysno))
+            if not self.kwargs["quiet"]:
+                gef_print("  --> syscall={!s} (not emulated)".format(sysno))
             return "syscall {!s} not emulated".format(sysno)
 
         def emulate_mmap(self, sysno):
@@ -29201,10 +29227,11 @@ class UnicornEmulator:
             for page in range(map_start & self.page_mask, map_start + a2, self.page_size):
                 self.mapped.add(page)
                 self.synthetic_pages.add(page)
-            gef_print("  --> syscall={:d} (emulated)".format(sysno))
-            gef_print("    --> {:#x} = mmap({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})".format(
-                map_start, a1, a2, a3, a4, a5, a6,
-            ))
+            if not self.kwargs["quiet"]:
+                gef_print("  --> syscall={:d} (emulated)".format(sysno))
+                gef_print("    --> {:#x} = mmap({:#x}, {:#x}, {:#x}, {:#x}, {:#x}, {:#x})".format(
+                    map_start, a1, a2, a3, a4, a5, a6,
+                ))
             return True
 
         def emulate_munmap(self, sysno):
@@ -29224,8 +29251,9 @@ class UnicornEmulator:
             for page in range(a1 & self.page_mask, a1 + a2, self.page_size):
                 self.mapped.discard(page)
                 self.synthetic_pages.discard(page)
-            gef_print("  --> syscall={:d} (emulated)".format(sysno))
-            gef_print("    --> munmap({:#x}, {:#x})".format(a1, a2))
+            if not self.kwargs["quiet"]:
+                gef_print("  --> syscall={:d} (emulated)".format(sysno))
+                gef_print("    --> munmap({:#x}, {:#x})".format(a1, a2))
             return True
 
         def emulate_brk(self, sysno):
@@ -29237,8 +29265,9 @@ class UnicornEmulator:
 
             if a1 == 0 or a1 == self.current_brk:
                 self.emu.reg_write(self.regs[entry.ret_regs[0]], self.current_brk)
-                gef_print("  --> syscall={:d} (emulated)".format(sysno))
-                gef_print("    --> {:#x} = brk({:#x})".format(self.current_brk, a1))
+                if not self.kwargs["quiet"]:
+                    gef_print("  --> syscall={:d} (emulated)".format(sysno))
+                    gef_print("    --> {:#x} = brk({:#x})".format(self.current_brk, a1))
                 return True
 
             # brk is byte-granular, but the heap mapping is bounded by page-aligned breaks
@@ -29264,8 +29293,9 @@ class UnicornEmulator:
                     self.mapped.discard(page)
 
             self.emu.reg_write(self.regs[entry.ret_regs[0]], a1)
-            gef_print("  --> syscall={:d} (emulated)".format(sysno))
-            gef_print("    --> {:#x} = brk({:#x})".format(a1, a1))
+            if not self.kwargs["quiet"]:
+                gef_print("  --> syscall={:d} (emulated)".format(sysno))
+                gef_print("    --> {:#x} = brk({:#x})".format(a1, a1))
             self.current_brk = a1
             return True
 
@@ -29432,6 +29462,182 @@ class UnicornEmulator:
             except self.unicorn.UcError as e:
                 return str(e)
 
+        def is_x86_avx2(self, mnemonic, operands):
+            """Return True for an x86 AVX2 instruction that Unicorn cannot emulate correctly."""
+            # Unicorn has no 256-bit ops nor vpbroadcast, and vzeroupper/vzeroall keep the upper halves
+            if mnemonic in ("vzeroupper", "vzeroall", "xtest", "vpbroadcastb", "vpbroadcastd"):
+                return True
+            # the 256-bit ops used by the AVX2 string functions of glibc
+            avx2_ops = (
+                "vmovdqu", "vmovdqa", "vmovntdq", "vpmovmskb", "vpaddb", "vpand", "vpandn", "vpor", "vpxor",
+                "vpcmpeqb", "vpcmpeqd", "vpcmpgtb", "vpminub", "vpminud",
+            )
+            if mnemonic in avx2_ops and "ymm" in operands:
+                return True
+            return False
+
+        def emulate_x86_avx2(self, insn):
+            """Emulate the AVX2 instructions chosen by is_x86_avx2, which Unicorn does not support."""
+
+            def get_address(operand):
+                # e.g., "ymmword ptr [rsi + rdx*2 - 0x20]"; a segment prefix is not used by the string functions
+                match = re.fullmatch(r"\w+ ptr \[([^\]:]+)\]", operand)
+                if not match:
+                    raise ValueError("unsupported operand {:s}".format(operand))
+                address = 0
+                for sign, term in re.findall(r"([+-]?)\s*([^\s+-]+)", match.group(1)):
+                    if re.fullmatch(r"0x[0-9a-f]+|\d+", term):
+                        value = int(term, 0)
+                    elif "*" in term:
+                        reg, scale = term.split("*")
+                        value = self.emu.reg_read(self.regs["$" + reg]) * int(scale)
+                    elif term in ("rip", "eip"):
+                        value = self.to_emu(insn.address + insn.size)
+                    else:
+                        value = self.emu.reg_read(self.regs["$" + term])
+                    if sign == "-":
+                        address -= value
+                    else:
+                        address += value
+                return AddressUtil.normalize_address(address)
+
+            def read_operand(operand, size):
+                match = re.fullmatch(r"[xy]mm(\d+)", operand)
+                if match:
+                    value = self.emu.reg_read(getattr(x86_const, "UC_X86_REG_YMM" + match.group(1)))
+                    return value.to_bytes(32, "little")[:size]
+                address = get_address(operand)
+                for page in (address, address + size - 1):
+                    if not self.map_page(page, emu_address=True):
+                        raise ValueError("cannot map {:#x}".format(self.from_emu(page)))
+                return bytes(self.emu.mem_read(address, size))
+
+            def write_operand(operand, data):
+                # a VEX.128 destination clears the upper half of the YMM register
+                match = re.fullmatch(r"[xy]mm(\d+)", operand)
+                if match:
+                    self.emu.reg_write(getattr(x86_const, "UC_X86_REG_YMM" + match.group(1)), int.from_bytes(data, "little"))
+                    return
+                address = get_address(operand)
+                value = int.from_bytes(data, "little")
+                self.mem_write_hook(self.emu, self.unicorn.UC_MEM_WRITE, address, len(data), value, None)
+                self.emu.mem_write(address, data)
+                return
+
+            x86_const = self.unicorn.x86_const
+            mnemonic = insn.mnemonic.lower()
+            if hasattr(insn, "op_str"):
+                operands = [x.strip() for x in insn.op_str.lower().split(",")]
+            else:
+                operands = [x.lower() for x in insn.operands]
+            try:
+                if mnemonic in ("vzeroupper", "vzeroall"):
+                    if is_x86_64():
+                        count = 16
+                    else:
+                        count = 8
+                    for i in range(count):
+                        reg = getattr(x86_const, "UC_X86_REG_YMM{:d}".format(i))
+                        if mnemonic == "vzeroupper":
+                            self.emu.reg_write(reg, self.emu.reg_read(reg) & ((1 << 128) - 1))
+                        else:
+                            self.emu.reg_write(reg, 0)
+                elif mnemonic == "xtest":
+                    # not in a transaction: ZF=1, and CF, PF, AF, SF, OF are cleared
+                    eflags = self.emu.reg_read(self.regs["$eflags"])
+                    self.emu.reg_write(self.regs["$eflags"], (eflags & ~0x8d5) | 0x40)
+                elif mnemonic == "vpmovmskb":
+                    data = read_operand(operands[1], 32)
+                    mask = 0
+                    for i in range(32):
+                        if data[i] & 0x80:
+                            mask |= 1 << i
+                    # writing a 32-bit register clears the upper half of the 64-bit one
+                    dst = operands[0]
+                    if is_x86_64():
+                        if dst.startswith("e"):
+                            dst = "r" + dst[1:]
+                        elif dst.endswith("d"):
+                            dst = dst[:-1]
+                    self.emu.reg_write(self.regs["$" + dst], mask)
+                elif mnemonic in ("vpbroadcastb", "vpbroadcastd"):
+                    if mnemonic == "vpbroadcastb":
+                        width = 1
+                    else:
+                        width = 4
+                    if operands[0].startswith("ymm"):
+                        size = 32
+                    else:
+                        size = 16
+                    write_operand(operands[0], read_operand(operands[1], width) * (size // width))
+                elif mnemonic in ("vmovdqu", "vmovdqa", "vmovntdq"):
+                    write_operand(operands[0], read_operand(operands[1], 32))
+                else:
+                    a = read_operand(operands[1], 32)
+                    b = read_operand(operands[2], 32)
+                    x = int.from_bytes(a, "little")
+                    y = int.from_bytes(b, "little")
+                    result = bytearray(32)
+                    if mnemonic == "vpand":
+                        result = (x & y).to_bytes(32, "little")
+                    elif mnemonic == "vpandn":
+                        result = (~x & y & ((1 << 256) - 1)).to_bytes(32, "little")
+                    elif mnemonic == "vpor":
+                        result = (x | y).to_bytes(32, "little")
+                    elif mnemonic == "vpxor":
+                        result = (x ^ y).to_bytes(32, "little")
+                    elif mnemonic == "vpaddb":
+                        for i in range(32):
+                            result[i] = (a[i] + b[i]) & 0xff
+                    elif mnemonic == "vpcmpeqb":
+                        for i in range(32):
+                            if a[i] == b[i]:
+                                result[i] = 0xff
+                    elif mnemonic == "vpcmpgtb":
+                        for i in range(32):
+                            if u2i(a[i], 8) > u2i(b[i], 8):
+                                result[i] = 0xff
+                    elif mnemonic == "vpminub":
+                        for i in range(32):
+                            result[i] = min(a[i], b[i])
+                    elif mnemonic == "vpcmpeqd":
+                        for i in range(0, 32, 4):
+                            if a[i:i + 4] == b[i:i + 4]:
+                                result[i:i + 4] = b"\xff\xff\xff\xff"
+                    elif mnemonic == "vpminud":
+                        for i in range(0, 32, 4):
+                            x4 = int.from_bytes(a[i:i + 4], "little")
+                            y4 = int.from_bytes(b[i:i + 4], "little")
+                            result[i:i + 4] = min(x4, y4).to_bytes(4, "little")
+                    write_operand(operands[0], bytes(result))
+                self.write_pc(insn.address + insn.size)
+                return None
+            except (ValueError, KeyError, IndexError):
+                return "unsupported {:s} {:s}".format(mnemonic, ", ".join(operands))
+            except self.unicorn.UcError as e:
+                return str(e)
+
+        def zero_ymm_upper(self, mnemonic, operands):
+            """Clear the upper half of the destination YMM after Unicorn runs a VEX.128 instruction, as real CPUs do."""
+            # these read the first xmm operand without writing it
+            not_written = (
+                "vptest", "vtestps", "vtestpd", "vucomiss", "vucomisd", "vcomiss", "vcomisd",
+                "vpcmpistri", "vpcmpestri", "vpcmpistrm", "vpcmpestrm",
+            )
+            if not mnemonic.startswith("v"):
+                return
+            if mnemonic in not_written:
+                return
+            match = re.match(r"xmm(\d+)\b", operands)
+            if not match:
+                return
+            reg = getattr(self.unicorn.x86_const, "UC_X86_REG_YMM" + match.group(1))
+            try:
+                self.emu.reg_write(reg, self.emu.reg_read(reg) & ((1 << 128) - 1))
+            except self.unicorn.UcError:
+                pass
+            return
+
         def step_one(self, insn):
             """Emulate one instruction; return None on success or a reason string on stop."""
             self.last_fault = None
@@ -29452,6 +29658,9 @@ class UnicornEmulator:
             # arm64 LSE atomic instructions Unicorn cannot emulate (handled in-process)
             if is_arm64() and self.is_arm64_atomic(mnemonic):
                 return self.emulate_arm64_atomic(insn)
+            # x86 AVX2 instructions Unicorn cannot emulate (handled in-process)
+            if is_x86() and self.is_x86_avx2(mnemonic, op_str):
+                return self.emulate_x86_avx2(insn)
             # syscalls
             if self.is_syscall_insn(insn):
                 return self.handle_syscall(insn)
@@ -29481,6 +29690,8 @@ class UnicornEmulator:
                 return detail
             finally:
                 self.current_segment = None
+            if is_x86():
+                self.zero_ymm_upper(mnemonic, op_str)
             return None
 
         def run(self, kwargs):
@@ -29609,6 +29820,11 @@ class UnicornEmulator:
                         return str(e)
             if is_arm64() and self.is_arm64_atomic(insn.mnemonic.lower()):
                 return self.emulate_arm64_atomic(insn)
+            if is_x86() and self.is_x86_avx2(insn.mnemonic.lower(), ", ".join(insn.operands).lower()):
+                return self.emulate_x86_avx2(insn)
+            # syscalls other than the emulated mmap/munmap/brk stop here instead of passing through
+            if self.is_syscall_insn(insn):
+                return self.handle_syscall(insn)
             try:
                 self.emu.emu_start(start, end, count=1)
             except self.unicorn.UcError as e:
@@ -29635,6 +29851,8 @@ class UnicornEmulator:
                 return str(e)
             finally:
                 self.current_segment = None
+            if is_x86():
+                self.zero_ymm_upper(insn.mnemonic.lower(), ", ".join(insn.operands).lower())
             return None
 
         def skip_to(self, saved, address):
@@ -29698,7 +29916,8 @@ class UnicornEmulateCommand(GenericCommand):
         "Kernel emulation is only supported on x86, x86-64, ARM32, and ARM64.",
         "Big endian is not supported.",
         "unicorn does not support emulating syscall. (use -E for a best-effort mmap/munmap/brk emulation)",
-        "unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)",
+        "unicorn does not support some instructions. (e.g., xsavec, xrstor, AVX-512, vldr, etc.)",
+        "The AVX2 instructions used by the glibc string functions are emulated in gef.",
         "unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.",
         "see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt",
     ])
@@ -30625,12 +30844,14 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", nargs="?", type=AddressUtil.parse_address,
                         help="the address to start from. (default: current_arch.pc)")
-    parser.add_argument("-d", "--depth", type=int, default=3,
-                        help="maximum call depth to descend into. (default: %(default)s)")
+    parser.add_argument("-d", "--depth", type=int,
+                        help="maximum call depth to descend into. (default: unlimited)")
     parser.add_argument("-b", "--nb-insn", type=int, default=2048,
                         help="maximum number of instructions to emulate. (default: %(default)s)")
     parser.add_argument("-N", "--nb-node", type=int, default=256,
                         help="maximum number of call tree nodes to collect. (default: %(default)s)")
+    parser.add_argument("-a", "--args", dest="show_args", action="store_true",
+                        help="show the guessed arguments (up to 6) and return values.")
     parser.add_argument("-n", "--no-pager", action="store_true",
                         help="do not use the pager.")
     parser.add_argument("--debug", action="store_true",
@@ -30642,6 +30863,7 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         "{0:s} -d 4                    # descend into callees up to depth 4",
         "{0:s} -b 4096                 # emulate up to 4096 instructions",
         "{0:s} -N 1024                 # collect up to 1024 tree nodes",
+        "{0:s} -a                      # show the guessed arguments and return values",
         "{0:s} -n                      # do not use the pager",
         "{0:s} --debug                 # show Unicorn fault details",
     ]).format(_cmdline_)
@@ -30650,6 +30872,13 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         "This command is a best-effort concrete preview based on Unicorn emulation.",
         "Only x86, x86-64, ARM32, and ARM64 are supported.",
         "A loop is cut only when the registers and written memory repeat; other loops run until --nb-insn.",
+        "The left column is the address of each call or ret instruction.",
+        "-a reads up to 6 arguments by the calling convention and the return register at each ret; both are guesses.",
+        "A call tagged [not run: ...] or [failed: ...] is skipped by restoring the registers to those before the call,",
+        "so its return value and memory writes are lost, and the path after it is a guess.",
+        "Only mmap, munmap and brk are emulated among syscalls; a call that issues another syscall fails at it.",
+        "unicorn does not support some instructions. (e.g., xsavec, xrstor, AVX-512, vldr, etc.)",
+        "The AVX2 instructions used by the glibc string functions are emulated in gef.",
     ])
 
     def __init__(self):
@@ -30805,14 +31034,18 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                 return False
 
             if current_arch.is_ret(insn):
+                retval = None
+                if self.args.show_args:
+                    retval = tracer.from_emu(tracer.emu.reg_read(tracer.regs[current_arch.return_register]))
+                node = UnicornEmulator.Node(return_address, insn.address, kind="ret", retval=retval)
                 # a conditional return falls through if it is not taken
                 if current_arch.is_conditional_branch(insn):
                     if not self.step(tracer, parent, insn):
                         return False
                     if tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg)) == insn.address + len(insn.opcodes):
                         continue
-                    return self.add_child(parent, UnicornEmulator.Node(return_address, insn.address, kind="ret")) is not None
-                child = self.add_child(parent, UnicornEmulator.Node(return_address, insn.address, kind="ret"))
+                    return self.add_child(parent, node) is not None
+                child = self.add_child(parent, node)
                 if child is None or return_address is None:
                     return child is not None
                 return self.step(tracer, parent, insn)
@@ -30829,6 +31062,29 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                         regs[reg] = tracer.emu.reg_read(uc_reg)
                     except tracer.unicorn.UcError:
                         pass
+
+                # guess up to 6 arguments from the registers and the stack before the call
+                args = None
+                if self.args.show_args:
+                    if is_x86_32():
+                        args = []
+                        sp = regs.get("$esp")
+                    else:
+                        args = [regs.get(reg) for reg in current_arch.function_parameters[:6]]
+                        sp = regs.get("$sp")
+                    for i in range(6 - len(args)):
+                        address = sp + i * tracer.ptrsize
+                        value = None
+                        if tracer.map_page(address, emu_address=True):
+                            try:
+                                value = int.from_bytes(tracer.emu.mem_read(address, tracer.ptrsize), tracer.endian)
+                            except tracer.unicorn.UcError:
+                                pass
+                        args.append(value)
+                    for i, value in enumerate(args):
+                        if value is not None:
+                            args[i] = tracer.from_emu(value)
+
                 reason = None
                 if self.step(tracer, parent, insn):
                     target = tracer.from_emu(tracer.emu.reg_read(tracer.pc_reg))
@@ -30848,15 +31104,9 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
 
                 label = None
                 if not self.valid_target(target):
-                    operands = ", ".join(insn.operands)
-                    if operands:
-                        operand_suffix = " " + operands
-                    else:
-                        operand_suffix = ""
-                    label = "UNKNOWN ({:s}{:s})".format(insn.mnemonic, operand_suffix)
-                    if reason:
-                        label += " - {:s}".format(reason)
-                child = self.add_child(parent, UnicornEmulator.Node(target, insn.address, label=label))
+                    # show the operands instead of the unknown target, the reason is tagged by Node.lines
+                    label = ", ".join(insn.operands)
+                child = self.add_child(parent, UnicornEmulator.Node(target, insn.address, label=label, args=args))
                 if child is None:
                     return False
                 if reason is not None or not self.valid_target(target):
@@ -30866,11 +31116,16 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
                         self.truncated_reasons.add(reason)
                     tracer.skip_to(regs, next_pc)
                     continue
-                if depth <= 0:
+                # depth is None when unlimited
+                if depth == 0:
                     self.mark_truncated(child, "depth limit reached")
                     tracer.skip_to(regs, next_pc)
                     continue
-                if not self.walk(child, tracer, target, depth - 1, next_pc):
+                if depth is None:
+                    next_depth = None
+                else:
+                    next_depth = depth - 1
+                if not self.walk(child, tracer, target, next_depth, next_pc):
                     if self.stop_reasons.intersection(("node limit reached", "instruction limit reached")):
                         return False
                     tracer.skip_to(regs, next_pc)
@@ -30890,9 +31145,19 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
         if current_arch.unicorn_support is False:
             warn("This command is not supported on this architecture")
             return
-        if self.args.depth < 0 or self.args.nb_insn <= 0 or self.args.nb_node <= 0:
+        if self.args.depth is not None and self.args.depth < 0:
             err("Invalid argument")
             return
+        if self.args.nb_insn <= 0 or self.args.nb_node <= 0:
+            err("Invalid argument")
+            return
+
+        # mmap/munmap/brk are emulated from the break that brk(0) returns in the inferior,
+        # which cannot run in these modes (heap try-free excludes the same kind of modes)
+        emulate_mmap = True
+        for mode in ("qemu-system", "kgdb", "kdb", "vmware", "wine", "rr", "core", "qiling"):
+            if GDB_MODE_CHECKERS[mode]():
+                emulate_mmap = False
 
         self.out = []
         self.insn_count = 0
@@ -30915,7 +31180,7 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
             "quiet": True,
             "only_insns": True,
             "patch_got": False,
-            "emulate_mmap": False,
+            "emulate_mmap": emulate_mmap,
             "mem_write_callback": self.mem_write_hook,
         }) as tracer:
             if tracer is None:
@@ -30924,10 +31189,15 @@ class FutureCallsCommand(GenericCommand, BufferingOutput):
             self.mem_writes = 0
             self.walk(root, tracer, start_address, self.args.depth)
 
-        self.out.extend(root.lines())
+        for address, text in root.lines():
+            self.out.append("{!s}  {:s}".format(ProcessMap.lookup(address), text))
         self.out.append("")
-        self.out.append("Explored: nodes={:d}/{:d}, instructions={:d}/{:d}, depth={:d}".format(
-            self.node_count, self.args.nb_node, self.insn_count, self.args.nb_insn, self.args.depth,
+        if self.args.depth is None:
+            depth = "unlimited"
+        else:
+            depth = str(self.args.depth)
+        self.out.append("Explored: nodes={:d}/{:d}, instructions={:d}/{:d}, depth={:s}".format(
+            self.node_count, self.args.nb_node, self.insn_count, self.args.nb_insn, depth,
         ))
         reasons = set(self.stop_reasons)
         if reasons:
