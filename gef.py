@@ -4975,39 +4975,50 @@ class GlibcHeap:
         return dummy <= tcache <= dummy + current_arch.ptrsize
 
     @staticmethod
-    def get_thread_tcaches(arenas):
-        """Return [(thread number, arena, &tcache_perthread_struct), ...] of the threads that have a tcache."""
+    def get_selected_thread_tcaches(arenas):
+        """Return [(arena, &tcache_perthread_struct), ...] of the candidates for the tcache of the selected thread."""
         if get_libc_version() < (2, 26):
             return []
 
+        tls = current_arch.get_tls()
+        if tls is None:
+            return []
+
+        # strict way (from symbol)
+        candidates = []
+        if not is_qiling(): # no TLS register, and gdb 16+ aborts on ARM64 when it evaluates a TLS variable
+            try:
+                tcache = AddressUtil.parse_address("(void*) tcache")
+                thread_arena = AddressUtil.parse_address("(void*) thread_arena")
+                for arena in arenas:
+                    if arena.addr == thread_arena:
+                        candidates.append((arena, tcache))
+            except gdb.error:
+                pass
+
+        # heuristic way
+        if not candidates:
+            for arena in arenas:
+                candidates.append((arena, GlibcHeap.search_for_tcache_from_tls(arena.addr, tls)))
+
+        tcaches = []
+        for arena, tcache in candidates:
+            if not tcache or not is_valid_addr(tcache) or GlibcHeap.is_tcache_dummy(tcache):
+                continue # not initialized (NULL before 2.43)
+            tcaches.append((arena, tcache))
+        return tcaches
+
+    @staticmethod
+    def get_thread_tcaches(arenas):
+        """Return [(thread number, arena, &tcache_perthread_struct), ...] of the threads that have a tcache."""
         tcaches = []
         seen = set()
         with ContextManager.threads() as threads:
             for thread in threads:
-                tls = current_arch.get_tls()
-                if tls is None:
+                # A running thread cannot be read nor execute ExecAsm (e.g., all threads in the stop() of a breakpoint)
+                if not thread.is_stopped():
                     continue
-
-                # strict way (from symbol)
-                candidates = []
-                if not is_qiling(): # no TLS register, and gdb 16+ aborts on ARM64 when it evaluates a TLS variable
-                    try:
-                        tcache = AddressUtil.parse_address("(void*) tcache")
-                        thread_arena = AddressUtil.parse_address("(void*) thread_arena")
-                        for arena in arenas:
-                            if arena.addr == thread_arena:
-                                candidates.append((arena, tcache))
-                    except gdb.error:
-                        pass
-
-                # heuristic way
-                if not candidates:
-                    for arena in arenas:
-                        candidates.append((arena, GlibcHeap.search_for_tcache_from_tls(arena.addr, tls)))
-
-                for arena, tcache in candidates:
-                    if not tcache or not is_valid_addr(tcache) or GlibcHeap.is_tcache_dummy(tcache):
-                        continue # not initialized (NULL before 2.43)
+                for arena, tcache in GlibcHeap.get_selected_thread_tcaches(arenas):
                     if tcache in seen:
                         continue
                     seen.add(tcache)
@@ -29657,6 +29668,70 @@ class UnicornEmulator:
             except self.unicorn.UcError as e:
                 return str(e)
 
+        def is_arm64_mops(self, mnemonic):
+            """Return True for an AArch64 FEAT_MOPS memory copy/set instruction, which Unicorn cannot emulate."""
+            # e.g., setp/setm/sete of memset, cpyfp/cpyfm/cpyfe of memcpy, cpyp/cpym/cpye of memmove, and their variants
+            return re.match(r"^(?:setg?|cpyf?)[pme][a-z]*$", mnemonic) is not None
+
+        def emulate_arm64_mops(self, insn):
+            """Emulate AArch64 FEAT_MOPS (e.g., `setp; setm; sete` of memset), which Unicorn does not support.
+            The prologue (*p) does the whole operation and leaves Xn = 0, so the main (*m) and epilogue (*e) do nothing."""
+            mnemonic = insn.mnemonic.lower()
+            if hasattr(insn, "op_str"):
+                operands = insn.op_str
+            else:
+                operands = ", ".join(insn.operands)
+            if mnemonic.startswith("set"):
+                # set* [Xd]!, Xn!, Xs (MTE tags of setg* are not emulated)
+                match = re.search(r"\[(x\d+)\]!, (x\d+)!, ([xw](?:\d+|zr))", operands.lower())
+            else:
+                # cpy* [Xd]!, [Xs]!, Xn!
+                match = re.search(r"\[(x\d+)\]!, \[(x\d+)\]!, (x\d+)!", operands.lower())
+            if not match:
+                return "unsupported {:s} operand".format(insn.mnemonic)
+            dst_reg = "$" + match.group(1)
+            if mnemonic.startswith("set"):
+                size_reg = "$" + match.group(2)
+                src_reg = "$" + match.group(3)
+            else:
+                src_reg = "$" + match.group(2)
+                size_reg = "$" + match.group(3)
+            if src_reg.endswith("zr"):
+                src_reg = None
+            else:
+                src_reg = "$x" + src_reg[2:]
+            for reg in (dst_reg, size_reg, src_reg):
+                if reg is not None and reg not in self.regs:
+                    return "unsupported {:s} register {:s}".format(insn.mnemonic, reg)
+            try:
+                dst = self.emu.reg_read(self.regs[dst_reg])
+                size = self.emu.reg_read(self.regs[size_reg])
+                if src_reg is not None:
+                    src = self.emu.reg_read(self.regs[src_reg])
+                else:
+                    src = 0
+                if size > 0x1000_0000: # too large to emulate in Python (or the negative form of option B)
+                    return "unsupported {:s} of size {:#x}".format(insn.mnemonic, size)
+                if size:
+                    if mnemonic.startswith("set"):
+                        data = bytes([src & 0xff]) * size
+                    else:
+                        for page in range(src & self.page_mask, src + size, self.page_size):
+                            if not self.map_page(page, emu_address=True):
+                                return "cannot map {:#x}".format(self.from_emu(page))
+                        # read all at first, so an overlapping copy works like memmove
+                        data = bytes(self.emu.mem_read(src, size))
+                    self.mem_write_hook(self.emu, self.unicorn.UC_MEM_WRITE, dst, size, int.from_bytes(data, "little"), None)
+                    self.emu.mem_write(dst, data)
+                    self.emu.reg_write(self.regs[dst_reg], dst + size)
+                    self.emu.reg_write(self.regs[size_reg], 0)
+                    if not mnemonic.startswith("set"):
+                        self.emu.reg_write(self.regs[src_reg], src + size)
+                self.write_pc(insn.address + 4)
+                return None
+            except self.unicorn.UcError as e:
+                return str(e)
+
         def emulate_arm32_mrc(self, insn):
             """Proactively emulate `mrc p15, 0, Rt, c13, c0, {2,3,4}` (TLS); used for kernel too.
             Returns "skip" when the instruction is not such an mrc, None when handled, or
@@ -29901,6 +29976,9 @@ class UnicornEmulator:
             # arm64 LSE atomic instructions Unicorn cannot emulate (handled in-process)
             if is_arm64() and self.is_arm64_atomic(mnemonic):
                 return self.emulate_arm64_atomic(insn)
+            # arm64 MOPS instructions (e.g., memset of glibc 2.38+ on a CPU with FEAT_MOPS) are also handled in-process
+            if is_arm64() and self.is_arm64_mops(mnemonic):
+                return self.emulate_arm64_mops(insn)
             # x86 AVX2 instructions Unicorn cannot emulate (handled in-process)
             if is_x86() and self.is_x86_avx2(mnemonic, op_str):
                 return self.emulate_x86_avx2(insn)
@@ -30086,6 +30164,8 @@ class UnicornEmulator:
                         return str(e)
             if is_arm64() and self.is_arm64_atomic(insn.mnemonic.lower()):
                 return self.emulate_arm64_atomic(insn)
+            if is_arm64() and self.is_arm64_mops(insn.mnemonic.lower()):
+                return self.emulate_arm64_mops(insn)
             if is_x86() and self.is_x86_avx2(insn.mnemonic.lower(), ", ".join(insn.operands).lower()):
                 return self.emulate_x86_avx2(insn)
             # syscalls other than the emulated mmap/munmap/brk stop here instead of passing through
@@ -34579,7 +34659,9 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             return (decode_fd and x[0] == 1, x[1])
 
         unpack = GefUtil.get_unpack()
-        data = slicer(chunk.data, current_arch.ptrsize * 2)
+        # The data of a corrupted chunk may end in the middle of a row, so the last partial row is not shown.
+        row_size = current_arch.ptrsize * 2
+        data = slicer(chunk.data[:len(chunk.data) - len(chunk.data) % row_size], row_size)
         group_line_threshold = 8
 
         arena = chunk.arena
@@ -34674,10 +34756,11 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
 
         # An old heap of a thread arena ends with the fencepost of size 0 instead of top,
         # so the data of a corrupted chunk is shown up to the end of the mapping.
+        # top may be outside the mapping (e.g., a corrupted top), so the data is also limited to the mapping.
         if top is None:
             data_end = end
         else:
-            data_end = top + 0x10
+            data_end = min(top + 0x10, end)
 
         pbar = ProgressBar(total=end - dump_start)
 
@@ -34691,19 +34774,26 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
                     break # the last fencepost of an old heap
                 msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
-                chunk.data = read_memory(addr, max(data_end - addr, 0))
+                chunk.data = read_memory(addr, max(data_end - addr, 0), safe=True) or b""
+                self.generate_visual_chunk(chunk, i, top)
+                break
+            elif chunk.size % (current_arch.ptrsize * 2):
+                # a row is 2 words, and the fencepost (2 words) is also a multiple of it
+                msg = "{} Corrupted (chunk.size is not aligned)".format(Color.colorify("[!]", "bold red"))
+                self.out.append(msg)
+                chunk.data = read_memory(addr, max(data_end - addr, 0), safe=True) or b""
                 self.generate_visual_chunk(chunk, i, top)
                 break
             elif top is not None and addr != top and addr + chunk.size > top:
                 msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
-                chunk.data = read_memory(addr, max(data_end - addr, 0))
+                chunk.data = read_memory(addr, max(data_end - addr, 0), safe=True) or b""
                 self.generate_visual_chunk(chunk, i, top)
                 break
             elif addr + chunk.size > end:
                 msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
-                chunk.data = read_memory(addr, max(data_end - addr, 0))
+                chunk.data = read_memory(addr, max(data_end - addr, 0), safe=True) or b""
                 self.generate_visual_chunk(chunk, i, top)
                 break
             # maybe not corrupted
@@ -34713,6 +34803,9 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
                 self.out.append(msg)
                 break
             self.generate_visual_chunk(chunk, i, top)
+            # top is the last chunk, even if the mapping continues (e.g., heap_trim keeps mprotect_size)
+            if addr == top:
+                break
             addr += chunk.size
             i += 1
 
@@ -34783,15 +34876,17 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         Color.colorify("muted red", "orange") + " and " + Color.colorify("muted yellow", "lemon_yellow") + ".",
         "In both cases, the color is determined by whether the chunk's position from the beginning",
         "is odd-numbered or even-numbered.",
+        Color.colorify("Corrupted chunks", "underline") + " are displayed in " + Color.colorify("red", "red") + ".",
         "",
-        "The `convert` command limits height to 32000px; output may shrink based on heap size.",
+        "The image is made with 16000px height (the limit of ImageMagick 6 on Ubuntu 22.04 and older),",
+        "and then resized to the terminal; small chunks may disappear.",
     ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    def collect_chunks(self, arena, dump_start, max_count):
+    def collect_chunks(self, arena, dump_start, top, max_count):
         sect = ProcessMap.process_lookup_address(dump_start)
         if sect:
             end = sect.page_end
@@ -34805,6 +34900,9 @@ class GlibcHeapDumpImageCommand(GenericCommand):
 
         pbar = ProgressBar(total=end - dump_start)
 
+        # The data of chunks is not read, since only the size and whether it is used are drawn.
+        # A corrupted chunk is drawn up to the limit (e.g., top) with `corrupted_size`,
+        # so that it does not take the whole image.
         chunks = []
         err_msg = None
         addr = dump_start
@@ -34813,23 +34911,27 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             chunk = GlibcHeap.GlibcChunk(arena, addr + current_arch.ptrsize * 2)
             # corrupt check
             if chunk.size == 0:
+                if top is None:
+                    break # the last fencepost of an old heap of a thread arena
                 err_msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                chunk.corrupted_size = 0
                 chunks.append(chunk)
                 break
-            elif addr != arena.top and addr + chunk.size > arena.top:
+            elif top is not None and addr != top and addr + chunk.size > top:
                 err_msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                chunk.corrupted_size = max(top - addr, 0)
                 chunks.append(chunk)
                 break
             elif addr + chunk.size > end:
                 err_msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
+                # e.g., the size of top is overwritten (House of Force)
+                if chunk.is_top() and not self.args.include_top:
+                    break
+                chunk.corrupted_size = end - addr
                 chunks.append(chunk)
                 break
             # maybe not corrupted
-            chunk.data = read_memory(addr, chunk.size, safe=True)
-            if chunk.data is None:
+            if not is_valid_addr(addr + chunk.size - 1):
                 err_msg = "{} Corrupted (Memory access denied)".format(Color.colorify("[!]", "bold red"))
                 break
 
@@ -34837,6 +34939,8 @@ class GlibcHeapDumpImageCommand(GenericCommand):
                 if not self.args.include_top:
                     break
             chunks.append(chunk)
+            if chunk.is_top():
+                break
             addr += chunk.size
             i += 1
 
@@ -34853,11 +34957,17 @@ class GlibcHeapDumpImageCommand(GenericCommand):
         MALLOC_ALIGNMENT = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
 
         def chunk_size_to_line_number(chunk):
-            line_num = ((chunk.size - MIN_SIZE) // MALLOC_ALIGNMENT) + 1
+            size = getattr(chunk, "corrupted_size", chunk.size)
+            line_num = ((size - MIN_SIZE) // MALLOC_ALIGNMENT) + 1
             return max(line_num, 1)
 
+        def chunk_state(chunk):
+            if hasattr(chunk, "corrupted_size"):
+                return None # corrupted
+            return chunk.is_real_used()
+
         line_nums = [chunk_size_to_line_number(c) for c in chunks]
-        used_or_freed = [c.is_real_used() for c in chunks]
+        used_or_freed = [chunk_state(c) for c in chunks]
         return GlibcHeapDumpImageCommand.make_raw_image(line_nums, used_or_freed)
 
     @staticmethod
@@ -34876,14 +34986,20 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             b"\xd8\xb4\x5a",  # muted yellow
         ]
 
-        target_h = 30000 # limit of convert command
+        corrupted_col = b"\xff\x00\x00" # red
+
+        # The policy.xml of ImageMagick 6 on Ubuntu 20.04/22.04 limits the width and height to 16KP
+        # (32KP on 24.04 and ImageMagick 7). The image is resized to the terminal after all.
+        target_h = 16000
         target_w = 1
 
         # assign to target_h by ratio (rounding error is absorbed by accumulator)
         data_parts = []
-        acc = 0 # error accumulation (molecule side)
+        acc = 0 # error accumulation (numerator side)
         for i, (h, u) in enumerate(zip(line_nums, used_or_freed)):
-            if u:
+            if u is None:
+                color = corrupted_col
+            elif u:
                 color = used_cols[i & 1]
             else:
                 color = freed_cols[i & 1]
@@ -34972,21 +35088,21 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             err("Heap is not initialized")
             return
 
-        if args.location is None:
-            dump_start = arena.heap_base
-            # specific pattern
-            if arena.is_main_arena:
-                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
-                    dump_start += 8
-        else:
-            dump_start = args.location
-
-        if not arena.heap_base <= dump_start <= arena.top or not is_valid_addr(dump_start):
-            err("Invalid heap start: {:#x}".format(dump_start))
-            return
+        # The heaps of a thread arena may be below heap_base, so LOCATION is checked against each heap.
+        heaps = arena.get_heaps(args.location)
+        if args.location is not None:
+            if not heaps or not is_valid_addr(args.location):
+                err("Invalid heap start: {:#x}".format(args.location))
+                return
 
         # parse chunks
-        chunks, err_msg = self.collect_chunks(arena, dump_start, args.max_count)
+        chunks = []
+        err_msg = None
+        for dump_start, _, top in heaps:
+            heap_chunks, err_msg = self.collect_chunks(arena, dump_start, top, args.max_count)
+            chunks.extend(heap_chunks)
+            if err_msg:
+                break
 
         # make image
         image_path = self.generate_image(chunks)
@@ -35020,6 +35136,8 @@ class GlibcHeapSnapshotCommand(GenericCommand):
     parser.add_argument("--all", action="store_true", help="dump all arenas.")
     _syntax_ = parser.format_help()
 
+    last_dumped_filepaths = {} # arena address -> the last snapshot, the default of heap snapshot-compare
+
     @staticmethod
     def dump_heap(arena, metadata_only=False):
         raw = b""
@@ -35036,6 +35154,14 @@ class GlibcHeapSnapshotCommand(GenericCommand):
                 err("Failed to dump memory")
                 return None
 
+            # heap snapshot-compare needs top in the dump. It may be outside of it, e.g., when a thread arena
+            # has a new heap below heap_base, or top is corrupted.
+            if not 0 <= arena.top - arena.heap_base <= len(raw):
+                err("The top chunk {:#x} is outside the dumped range {:#x}-{:#x}".format(
+                    arena.top, arena.heap_base, arena.heap_base + len(raw),
+                ))
+                return None
+
         # info
         try:
             heap_base = arena.heap_base
@@ -35050,6 +35176,7 @@ class GlibcHeapSnapshotCommand(GenericCommand):
                 "top": arena.top,
                 "ptrsize": current_arch.ptrsize,
                 "endian": Endian.endian_str(),
+                "arena": arena.addr,
             }
 
             chunks = []
@@ -35061,6 +35188,9 @@ class GlibcHeapSnapshotCommand(GenericCommand):
                 0x555555fa9520|+0x00020: 0x7269642d6e65706f 0x622d79726f746365
                 0x555555fa9530|+0x00030: 0x72637365642d6461 0x696c2f726f747069  <- end_offset
                 """
+                # before reading the size, since a chunk after top may be unreadable
+                if current_chunk.chunk_base_address > arena.top:
+                    break
                 start_offset = current_chunk.chunk_base_address - heap_base
                 chunks.append({
                     "start_offset": start_offset,
@@ -35069,8 +35199,6 @@ class GlibcHeapSnapshotCommand(GenericCommand):
                     "used": current_chunk.is_real_used(),
                     "extra": "",
                 })
-                if current_chunk.chunk_base_address > arena.top:
-                    break
                 if current_chunk.size == 0:
                     break
                 chunks[-1]["extra"] = ",".join(arena.get_bins_info(current_chunk))
@@ -35085,29 +35213,37 @@ class GlibcHeapSnapshotCommand(GenericCommand):
                 current_chunk = next_chunk
 
             info["chunks"] = chunks
-        except Exception:
+        except Exception as e:
+            err("Failed to parse the chunks: {!s}".format(e))
             return None
 
         return raw, info
 
     @staticmethod
-    def take_snapshot(arena, arena_index):
+    def take_snapshot(arena, arena_name):
         ret = GlibcHeapSnapshotCommand.dump_heap(arena)
         if ret is None:
             return None
         raw, info = ret
 
         raw_fd, raw_filepath = GefUtil.mkstemp(
-            prefix="heap-ss-arena{:d}".format(arena_index),
+            prefix="heap-ss-{:s}".format(arena_name),
             dt=datetime.datetime.now().strftime("%H%M%S"),
             suffix=".raw",
         )
         os.fdopen(raw_fd, "wb").write(raw)
 
+        # GEF_TEMP_DIR has no sticky bit, so a link put by another user must not be followed.
         base, _ = os.path.splitext(raw_filepath)
-        json.dump(info, open(base + ".json", "w"))
+        try:
+            json_fd = os.open(base + ".json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except OSError as e:
+            err("Failed to create {:s}.json: {!s}".format(base, e))
+            return None
+        with os.fdopen(json_fd, "w") as f:
+            json.dump(info, f)
 
-        GlibcHeapSnapshotCommand.last_dumped_filepath = raw_filepath
+        GlibcHeapSnapshotCommand.last_dumped_filepaths[arena.addr] = raw_filepath
         return raw_filepath
 
     @staticmethod
@@ -35160,14 +35296,21 @@ class GlibcHeapSnapshotCommand(GenericCommand):
             err("Heap is not initialized")
             return
 
+        all_arenas = GlibcHeap.get_all_arenas()
         if args.all:
-            arenas = GlibcHeap.get_all_arenas()
+            arenas = all_arenas
         else:
             arenas = [arena]
 
         # doit
-        for i, arena in enumerate(arenas):
-            path = self.take_snapshot(arena, i)
+        # The file name has the number of the arena (as -a takes), or the address if it is not in the list.
+        arena_addrs = [a.addr for a in all_arenas]
+        for arena in arenas:
+            if arena.addr in arena_addrs:
+                arena_name = "arena{:d}".format(arena_addrs.index(arena.addr))
+            else:
+                arena_name = "arena-{:#x}".format(arena.addr)
+            path = self.take_snapshot(arena, arena_name)
             if path:
                 info("Snapshot successful: {:s}".format(path))
         return
@@ -35186,9 +35329,20 @@ class GlibcHeapTimelineEntryBreakpoint(gdb.Breakpoint):
     def stop(self):
         if not self.state["enabled"] or gdb.selected_inferior() != self.state["inferior"]:
             return False
+        # The internal stop does not run the stop handler of gef, so the caches still have the memory read
+        # at the previous call (e.g., the arguments on the stack of x86_32).
+        Cache.reset_gef_caches()
         tid = Pid.get_tid()
         if tid in self.state["active"]:
             return False
+        # A used return breakpoint is disabled but not deleted until the next reported stop, which does not come
+        # while recording. So delete them here, otherwise they pile up and slow down every stop.
+        for bp in list(self.state["returns"]):
+            if bp.is_valid() and bp.enabled:
+                continue
+            if bp.is_valid():
+                bp.delete()
+            self.state["returns"].discard(bp)
         try:
             count = 1
             if self.name in ("calloc", "realloc"):
@@ -35219,8 +35373,8 @@ class GlibcHeapTimelineReturnBreakpoint(gdb.FinishBreakpoint):
         return
 
     def stop(self):
+        # It is kept in state["returns"] to be deleted by the next entry breakpoint.
         self.state["active"].discard(self.tid)
-        self.state["returns"].discard(self)
         if not self.state["enabled"] or gdb.selected_inferior() != self.state["inferior"]:
             return False
         if Pid.get_tid() != self.tid:
@@ -35271,6 +35425,9 @@ class GlibcHeapTimelineCommand(GenericCommand):
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
+        # The port is fixed, so that reloading the browser reconnects to a new recording.
+        self.add_setting("listen_address", "0.0.0.0", "Address the viewer listens on (e.g., 127.0.0.1 to close it to others)")
+        self.add_setting("listen_port", 61234, "Port the viewer listens on (0 for a free port)")
         return
 
     def complete(self, text, word):
@@ -35463,6 +35620,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
     <div id="addressInfo" class="muted"></div><pre id="addressData"></pre></dialog>
     <script>
     let events=[];let selected=null;let selectedChunk=null;let follow=true;let loading=false;let runningBatch=false;
+    let session=null;
     let dumpStart=0;let dumpEnd=0;let dumpVersion=0;let popupVersion=0;let identityFilter=null;
     let visibleEvents=[];let visibleOffsets=[0];let timelineOrder=[];let searchOrder=[];const historyViews=[];
     const eventHeight=54;const groupHeight=30;
@@ -35896,6 +36054,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
     async function refresh(){if(loading)return;loading=true;try{const after=events.at(-1)?.number??0;
         const response=await fetch('/api/events?after='+after,{cache:'no-store'});
         if(!response.ok)throw new Error('Connection failed');const data=await response.json();
+        if(session!==null&&data.session!==session){location.reload();return}
+        session=data.session;
         for(const event of data.events)events.push(event);
         const changed=applyDeleted(data.deleted||[]);
         if(data.events.length||changed)rebuildTimelineOrder();
@@ -36053,7 +36213,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
                     after = int(after_text)
                     payload = {
                         "events": state["events"][after:], "recording": state["enabled"],
-                        "deleted": sorted(state["deleted"]), "skip_remaining": state["skip_remaining"]
+                        "deleted": sorted(state["deleted"]), "skip_remaining": state["skip_remaining"],
+                        "session": state["session"],
                     }
                     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
                     content_type = "application/json; charset=utf-8"
@@ -36090,6 +36251,10 @@ class GlibcHeapTimelineCommand(GenericCommand):
                 """Dispatch batch operations to the GDB event loop."""
                 if self.path not in ("/api/emulate-batch", "/api/batch/delete"):
                     self.send_error(404)
+                    return
+                # A page of another site can send a simple request (e.g., text/plain) without a preflight
+                if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
+                    self.send_error(415)
                     return
                 try:
                     batch = self.path == "/api/emulate-batch"
@@ -36147,9 +36312,12 @@ class GlibcHeapTimelineCommand(GenericCommand):
             def log_message(self, format, *args): # noqa: V105
                 return
 
-        server = http.server.ThreadingHTTPServer(("0.0.0.0", 61234), Handler)
+        address = Config.get("heap_timeline.listen_address")
+        server = http.server.ThreadingHTTPServer((address, Config.get("heap_timeline.listen_port")), Handler)
         state["server"] = server
-        state["url"] = "http://127.0.0.1:{:d}/".format(server.server_port)
+        if address in ("0.0.0.0", ""):
+            address = "127.0.0.1"
+        state["url"] = "http://{:s}:{:d}/".format(address, server.server_port)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return state["url"]
 
@@ -36217,7 +36385,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
                 "identity_serial": 0, "server": None, "url": None, "data": {}, "aux_data": {},
                 "blobs": {}, "observed_serial": 0,
                 "batch_serials": {}, "batch_context": None, "groups": {}, "deleted": set(),
-                "latest_observed_by_arena": {},
+                "latest_observed_by_arena": {}, "pending_event": None,
+                "session": "{:x}".format(int.from_bytes(os.urandom(8), "little")),
             }
             GlibcHeapTimelineCommand.states[inferior] = state
         return state
@@ -36456,6 +36625,17 @@ class GlibcHeapTimelineCommand(GenericCommand):
             chunks.sort(key=lambda chunk: chunk["start_offset"])
             bin_valid = arena is not None
             if arena is not None:
+                # In the stop() of a breakpoint, no thread is stopped, and the other threads cannot be read nor execute
+                # ExecAsm. Then only the tcache of the selected thread (the caller of the allocator) is used.
+                if not gdb.selected_thread().is_stopped():
+                    try:
+                        tcaches = GlibcHeap.get_selected_thread_tcaches(GlibcHeap.get_all_arenas())
+                    except (gdb.error, OSError, AttributeError):
+                        tcaches = []
+                    if tcaches:
+                        _, arena.tcache_override = tcaches[0]
+                    else:
+                        arena.tcache_override = None
                 getters = (
                     ("tcache", arena.get_tcache_list),
                     ("fast", arena.get_fastbins_list),
@@ -36610,8 +36790,14 @@ class GlibcHeapTimelineCommand(GenericCommand):
             targets.append({"address": arguments[0], "role": "release"})
         if operation in ("malloc", "calloc", "realloc") and result:
             targets.append({"address": result, "role": "alloc"})
-        if operation == "realloc" and arguments and arguments[0] and result is not None and arguments[0] != result:
-            targets.append({"address": arguments[0], "role": "release"})
+        if operation == "realloc" and arguments and arguments[0] and result is not None:
+            # A failed realloc returns NULL and keeps the chunk, while realloc(p, 0) frees it and returns NULL.
+            if result:
+                released = arguments[0] != result
+            else:
+                released = len(arguments) > 1 and arguments[1] == 0
+            if released:
+                targets.append({"address": arguments[0], "role": "release"})
         if kind == "emulated" and operation in ("malloc", "calloc", "realloc") and result is None:
             for address, chunk in current_chunks.items():
                 previous = prior_chunks.get(address)
@@ -36655,7 +36841,11 @@ class GlibcHeapTimelineCommand(GenericCommand):
             event.update({"group_id": group["id"], "group_parent": group["parent"], "group_step": group["step"]})
         state["data"][event["number"]] = chunk_data
         state["aux_data"][event["number"]] = aux_data
-        state["events"].append(event)
+        if kind == "emulated":
+            # emulate_from publishes it after correcting the result, since the viewer does not fetch an event again
+            state["pending_event"] = event
+        else:
+            state["events"].append(event)
         if kind == "observed" and arena is not None:
             state["latest_observed_by_arena"][arena.addr] = event["number"]
         return event
@@ -36887,13 +37077,16 @@ class GlibcHeapTimelineCommand(GenericCommand):
             command = "heap try-{:s} -B {:#x} -c {:s} {:s}".format(
                 name, source["heap_end"], GefUtil.quote_gdb_argument("heap timeline mark"), " ".join(values),
             )
-            before_serial = state["serial"]
+            state["pending_event"] = None
             try:
                 output = gdb.execute(command, to_string=True)
             except gdb.error as e:
                 output = str(e)
-            if state["serial"] > before_serial:
-                event = state["events"][-1]
+            # `heap timeline mark` of the command keeps the event in pending_event, and it is published after the result
+            # is corrected below, since the viewer does not fetch an event again.
+            event = state["pending_event"]
+            state["pending_event"] = None
+            if event is not None:
                 if name != "free":
                     match = re.search(r"{:s} succeeded: (0x[0-9a-fA-F]+)".format(name), Color.remove_color(output))
                     if match:
@@ -36920,6 +37113,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
                             if chunk is not None:
                                 identity = chunk["identity"]
                             event["targets"].append({"address": address, "role": role, "identity": identity})
+                state["events"].append(event)
                 return event
             state["serial"] += 1
             failed = dict(source)
@@ -36942,6 +37136,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
             state["events"].append(failed)
             return failed
         finally:
+            state["pending_event"] = None
             state["preview_label"] = None
             state["preview_parent"] = None
             state["preview_operation"] = None
@@ -37023,7 +37218,9 @@ class GlibcHeapTimelineCommand(GenericCommand):
             try:
                 url = self.start_server(state)
             except OSError as e:
+                # Recording without the viewer cannot be seen (stop and status use the url)
                 self.stop_recording(state)
+                del self.states[state["inferior"]]
                 err("Cannot start the viewer: {!s}".format(e))
                 return
             if not self.exit_hook_installed:
@@ -37391,11 +37588,13 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             file_path1 = "Current memory"
 
             if args.file_path is None:
-                if not hasattr(GlibcHeapSnapshotCommand, "last_dumped_filepath"):
+                # the last snapshot of the same arena (not of the last arena of --all)
+                last_dumped_filepath = GlibcHeapSnapshotCommand.last_dumped_filepaths.get(arena.addr)
+                if last_dumped_filepath is None:
                     err("Invalid filepath")
                     return
-                ret2 = GlibcHeapSnapshotCommand.read_snapshot(GlibcHeapSnapshotCommand.last_dumped_filepath)
-                file_path2 = os.path.basename(GlibcHeapSnapshotCommand.last_dumped_filepath)
+                ret2 = GlibcHeapSnapshotCommand.read_snapshot(last_dumped_filepath)
+                file_path2 = os.path.basename(last_dumped_filepath)
             else:
                 ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
                 file_path2 = os.path.basename(self.args.file_path)
@@ -198355,8 +198554,14 @@ class UclibcNgSnapshotCommand(UclibcNgHeapDumpCommand):
         )
         with os.fdopen(raw_fd, "wb") as f:
             f.write(raw)
+        # GEF_TEMP_DIR has no sticky bit, so a link put by another user must not be followed.
         base, _ = os.path.splitext(raw_filepath)
-        with open(base + ".json", "w") as f:
+        try:
+            json_fd = os.open(base + ".json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        except OSError as e:
+            err("Failed to create {:s}.json: {!s}".format(base, e))
+            return
+        with os.fdopen(json_fd, "w") as f:
             json.dump(meta, f)
 
         UclibcNgSnapshotCommand.last_dumped_filepath = raw_filepath
@@ -198516,8 +198721,15 @@ class UclibcNgDumpImageCommand(UclibcNgHeapDumpCommand, GlibcHeapDumpImageComman
             addr = chunk.chunk_base_address
             if addr == malloc_state.top and not args.include_top:
                 break
-            line_nums.append(max((chunk.size - current_arch.ptrsize * 4) // (current_arch.ptrsize * 2) + 1, 1))
-            used_or_freed.append(addr != malloc_state.top and addr not in self.bins_dict_for_address)
+            # iter_chunks yields a chunk before checking it, so a corrupted size beyond top is clipped to top
+            # and drawn in red (None), so that it does not take the whole image.
+            size = chunk.size
+            if addr < malloc_state.top < addr + size:
+                size = malloc_state.top - addr
+                used_or_freed.append(None)
+            else:
+                used_or_freed.append(addr != malloc_state.top and addr not in self.bins_dict_for_address)
+            line_nums.append(max((size - current_arch.ptrsize * 4) // (current_arch.ptrsize * 2) + 1, 1))
             if args.max_count and args.max_count <= len(line_nums):
                 break
 
