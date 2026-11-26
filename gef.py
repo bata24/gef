@@ -16824,6 +16824,17 @@ class ProcessMap:
             maps.append(sect)
         return maps
 
+    @staticmethod
+    def get_core_code_ranges():
+        """Return the executable ranges of a core file."""
+        # the maps of a core file come from NT_FILE without permissions, but its sections have the CODE flag
+        res = gdb.execute("maintenance info sections", to_string=True).split("Core file:")[-1]
+        code_ranges = []
+        for start, end, flags in re.findall(r"(0x[0-9a-f]+)->(0x[0-9a-f]+) at 0x[0-9a-f]+: \S+(.*)", res):
+            if "CODE" in flags.split():
+                code_ranges.append((int(start, 16), int(end, 16)))
+        return code_ranges
+
     __gef_use_info_proc_mappings__ = None # override automatic capability detection
 
     @staticmethod
@@ -17534,7 +17545,10 @@ class UnicornKeystoneCapstone:
             if sys.modules["capstone"].cs_version()[0] == 6:
                 arch = "AARCH64"
         elif arch == "ARM":
-            if mode == "THUMB" and is_arm32_cortex_m():
+            if "+" in mode:
+                # the modes added by the user (e.g., `dasm -a ARM -m ARM+V8`)
+                mode = tuple(mode.split("+"))
+            elif mode == "THUMB" and is_arm32_cortex_m():
                 # the special registers of mrs/msr (e.g., primask) are decoded only for M-profile
                 mode = ("THUMB", "MCLASS")
             elif get_arch().startswith(("armv8", "armv9")):
@@ -17543,18 +17557,39 @@ class UnicornKeystoneCapstone:
                 mode = (mode, "V8")
         elif (arch, mode) == ("RISCV", "32"):
             mode = ("RISCV32", "RISCVC")
+            # capstone v6.x decodes the A/F/D extensions of RV32GC/RV64GC only with them (e.g., amoadd.w, fld, fadd.d)
+            for ext in ["RISCV_A", "RISCV_FD"]:
+                if hasattr(sys.modules["capstone"], "CS_MODE_" + ext):
+                    mode += (ext,)
         elif (arch, mode) == ("RISCV", "64"):
             mode = ("RISCV64", "RISCVC")
+            for ext in ["RISCV_A", "RISCV_FD"]:
+                if hasattr(sys.modules["capstone"], "CS_MODE_" + ext):
+                    mode += (ext,)
         elif (arch, mode) == ("SPARC", "32"):
             mode = ""
         elif (arch, mode) == ("SPARC", "32PLUS"):
-            mode = ""
+            # v8plus uses the v9 instructions (e.g., ldx and membar), which capstone v6.x decodes only with V9
+            mode = "V9"
         elif (arch, mode) == ("SPARC", "64"):
             mode = "V9"
         elif (arch, mode) == ("MIPS", "32"):
             mode = "MIPS32"
-        elif (arch, mode) == ("MIPS", "64"):
+            # capstone v6.x decodes only the instructions of the specified revision (e.g., seb and wsbh of R2).
+            # gdb names the arch from EF_MIPS_ARCH of the ELF. v5.x has no R2 mode, and decodes R6 wrongly with its R6 mode.
+            if hasattr(sys.modules["capstone"], "CS_MODE_MIPS32R2"):
+                if get_arch().endswith("r6"):
+                    mode = "MIPS32R6"
+                else:
+                    mode = "MIPS32R2"
+        elif (arch, mode) in [("MIPS", "64"), ("MIPS", "n32")]:
+            # n32 uses the 64-bit instructions
             mode = "MIPS64"
+            if hasattr(sys.modules["capstone"], "CS_MODE_MIPS64R2"):
+                if get_arch().endswith("r6"):
+                    mode = "MIPS64R6"
+                else:
+                    mode = "MIPS64R2"
         elif arch == "S390X":
             if sys.modules["capstone"].cs_version()[0] == 6:
                 arch, mode = "SYSTEMZ", None
@@ -17588,6 +17623,14 @@ class UnicornKeystoneCapstone:
         # hacky patch for applying to capstone's mode
         if arch == "ARM64":
             mode = None
+        elif arch == "ARM":
+            if "+" in mode:
+                # the modes added by the user (e.g., `asm -a ARM -m ARM+V8`)
+                mode = tuple(mode.split("+"))
+            elif get_arch().startswith(("armv8", "armv9")):
+                # gdb names the arch from the ELF attributes. It is needed for sdiv, ldaex, `dmb ishld`, etc.
+                # It is not used for older arches, since swp is not assembled with it.
+                mode = (mode, "V8")
         elif (arch, mode) == ("PPC", "32"):
             mode = "PPC32"
         elif (arch, mode) == ("PPC", "64"):
@@ -17595,12 +17638,16 @@ class UnicornKeystoneCapstone:
         elif (arch, mode) == ("SPARC", "32"):
             mode = "SPARC32"
         elif (arch, mode) == ("SPARC", "32PLUS"):
-            mode = "SPARC32"
+            # v8plus uses the v9 instructions (e.g., membar and movcc), which SPARC32 does not assemble
+            mode = "SPARC64"
         elif (arch, mode) == ("SPARC", "64"):
             mode = "SPARC64"
         elif (arch, mode) == ("MIPS", "32"):
             mode = "MIPS32"
         elif (arch, mode) == ("MIPS", "64"):
+            mode = "MIPS64"
+        elif (arch, mode) == ("MIPS", "n32"):
+            # n32 uses the 64-bit instructions
             mode = "MIPS64"
         elif arch == "S390X":
             arch, mode = "SYSTEMZ", None
@@ -21972,12 +22019,7 @@ class CppVtableCommand(GenericCommand, BufferingOutput):
         self.out = []
         self.code_ranges = None
         if is_core_file():
-            # the maps of a core file come from NT_FILE without permissions, but its sections have the CODE flag
-            res = gdb.execute("maintenance info sections", to_string=True).split("Core file:")[-1]
-            self.code_ranges = []
-            for start, end, flags in re.findall(r"(0x[0-9a-f]+)->(0x[0-9a-f]+) at 0x[0-9a-f]+: \S+(.*)", res):
-                if "CODE" in flags.split():
-                    self.code_ranges.append((int(start, 16), int(end, 16)))
+            self.code_ranges = ProcessMap.get_core_code_ranges()
         try:
             self.cppfilt = GefUtil.which(Config.get("gef.cppfilt_command"))
         except FileNotFoundError:
@@ -38252,6 +38294,7 @@ class RpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-r", "--rop", dest="rop_N", type=int, default=3,
                         help="the max length of rop gadget. (default: %(default)s)")
     parser.add_argument("-a", "--allow-branches", action="store_true", help="enable --allow-branches.")
+    parser.add_argument("--rescan", action="store_true", help="do not use cache.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("--no-print", action="store_true",
                         help="run rp, create a temporary file, but don't display it.")
@@ -38268,32 +38311,41 @@ class RpCommand(GenericCommand, BufferingOutput):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
         return
 
-    def exec_rp(self, rp, ropN, allow_branches, path):
-        """Run rp++ to search for ROP gadgets, saving output to a file and returning its path."""
+    def exec_rp(self, rp, ropN, allow_branches, rescan, data, path):
+        """Run rp++ to search for ROP gadgets in data (the content of path), saving output to a file and returning its path."""
         if allow_branches:
             astr = "ab"
         else:
             astr = ""
-        try:
-            h = hashlib.sha256(open(path, "rb").read()).hexdigest()[-16:]
-        except OSError as e:
-            err("{}".format(e))
-            return None
+        h = hashlib.sha256(data).hexdigest()[-16:]
         output_file = "rp{:d}{:s}_{:s}-{:s}.txt".format(ropN, astr, os.path.basename(path), h)
         output_path = os.path.join(GEF_TEMP_DIR, output_file)
+        if not rescan and os.path.isfile(output_path):
+            stat = os.stat(output_path)
+            # GEF_TEMP_DIR has no sticky bit, so a file put by another user is not reused
+            if stat.st_size > 0 and stat.st_uid == os.geteuid():
+                info("A previously used file found, will be reused")
+                return output_path
+
         if allow_branches:
             aops = "--allow-branches "
         else:
             aops = ""
-        cmd = "{:s} --file={:s} --rop={:d} {:s}--unique > {:s}".format(
-            shlex.quote(rp), shlex.quote(path), ropN, aops, shlex.quote(output_path),
-        )
-        gef_print(titlify(cmd))
-        if not os.path.exists(output_path):
-            GefUtil.os_system(cmd)
+        # path may be in the remote, so rp-lin reads the local copy of data.
+        # rp-lin may fail or be interrupted, so its output is moved to output_path only when it succeeds.
+        with ContextManager.temporary_file(data, prefix="rp", suffix="-" + os.path.basename(path)) as input_path:
+            with ContextManager.temporary_file(b"", prefix="rp", suffix=".txt") as tmp_output_path:
+                cmd = "{:s} --file={:s} --rop={:d} {:s}--unique > {:s}".format(
+                    shlex.quote(rp), shlex.quote(input_path), ropN, aops, shlex.quote(tmp_output_path),
+                )
+                gef_print(titlify(cmd))
+                if GefUtil.os_system(cmd):
+                    err("rp-lin failed")
+                    return None
+                os.replace(tmp_output_path, output_path)
         return output_path
 
-    def apply_filter(self, rp_output_path, base_address):
+    def apply_filter(self, rp_output_path, base_address, text_range):
         """Apply regex filters to rp++ output, adjust gadget addresses, and store matching lines."""
         if not os.path.exists(rp_output_path):
             err("Could not find {!r}".format(rp_output_path))
@@ -38313,6 +38365,11 @@ class RpCommand(GenericCommand, BufferingOutput):
                 if line.startswith("0x"):
                     x = line.split(":")
                     addr, gadget = int(x[0], 16), ":".join(x[1:])
+                    if text_range is not None:
+                        text_start, text_end = text_range
+                        # vmlinux-to-elf makes the dumped .rodata executable as well, but it is NX actually
+                        if not text_start <= addr < text_end:
+                            continue
                     addr -= base_address # fix address
                     x = Color.redify("{:#08x}".format(addr)) + ":" + gadget # repaint color
                 else:
@@ -38324,9 +38381,13 @@ class RpCommand(GenericCommand, BufferingOutput):
     @Decorator.exclude_specific_gdb_mode(mode=("kgdb", "vmware"))
     def do_invoke(self, args):
         file_path = args.file
+        remote_path = None
         if args.bin:
             file_path = Path.get_filepath()
-            if file_path is None:
+            if file_path is None and is_remote_debug():
+                # gdbserver without the local file (`target:/path`), so the remote one is read like ropper
+                remote_path = Path.get_remote_filepath()
+            if file_path is None and remote_path is None:
                 err("Could not find the binary")
                 return
 
@@ -38364,13 +38425,26 @@ class RpCommand(GenericCommand, BufferingOutput):
                 return
 
         base_address = 0
+        text_range = None
+        data = None
         if args.libc:
             libc_targets = ("libc-2.", "libc.so.6", "libuClibc-", "/libc.so")
             libc = ProcessMap.process_lookup_path(libc_targets)
             if libc is None:
                 err("Could not find the libc")
                 return
+            # the path in vmmap may be in the remote, the container or the sysroot of qemu-user
+            data, _ = GefUtil.read_mapped_file(libc)
+            if not data:
+                err("Could not read {:s}".format(libc.path))
+                return
             path = libc.path
+        elif args.bin and remote_path is not None:
+            data = Path.read_remote_file(remote_path)
+            if not data:
+                err("Could not read {:s}".format(remote_path))
+                return
+            path = remote_path
         elif args.bin:
             path = file_path
         elif args.file:
@@ -38382,7 +38456,7 @@ class RpCommand(GenericCommand, BufferingOutput):
 
             info("Wait for memory scan")
             # dump kernel then apply vmlinux-to-elf
-            symboled_vmlinux_file = VmlinuxToElfApplyCommand.dump_kernel_elf()
+            symboled_vmlinux_file = VmlinuxToElfApplyCommand.dump_kernel_elf(args.rescan)
             if symboled_vmlinux_file is None:
                 err("Failed to create kernel ELF")
                 return
@@ -38392,22 +38466,36 @@ class RpCommand(GenericCommand, BufferingOutput):
                 shlex.quote(nm), shlex.quote(symboled_vmlinux_file), shlex.quote(grep),
             )
             out = GefUtil.gef_execute_external(cmd, as_list=True, shell=True)
-            if len(out) != 1:
+            # vmlinux-to-elf may misread kallsyms and leave _stext undefined (`U _stext`, e.g., 4.14 without
+            # CONFIG_KALLSYMS_ALL), so use the kallsyms that gef resolved then
+            if len(out) == 1 and len(out[0].split()) == 3:
+                base_address = int(out[0].split()[0], 16)
+            else:
+                base_address = Ksym.get_addr("_stext")
+            if base_address is None:
                 err("Failed to resolve _stext")
                 return
-            base_address = int(out[0].split()[0], 16)
+            klayout = Kernel.layout()
+            text_range = (klayout.text_base, klayout.text_end)
+
+        if data is None:
+            try:
+                data = open(path, "rb").read()
+            except OSError as e:
+                err("{}".format(e))
+                return
 
         # invoke rp++
-        rp_output_path = self.exec_rp(rp, args.rop_N, args.allow_branches, path)
+        rp_output_path = self.exec_rp(rp, args.rop_N, args.allow_branches, args.rescan, data, path)
         if rp_output_path is None:
             return
 
         if args.no_print:
-           return
+            return
 
         # filtering
         self.out = []
-        self.apply_filter(rp_output_path, base_address)
+        self.apply_filter(rp_output_path, base_address, text_range)
 
         # print
         self.print_output(check_terminal_size=True)
@@ -38422,8 +38510,8 @@ class AssembleCommand(GenericCommand):
     _category_ = "01-e. Debugging Support - Assemble"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch)")
-    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode)")
+    parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch, or X86)")
+    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode, or 64)")
     parser.add_argument("-e", dest="big_endian", action="store_true", help="use big-endian.")
     parser.add_argument("-s", dest="as_shellcode", action="store_true", help="output like shellcode style.")
     parser.add_argument("-l", dest="overwrite_location", metavar="LOCATION",
@@ -38437,11 +38525,12 @@ class AssembleCommand(GenericCommand):
     _example_ = "\n".join([
         '{0:s} -a X86 -m 64 "mov rax, qword ptr [rax] ; inc rax ;"',
         '{0:s} -a X86 -m 32 "mov eax, dword ptr [eax] ; inc eax ;"',
-        '{0:s} -a X86 -m 16 "mov ax, word ptr [ax] ; inc ax"',
+        '{0:s} -a X86 -m 16 "mov ax, word ptr [bx] ; inc ax"',
         '{0:s} -a ARM -m ARM      "sub r1, r2, r3"',
         '{0:s} -a ARM -m ARM -e   "sub r1, r2, r3"',
         '{0:s} -a ARM -m THUMB    "movs r4, #0xf0"',
         '{0:s} -a ARM -m THUMB -e "movs r4, #0xf0"',
+        '{0:s} -a ARM -m ARM+V8   "crc32b r1, r2, r3"',
         '{0:s} -a ARM64 -m ARM    "ldr w1, [sp, #0x8]"',
         '{0:s} -a MIPS -m 32    "and $9, $6, $7"',
         '{0:s} -a MIPS -m 32 -e "and $9, $6, $7"',
@@ -38460,59 +38549,50 @@ class AssembleCommand(GenericCommand):
     @Decorator.parse_args
     @ModuleLoader.load_keystone
     def do_invoke(self, args):
-        if (args.arch, args.mode) == (None, None):
-            if is_alive() and current_arch:
-                big_endian = args.big_endian or Endian.is_big_endian()
-                try:
-                    arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
-                        arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
-                    )
-                except AttributeError:
-                    err("Unsupported architecture: {:s}:{:s}".format(current_arch.arch, current_arch.mode))
-                    return
-                arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
-                if big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-            else:
-                # if not alive, defaults to x86-64
-                arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
-                    arch="X86", mode="64", endian=args.big_endian,
-                )
-                arch_mode_s = "X86:64"
-                if args.big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-        elif not args.arch:
-            err("An architecture (-a) must be provided")
-            return
-        elif not args.mode:
+        # the omitted one of -a and -m comes from current_arch (it is set by `file` even if not alive), or X86:64
+        if args.arch is not None:
+            arch_s = args.arch
+        elif current_arch is not None:
+            arch_s = current_arch.arch
+        else:
+            arch_s = "X86"
+        if args.mode is not None:
+            mode_s = args.mode
+        elif current_arch is not None and current_arch.arch == arch_s:
+            mode_s = current_arch.mode
+        elif arch_s == "X86":
+            mode_s = "64"
+        else:
             # keystone gives no error so check here
             err("A mode (-m) must be provided")
             return
-        elif args.arch in ["SPARC", "S390X"] and args.big_endian is False:
+        if args.arch is None and current_arch is not None:
+            big_endian = args.big_endian or Endian.is_big_endian()
+        else:
+            big_endian = args.big_endian
+
+        if arch_s in ["SPARC", "S390X"] and not big_endian:
             # keystone gives no error so check here
             err("A big endian flag (-e) must be provided")
             return
-        else:
-            try:
-                arch, mode = UnicornKeystoneCapstone.get_keystone_arch(
-                    arch=args.arch, mode=args.mode, endian=args.big_endian,
-                )
-                arch_mode_s = ":".join([args.arch, args.mode])
-                if args.big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-            except AttributeError:
+        try:
+            arch, mode = UnicornKeystoneCapstone.get_keystone_arch(arch=arch_s, mode=mode_s, endian=big_endian)
+        except AttributeError:
+            if args.arch is None:
+                err("Unsupported architecture: {:s}:{:s}".format(arch_s, mode_s))
+            else:
                 self.usage()
-                return
+            return
+        arch_mode_s = ":".join([arch_s, mode_s])
+        if big_endian:
+            endian_s = "big"
+        else:
+            endian_s = "little"
 
         if args.infile is not None:
             try:
-                with open(args.infile, encoding="utf-8") as file:
+                # utf-8-sig skips the BOM
+                with open(args.infile, encoding="utf-8-sig") as file:
                     insns = file.read().strip()
             except (OSError, UnicodeError) as e:
                 err("Cannot read file {:s}: {:s}".format(args.infile, str(e)))
@@ -38540,7 +38620,9 @@ class AssembleCommand(GenericCommand):
         if args.as_shellcode:
             gef_print('sc = ""')
             res = 'sc += "{:s}"'.format(res)
-        gef_print("{:60s} # {:s}".format(res, insns))
+        # the comment must be one line, so join the lines of -i
+        lines = [line.strip() for line in insns.splitlines() if line.strip()]
+        gef_print("{:60s} # {:s}".format(res, "; ".join(lines)))
         return
 
 
@@ -38552,8 +38634,8 @@ class DisassembleCommand(GenericCommand):
     _category_ = "01-e. Debugging Support - Assemble"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch)")
-    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode)")
+    parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch, or X86)")
+    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode, or 64)")
     parser.add_argument("-e", dest="big_endian", action="store_true", help="use big-endian.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("-i", "--infile", metavar="FILE", help="read hex code from a file.")
@@ -38563,11 +38645,12 @@ class DisassembleCommand(GenericCommand):
     _example_ = "\n".join([
         '{0:s} -a X86 -m 64 "488b00 48ffc0"',
         '{0:s} -a X86 -m 32 "8b00 40"',
-        '{0:s} -a X86 -m 16 "8b00 40"',
+        '{0:s} -a X86 -m 16 "8b07 40"',
         '{0:s} -a ARM -m ARM      "031042e0"',
         '{0:s} -a ARM -m ARM -e   "e0421003"',
         '{0:s} -a ARM -m THUMB    "f024"',
         '{0:s} -a ARM -m THUMB -e "24f0"',
+        '{0:s} -a ARM -m ARM+V8   "431002e1"',
         '{0:s} -a ARM64 -m ARM    "e10b40b9"',
         '{0:s} -a MIPS -m 32    "2448c700"',
         '{0:s} -a MIPS -m 32 -e "00c74824"',
@@ -38595,58 +38678,49 @@ class DisassembleCommand(GenericCommand):
     @Decorator.parse_args
     @ModuleLoader.load_capstone
     def do_invoke(self, args):
-        if (args.arch, args.mode) == (None, None):
-            if is_alive() and current_arch:
-                big_endian = args.big_endian or Endian.is_big_endian()
-                try:
-                    arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                        arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
-                    )
-                except AttributeError:
-                    err("Unsupported architecture: {:s}:{:s}".format(current_arch.arch, current_arch.mode))
-                    return
-                arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
-                if big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-            else:
-                # if not alive, defaults to x86-64
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch="X86", mode="64", endian=args.big_endian,
-                )
-                arch_mode_s = "X86:64"
-                if args.big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-        elif not args.arch:
-            err("An architecture (-a) must be provided")
-            return
-        elif not args.mode:
+        # the omitted one of -a and -m comes from current_arch (it is set by `file` even if not alive), or X86:64
+        if args.arch is not None:
+            arch_s = args.arch
+        elif current_arch is not None:
+            arch_s = current_arch.arch
+        else:
+            arch_s = "X86"
+        if args.mode is not None:
+            mode_s = args.mode
+        elif current_arch is not None and current_arch.arch == arch_s:
+            mode_s = current_arch.mode
+        elif arch_s == "X86":
+            mode_s = "64"
+        else:
             err("A mode (-m) must be provided")
             return
-        elif args.arch in ["SPARC", "S390X", "M68K", "HPPA"] and args.big_endian is False:
+        if args.arch is None and current_arch is not None:
+            big_endian = args.big_endian or Endian.is_big_endian()
+        else:
+            big_endian = args.big_endian
+
+        if arch_s in ["SPARC", "S390X", "M68K", "HPPA"] and not big_endian:
             # capstone gives no error so check here
             err("A big endian flag (-e) must be provided")
             return
-        else:
-            try:
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch=args.arch, mode=args.mode, endian=args.big_endian,
-                )
-                arch_mode_s = ":".join([args.arch, args.mode])
-                if args.big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-            except AttributeError:
+        try:
+            arch, mode = UnicornKeystoneCapstone.get_capstone_arch(arch=arch_s, mode=mode_s, endian=big_endian)
+        except AttributeError:
+            if args.arch is None:
+                err("Unsupported architecture: {:s}:{:s}".format(arch_s, mode_s))
+            else:
                 self.usage()
-                return
+            return
+        arch_mode_s = ":".join([arch_s, mode_s])
+        if big_endian:
+            endian_s = "big"
+        else:
+            endian_s = "little"
 
         if args.infile is not None:
             try:
-                with open(args.infile, encoding="utf-8") as file:
+                # utf-8-sig skips the BOM
+                with open(args.infile, encoding="utf-8-sig") as file:
                     insns = file.read()
             except (OSError, UnicodeError) as e:
                 err("Cannot read file {:s}: {:s}".format(args.infile, str(e)))
@@ -38656,7 +38730,7 @@ class DisassembleCommand(GenericCommand):
         insns = "".join(insns.split())
         try:
             insns = binascii.unhexlify(insns)
-        except binascii.Error:
+        except ValueError: # binascii.Error, or a non-ASCII character
             err("Invalid format")
             return
 
@@ -42766,8 +42840,14 @@ class ExploitableCommand(GenericCommand):
             return None
         return stop["signal"]
 
-    def fault_address(self):
+    def fault_address(self, si_code):
         """Return the faulting address from siginfo, or None if unavailable."""
+
+        # si_addr is valid only for a fault reported by the kernel (si_code > 0). kill and tgkill (SI_USER, SI_TKILL)
+        # put si_pid and si_uid there, and SI_KERNEL (e.g., #GP of a non-canonical address) gives 0.
+        if si_code is not None:
+            if si_code <= 0 or si_code == 0x80: # SI_KERNEL
+                return None
 
         # $_siginfo is a gdb convenience variable whose siginfo type is built into gdb,
         # so the member access works even on stripped binaries (it does not rely on the
@@ -42790,24 +42870,47 @@ class ExploitableCommand(GenericCommand):
             return False
         return addr < 0x1000
 
-    def insn_is_control_transfer(self, insn):
-        """True if the $pc instruction is a call/jmp/ret-style control transfer."""
+    def insn_has_memory_operand(self, insn):
+        """True if the $pc instruction has a memory operand (e.g., `mov rax, QWORD PTR [rax]`)."""
         if insn is None:
             return False
-        return (
-            current_arch.is_call(insn) or current_arch.is_jump(insn)
-            or current_arch.is_ret(insn)
-        )
+        _, operands = X86.get_mnemonic_operands(insn)
+        return "[" in operands
+
+    def insn_is_indirect_branch(self, insn):
+        """True if the $pc instruction is a call/jmp that loads its target from memory."""
+        if insn is None:
+            return False
+        # a direct call/jmp and the one by a register fault at the target, or in pushing the return address
+        if not (current_arch.is_call(insn) or current_arch.is_jump(insn)):
+            return False
+        return self.insn_has_memory_operand(insn)
 
     def classify(self):
         """Return (risk_key, headline) and fill self.details."""
         signame = self.current_signal_name()
         pc = current_arch.pc
         sp = current_arch.sp
-        fault = self.fault_address()
+        try:
+            si_code = int(GefUtil.get_siginfo()["si_code"])
+        except (gdb.error, TypeError):
+            si_code = None
+        fault = self.fault_address(si_code)
         pc_addr = Address(pc)
         pc_mapped = pc_addr.section is not None
-        pc_exec = pc_addr.is_in_executable()
+        pc_exec = bool(pc_addr.is_in_executable())
+        if is_core_file():
+            # the maps of a core file come from NT_FILE, which has no permissions (all r--) and no anonymous regions
+            pc_mapped = is_valid_addr(pc)
+            pc_exec = any(start <= pc < end for start, end in ProcessMap.get_core_code_ranges())
+        elif not any(section.is_executable() for section in ProcessMap.get_process_maps()):
+            # no permission is known: context.disable_vmmap (no maps), or `info proc mappings` without Perms (e.g., rr of
+            # GDB 11 and earlier) gives r-- to all
+            pc_mapped = is_valid_addr(pc)
+            pc_exec = None
+        elif pc_mapped and pc_addr.section.path == "<explored>":
+            # the explored region of qemu-user and Qiling is rw- by default
+            pc_exec = None
         try:
             insn = get_insn()
         except Exception:
@@ -42817,12 +42920,14 @@ class ExploitableCommand(GenericCommand):
             self.details.append("signal: {}".format(signame))
         else:
             self.details.append("signal: {}".format("none/unknown"))
+        if si_code is not None:
+            self.details.append("si_code = {:d}".format(si_code))
         self.details.append("$pc = {:#x} (mapped={}, executable={})".format(pc, pc_mapped, pc_exec))
         self.details.append("$sp = {:#x}".format(sp))
         if fault is not None:
             fault_addr = Address(fault)
             self.details.append("fault address (si_addr) = {:#x} (mapped={}, writable={})".format(
-                fault, fault_addr.section is not None, fault_addr.is_in_writable()))
+                fault, fault_addr.section is not None, bool(fault_addr.is_in_writable())))
         else:
             self.details.append("fault address (si_addr) = unavailable")
 
@@ -42833,16 +42938,11 @@ class ExploitableCommand(GenericCommand):
             self.details.append("=> $pc points to unmapped memory: corrupted/controlled control flow.")
             return "exploitable", "Execution reached an unmapped address ($pc not in any mapping)."
 
-        if signame in ("SIGSEGV", "SIGILL", "SIGBUS") and pc_mapped and not pc_exec:
+        if signame in ("SIGSEGV", "SIGILL", "SIGBUS") and pc_mapped and pc_exec is False:
             self.details.append("=> $pc is in a non-executable mapping: control flow corrupted.")
             return "exploitable", "$pc is in a non-executable mapping (corrupted control flow)."
 
         if signame == "SIGILL":
-            try:
-                code = int(GefUtil.get_siginfo()["si_code"])
-                self.details.append("SIGILL si_code = {:d}".format(code))
-            except (gdb.error, TypeError):
-                pass
             if insn is not None and insn.mnemonic.lower() in ("ud2", "ud2a", "ud1", "ud0"):
                 self.details.append("=> explicit undefined-instruction trap (possibly compiler-generated).")
                 return "probably_not", "Explicit instruction trap; check assertions or unreachable code."
@@ -42853,12 +42953,26 @@ class ExploitableCommand(GenericCommand):
             self.details.append("=> fault address equals $pc: bad instruction fetch (controlled execution).")
             return "exploitable", "Faulted fetching an instruction at $pc (controlled jump target)."
 
-        if signame == "SIGSEGV" and self.insn_is_control_transfer(insn):
-            if current_arch.is_ret(insn):
-                self.details.append("=> faulting instruction is RET: possibly a corrupted return address.")
-                return "exploitable", "RET to a faulting address (possible return-address corruption)."
-            self.details.append("=> faulting instruction is a call/jmp to a faulting target.")
-            return "probably", "Indirect call/jump to a faulting target (possible pointer corruption)."
+        if signame == "SIGSEGV" and insn is not None and current_arch.is_ret(insn):
+            self.details.append("=> faulting instruction is RET: possibly a corrupted return address.")
+            return "exploitable", "RET to a faulting address (possible return-address corruption)."
+
+        # e.g., `call` pushing the return address, or a write to the new frame after unbounded recursion
+        if signame == "SIGSEGV" and fault is not None and abs(fault - sp) < get_pagesize():
+            self.details.append("=> fault address is within a page of $sp: stack exhaustion.")
+            return "probably_not", "Stack exhaustion (e.g., unbounded recursion)."
+
+        if signame == "SIGSEGV" and self.insn_is_indirect_branch(insn):
+            self.details.append("=> faulting instruction is a call/jmp that loads its target from a faulting address.")
+            return "probably", "Indirect call/jump through a faulting pointer (possible pointer corruption)."
+
+        # #GP has no fault address, e.g., a non-canonical address of x86-64 or a privileged instruction
+        if signame == "SIGSEGV" and si_code == 0x80: # SI_KERNEL
+            if self.insn_has_memory_operand(insn):
+                self.details.append("=> general protection fault on a memory operand: possibly a non-canonical address.")
+                return "probably", "General protection fault on a memory access (possible controlled pointer)."
+            self.details.append("=> general protection fault without a memory operand.")
+            return "unknown", "General protection fault (e.g., a privileged instruction)."
 
         if signame == "SIGABRT":
             self.details.append("=> SIGABRT: libc aborted (stack canary / heap check / assert).")
@@ -42885,7 +42999,14 @@ class ExploitableCommand(GenericCommand):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         self.details = []
-        key, headline = self.classify()
+        # judge by the newest frame also after `up`, since $pc, $sp and the stop thread check of GDB 13 and earlier
+        # (`Program stopped at` of `info program`) are of the selected frame
+        orig_frame = gdb.selected_frame()
+        gdb.newest_frame().select()
+        try:
+            key, headline = self.classify()
+        finally:
+            orig_frame.select()
 
         gef_print(titlify("exploitability triage"))
         gef_print("Risk: {} (HEURISTIC)".format(self.risk_color(key)))
@@ -240310,6 +240431,9 @@ class GefUtil:
             outer_maps = ProcessMap.get_process_maps(outer=True)
             paths = [m.path for m in outer_maps if m.path == section.path]
             paths += [m.path for m in outer_maps if GefUtil.is_same_filename(m.path, section.path)]
+            # the explored maps have the path in the guest (from link_map), which is under the sysroot of `qemu -L`
+            if section.path.startswith("/"):
+                paths += [m.path for m in outer_maps if m.path.endswith(section.path)]
             if not paths:
                 return None, None
             path = paths[0]
