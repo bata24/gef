@@ -4056,15 +4056,17 @@ class GenericType:
         size_t_pointer = self.size_t.pointer()
         return AddressUtil.dereference(addr).cast(size_t_pointer)
 
+    # gdb.Type.array(n) takes the inclusive upper bound, so it has n + 1 elements.
+    # array(-1) is a zero-length array, which gdb prints as an address like a zero-length member.
     def get_size_t_array(self, addr, length):
-        size_t_array = self.size_t.array(length)
+        size_t_array = self.size_t.array(length - 1)
         return AddressUtil.dereference(addr).cast(size_t_array)
 
     def get_int_t(self, addr):
         return AddressUtil.dereference(addr).cast(self.int_t)
 
     def get_int_t_array(self, addr, length):
-        int_t_array = self.int_t.array(length)
+        int_t_array = self.int_t.array(length - 1)
         return AddressUtil.dereference(addr).cast(int_t_array)
 
     def get_char_t_pointer(self, addr):
@@ -4072,7 +4074,7 @@ class GenericType:
         return AddressUtil.dereference(addr).cast(char_t_pointer)
 
     def get_char_t_array(self, addr, length):
-        char_t_array = self.char_t.array(length)
+        char_t_array = self.char_t.array(length - 1)
         return AddressUtil.dereference(addr).cast(char_t_array)
 
     def get_long_t(self, addr):
@@ -4359,6 +4361,13 @@ class GlibcHeap:
             return self.get_size_t(self.addrof_arena_max)
 
         @property
+        def thp_mode(self):
+            if get_libc_version() >= (2, 43):
+                return self.get_int_t(self.addrof_thp_mode) # enum malloc_thp_mode_t
+            else:
+                return None
+
+        @property
         def thp_pagesize(self):
             if get_libc_version() >= (2, 35):
                 return self.get_size_t(self.addrof_thp_pagesize)
@@ -4435,7 +4444,7 @@ class GlibcHeap:
             else:
                 return None
 
-        @property # noqa: V106
+        @property
         def tcache_count(self):
             if get_libc_version() >= (2, 26):
                 return self.get_size_t(self.addrof_tcache_count)
@@ -4912,7 +4921,7 @@ class GlibcHeap:
                     matches.append(found)
             return matches
 
-        def get_tcache_perthread_struct_size():
+        def get_tcache_perthread_struct_sizes():
             TCACHE_MAX_BINS = GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
             if get_libc_version() < (2, 30):
                 tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (1 + current_arch.ptrsize)
@@ -4921,12 +4930,16 @@ class GlibcHeap:
 
             for v in GlibcHeap.get_binsize_table()["tcache"].values():
                 if v.get("size", 0) > tcache_perthread_struct_size_real:
-                    return v["size"]
-            return None
+                    if get_libc_version() >= (2, 43):
+                        # When _int_malloc initializes tcache, tcache_init(av) passes request2size(bytes) to
+                        # _int_malloc, which rounds it again (e.g., 0x310 on x86_64). tcache_free_init rounds it once.
+                        return (v["size"], v["size"] + GlibcHeap.HeapInfo.MALLOC_ALIGNMENT())
+                    return (v["size"],)
+            return ()
 
         def search_tcache_perthread_struct(arena, tls):
-            tcache_perthread_struct_size = get_tcache_perthread_struct_size()
-            if tcache_perthread_struct_size is None:
+            tcache_perthread_struct_sizes = get_tcache_perthread_struct_sizes()
+            if not tcache_perthread_struct_sizes:
                 return None
             for i in range(1, 20): # "20" has no special meaning
                 for direction in [1, -1]:
@@ -4938,7 +4951,7 @@ class GlibcHeap:
                         continue
                     chunk = GlibcHeap.GlibcChunk(arena, x)
                     try:
-                        if chunk.size == tcache_perthread_struct_size:
+                        if chunk.size in tcache_perthread_struct_sizes:
                             return x
                     except gdb.MemoryError:
                         continue
@@ -4949,6 +4962,57 @@ class GlibcHeap:
             if tcache is not None:
                 return tcache
         return None
+
+    @staticmethod
+    def is_tcache_dummy(tcache):
+        """2.43+ points the tcache of a thread to `__tcache_dummy` before tcache_init and when it is disabled."""
+        if get_libc_version() < (2, 43):
+            return False
+        dummy = Symbol.resolve_address("__tcache_dummy")
+        if dummy is None:
+            return False
+        # `inactive` is at +0, and `disabled` is after `char pad` (at +alignof(tcache_perthread_struct)).
+        return dummy <= tcache <= dummy + current_arch.ptrsize
+
+    @staticmethod
+    def get_thread_tcaches(arenas):
+        """Return [(thread number, arena, &tcache_perthread_struct), ...] of the threads that have a tcache."""
+        if get_libc_version() < (2, 26):
+            return []
+
+        tcaches = []
+        seen = set()
+        with ContextManager.threads() as threads:
+            for thread in threads:
+                tls = current_arch.get_tls()
+                if tls is None:
+                    continue
+
+                # strict way (from symbol)
+                candidates = []
+                if not is_qiling(): # no TLS register, and gdb 16+ aborts on ARM64 when it evaluates a TLS variable
+                    try:
+                        tcache = AddressUtil.parse_address("(void*) tcache")
+                        thread_arena = AddressUtil.parse_address("(void*) thread_arena")
+                        for arena in arenas:
+                            if arena.addr == thread_arena:
+                                candidates.append((arena, tcache))
+                    except gdb.error:
+                        pass
+
+                # heuristic way
+                if not candidates:
+                    for arena in arenas:
+                        candidates.append((arena, GlibcHeap.search_for_tcache_from_tls(arena.addr, tls)))
+
+                for arena, tcache in candidates:
+                    if not tcache or not is_valid_addr(tcache) or GlibcHeap.is_tcache_dummy(tcache):
+                        continue # not initialized (NULL before 2.43)
+                    if tcache in seen:
+                        continue
+                    seen.add(tcache)
+                    tcaches.append((thread.num, arena, tcache))
+        return tcaches
 
     class GlibcArena:
         """Glibc arena class."""
@@ -5104,6 +5168,8 @@ class GlibcHeap:
                         try:
                             tcache_candidate = AddressUtil.parse_address("(void*) tcache")
                             if tcache_candidate <= self.heap_base:
+                                continue
+                            if GlibcHeap.is_tcache_dummy(tcache_candidate):
                                 continue
                             if tcache is None or tcache > tcache_candidate:
                                 tcache = tcache_candidate
@@ -5298,9 +5364,10 @@ class GlibcHeap:
                 count = self.TCACHE_FILL_COUNT() - count
             return count
 
-        def addrof_tcachebins_i(self, i):
+        def addrof_tcachebins_i(self, i, tcache_perthread_struct=None):
             """return &tcache_perthread_struct.entries[i]"""
-            tcache_perthread_struct = self.tcache_perthread_struct
+            if tcache_perthread_struct is None:
+                tcache_perthread_struct = self.tcache_perthread_struct
             if tcache_perthread_struct is None:
                 return None
 
@@ -5360,9 +5427,9 @@ class GlibcHeap:
                 system_mem_addr = self.__addr + GefUtil.member_offset(self.__arena.type, "system_mem")
             return system_mem_addr
 
-        def get_tcachebins_i(self, i):
+        def get_tcachebins_i(self, i, tcache_perthread_struct=None):
             """Return head chunk in tcache[i]."""
-            tcache_i_head = self.addrof_tcachebins_i(i)
+            tcache_i_head = self.addrof_tcachebins_i(i, tcache_perthread_struct)
             if not tcache_i_head:
                 return None
             addr = AddressUtil.dereference(tcache_i_head)
@@ -5435,7 +5502,43 @@ class GlibcHeap:
                 args = (arena, arena_addr, heap_base, top, last_remainder, next, system_mem)
             return fmt.format(*args)
 
-        def get_tcache_list(self):
+        def get_heaps(self, dump_start=None):
+            """Return [(start, end, top), ...] to walk the chunks of each heap, or only the heap including dump_start.
+            A thread arena makes a new heap when the heap reaches HEAP_MAX_SIZE, and the old heap ends with fenceposts
+            (the last one is size 0) instead of top. So `top` is None and `end` is the end of the heap for it."""
+            regions = None
+            if not self.is_main_arena:
+                try:
+                    regions = GlibcHeapTimelineCommand.heap_regions(self, self.top)
+                except (OSError, gdb.MemoryError):
+                    # The mapping is unknown, or heap_info or top is broken.
+                    # Then it is walked to top as one heap, and the walk shows the corruption.
+                    pass
+
+            if regions is None:
+                if dump_start is None:
+                    dump_start = self.heap_base
+                    # specific pattern
+                    if self.is_main_arena:
+                        if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
+                            dump_start += 8
+                elif not self.heap_base <= dump_start <= self.top:
+                    return []
+                return [(dump_start, self.top, self.top)]
+
+            heaps = []
+            for region in regions:
+                if region["top"] is None:
+                    end = region["end"]
+                else:
+                    end = region["top"]
+                if dump_start is None:
+                    heaps.append((region["start"], end, region["top"]))
+                elif region["start"] <= dump_start < region["end"] and dump_start <= end:
+                    heaps.append((dump_start, end, region["top"]))
+            return heaps
+
+        def get_tcache_list(self, tcache_perthread_struct=None):
             """Return a dictionary mapping tcache bin indices to lists of chunk addresses,
             handling loops and corruption."""
             if get_libc_version() < (2, 26):
@@ -5448,7 +5551,7 @@ class GlibcHeap:
             for i in range(self.TCACHE_MAX_BINS()):
                 # head check
                 try:
-                    chunk = self.get_tcachebins_i(i)
+                    chunk = self.get_tcachebins_i(i, tcache_perthread_struct)
                 except gdb.MemoryError:
                     chunks_all[i] = ["Corrupted"]
                     continue
@@ -5609,7 +5712,12 @@ class GlibcHeap:
         @Cache.cache_until_next
         def get_freelist_cache(self):
             # bin_idx -> [chunk, chunk, ...]
-            tcache_lists = self.get_tcache_list()
+            # tcache is per-thread, and free() puts a chunk of any arena into the tcache of the calling thread.
+            # So the tcaches of all threads are used (e.g., a chunk of a thread arena freed by the main thread).
+            tcache_lists_all = [self.get_tcache_list()]
+            for _, _, tcache in GlibcHeap.get_thread_tcaches(GlibcHeap.get_all_arenas()):
+                if tcache != self.tcache_perthread_struct:
+                    tcache_lists_all.append(self.get_tcache_list(tcache))
             fastbins_lists = self.get_fastbins_list()
             unsortedbin_lists = self.get_unsortedbin_list()
             smallbins_lists = self.get_smallbins_list()
@@ -5618,9 +5726,17 @@ class GlibcHeap:
             def int_filter(a):
                 return {x for x in a if isinstance(x, int)}
 
+            # The position and the length do not count the marks ("Corrupted", etc.) and unreadable addresses.
+            def valid_filter(a):
+                return [x for x in a if is_valid_addr(x)]
+
+            tcache_addrs = set()
+            for tcache_lists in tcache_lists_all:
+                tcache_addrs.update(*tcache_lists.values())
+
             # bin type -> {chunk, chunk, ...}
             addr_lists = {
-                "tcache": int_filter(set().union(*tcache_lists.values())),
+                "tcache": int_filter(tcache_addrs),
                 "fastbins": int_filter(set().union(*fastbins_lists.values())),
                 "unsortedbin": int_filter(unsortedbin_lists[0]),
                 "smallbins": int_filter(set().union(*smallbins_lists.values())),
@@ -5629,29 +5745,28 @@ class GlibcHeap:
 
             # dict[address] = ["bins info1", "bins info2", ...]
             bins_dict_for_address = {}
-            for tcache_idx, tcache_list in tcache_lists.items():
-                position_table = GefUtil.make_position_table(tcache_list)
-                for address in set(tcache_list):
-                    if not isinstance(address, int):
-                        continue
-                    pos = position_table[address]
-                    if "size" in  GlibcHeap.get_binsize_table()["tcache"][tcache_idx]:
-                        sz = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size"]
-                        m = "tcache[idx={:d},sz={:#x}][{:s}/{:d}]".format(tcache_idx, sz, pos, len(tcache_list))
-                    else:
-                        sz_min = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size_min"]
-                        sz_max = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size_max"]
-                        m = "tcache[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
-                            tcache_idx, sz_min, sz_max, pos, len(tcache_list),
-                        )
-                    bins_dict_for_address.setdefault(address, []).append(m)
+            for tcache_lists in tcache_lists_all:
+                for tcache_idx, tcache_list in tcache_lists.items():
+                    tcache_list = valid_filter(tcache_list)
+                    position_table = GefUtil.make_position_table(tcache_list)
+                    for address in set(tcache_list):
+                        pos = position_table[address]
+                        if "size" in  GlibcHeap.get_binsize_table()["tcache"][tcache_idx]:
+                            sz = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size"]
+                            m = "tcache[idx={:d},sz={:#x}][{:s}/{:d}]".format(tcache_idx, sz, pos, len(tcache_list))
+                        else:
+                            sz_min = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size_min"]
+                            sz_max = GlibcHeap.get_binsize_table()["tcache"][tcache_idx]["size_max"]
+                            m = "tcache[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
+                                tcache_idx, sz_min, sz_max, pos, len(tcache_list),
+                            )
+                        bins_dict_for_address.setdefault(address, []).append(m)
 
             fastbins_table = GlibcHeap.get_binsize_table()["fastbins"]
             for fastbin_idx, fastbin_list in fastbins_lists.items():
+                fastbin_list = valid_filter(fastbin_list)
                 position_table = GefUtil.make_position_table(fastbin_list)
                 for address in set(fastbin_list):
-                    if not isinstance(address, int):
-                        continue
                     pos = position_table[address]
                     if fastbin_idx in fastbins_table:
                         sz = fastbins_table[fastbin_idx]["size"]
@@ -5663,29 +5778,26 @@ class GlibcHeap:
             # dict[base_address] = ["bins info1", "bins info2", ...]
             bins_dict_for_base_address = {}
             for unsortedbin_list in unsortedbin_lists.values():
+                unsortedbin_list = valid_filter(unsortedbin_list)
                 position_table = GefUtil.make_position_table(unsortedbin_list)
                 for base_address in set(unsortedbin_list):
-                    if not isinstance(base_address, int):
-                        continue
                     pos = position_table[base_address]
                     m = "unsortedbins[{:s}/{:d}]".format(pos, len(unsortedbin_list))
                     bins_dict_for_base_address.setdefault(base_address, []).append(m)
 
             for smallbin_idx, smallbin_list in smallbins_lists.items():
+                smallbin_list = valid_filter(smallbin_list)
                 position_table = GefUtil.make_position_table(smallbin_list)
                 for base_address in set(smallbin_list):
-                    if not isinstance(base_address, int):
-                        continue
                     pos = position_table[base_address]
                     sz = GlibcHeap.get_binsize_table()["small_bins"][smallbin_idx]["size"]
                     m = "smallbins[idx={:d},sz={:#x}][{:s}/{:d}]".format(smallbin_idx, sz, pos, len(smallbin_list))
                     bins_dict_for_base_address.setdefault(base_address, []).append(m)
 
             for largebin_idx, largebin_list in largebins_lists.items():
+                largebin_list = valid_filter(largebin_list)
                 position_table = GefUtil.make_position_table(largebin_list)
                 for base_address in set(largebin_list):
-                    if not isinstance(base_address, int):
-                        continue
                     pos = position_table[base_address]
                     sz_min = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_min"]
                     sz_max = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_max"]
@@ -5757,7 +5869,9 @@ class GlibcHeap:
     @staticmethod
     def get_arena(address=None):
         """Return the arena object for the given address or arena index, or None if not found."""
-        if address is None or is_valid_addr(address):
+        # qemu-hppa maps the gateway page at 0, so a small number like 1 is also a valid address.
+        # No arena is in the first page, so such a value is interpreted as the number.
+        if address is None or (address >= get_pagesize() and is_valid_addr(address)):
             try:
                 get_libc_version() # every later step depends on it, so fail here if it is unknown
                 arena = GlibcHeap.GlibcArena(address)
@@ -6081,7 +6195,7 @@ class GlibcHeap:
                     fdn, fdn_sym = get_sym(self.fd_nextsize)
                     bkn, bkn_sym = get_sym(self.bk_nextsize)
                     fmt = "{:s}(base={:s}{:s}, addr={:s}{:s}, size={:s}, flags={:s}, fd={!s}{:s}, bk={!s}{:s}, "
-                    fmt += "fd_nextsize={!s}{:s}, bk_nextsize={!s}{:s})"
+                    fmt += "fd_nextsize={!s}{:s}, bk_nextsize={!s}{:s}{:s})"
                     msg = fmt.format(
                         chunk_c, base_c_f, base_sym, addr_c_f, addr_sym, size_c, flags,
                         fd, fd_sym, bk, bk_sym, fdn, fdn_sym, bkn, bkn_sym, err,
@@ -6105,7 +6219,7 @@ class GlibcHeap:
                 if get_libc_version() < (2, 32):
                     fd, fd_sym = get_sym(self.get_fwd_ptr(sll=False))
                     err = get_err([fd], sll=True)
-                    msg = "{:s}(base={:s}{:s}. addr={:s}{:s}, size={:s}, flags={:s}, fd={!s}{:s}{:s})".format(
+                    msg = "{:s}(base={:s}{:s}, addr={:s}{:s}, size={:s}, flags={:s}, fd={!s}{:s}{:s})".format(
                         chunk_c, base_c_f, base_sym, addr_c_f, addr_sym, size_c, flags, fd, fd_sym, err,
                     )
                 else:
@@ -31993,6 +32107,7 @@ class GlibcHeapCommand(GenericCommand):
     subparsers.add_parser("parse")
     subparsers.add_parser("snapshot")
     subparsers.add_parser("snapshot-compare")
+    subparsers.add_parser("timeline")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
@@ -32209,6 +32324,8 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
             self.out.append("  mmap_threshold = {:#x},".format(int(mp.mmap_threshold)))
             self.out.append("  arena_test = {:#x},".format(int(mp.arena_test)))
             self.out.append("  arena_max = {:#x},".format(int(mp.arena_max)))
+            if get_libc_version() >= (2, 43):
+                self.out.append("  thp_mode = {:#x},".format(int(mp.thp_mode)))
             if get_libc_version() >= (2, 35):
                 self.out.append("  thp_pagesize = {:#x},".format(int(mp.thp_pagesize)))
                 self.out.append("  hp_pagesize = {:#x},".format(int(mp.hp_pagesize)))
@@ -32230,6 +32347,7 @@ class GlibcHeapArenaCommand(GenericCommand, BufferingOutput):
                 else:
                     self.out.append("  tcache_small_bins = {:#x},".format(int(mp.tcache_bins)))
                 self.out.append("  tcache_max_bytes = {:#x},".format(int(mp.tcache_max_bytes)))
+                self.out.append("  tcache_count = {:#x},".format(int(mp.tcache_count)))
                 self.out.append("  tcache_unsorted_limit = {:#x},".format(int(mp.tcache_unsorted_limit)))
             self.out.append("}")
         return
@@ -32406,18 +32524,19 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
         '  - "largebins[idx=98,sz=0x1000-0x1200][8/8]"',
         "    - idx: 0-origin index that `i-th idx` means `bins[i*2 : (i+1)*2]`.",
         "    - sz : the size range of the chunk including metadata.",
-        "    - 8/ : a position in the free-list. largebins are FIFO, so the last chunk will be used first.",
+        "    - 8/ : a position in the free-list. largebins are sorted in descending order of size,",
+        "           and malloc takes the smallest chunk that fits (the second one if there are several of the size).",
         "    -  /8: parsed free-list length including corrupted chunks.",
     ])
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
-        self.add_setting("peek_nb_byte", 0, "Hexdump N first byte(s) inside the chunk data (0 to disable)")
+        self.add_setting("peek_nb_byte", 0, "Hexdump N first byte(s) from the chunk base (0 to disable)")
         self.add_setting("peek_offset", 0, "the offset to start dumping from when using peek_nb_byte")
         return
 
-    def print_heap_chunks(self, arena, dump_start, peek_nb, peek_offset):
-        """Iterate and display heap chunks in the given arena, with corruption checks and optional memory peeking."""
+    def print_heap_chunks(self, arena, heaps, peek_nb, peek_offset):
+        """Iterate and display heap chunks in the given heaps, with corruption checks and optional memory peeking."""
         # Do not show if top is broken, as it affects exit conditions.
         if is_32bit() and arena.top % 0x08:
             self.err_add_out("arena.top is corrupted")
@@ -32433,50 +32552,54 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             self.warn_add_out("arena.last_remainder is corrupted")
 
         freelist_hint_color = Config.get("theme.heap_freelist_hint")
-        current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
-        pbar = ProgressBar(total=max(arena.top - dump_start, 0))
+        for dump_start, dump_end, top in heaps:
+            current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
+            pbar = ProgressBar(total=max(dump_end - dump_start, 0))
 
-        while True:
-            if current_chunk.chunk_base_address == arena.top:
-                top_str = Color.colorify(" <-  top", freelist_hint_color)
-                self.out.append("{!s} {:s}".format(current_chunk, top_str))
-                break
-            if current_chunk.chunk_base_address > arena.top:
-                self.err_add_out("Corrupted: chunk > top")
-                break
-            if current_chunk.size == 0:
-                # EOF
-                break
+            while True:
+                if current_chunk.chunk_base_address == top:
+                    top_str = Color.colorify(" <-  top", freelist_hint_color)
+                    self.out.append("{!s} {:s}".format(current_chunk, top_str))
+                    break
+                if current_chunk.chunk_base_address > dump_end:
+                    if top is None:
+                        self.err_add_out("Corrupted: chunk > end of heap")
+                    else:
+                        self.err_add_out("Corrupted: chunk > top")
+                    break
+                if current_chunk.size == 0:
+                    # EOF (or the last fencepost of an old heap)
+                    break
 
-            line = str(current_chunk)
+                line = str(current_chunk)
 
-            # in or not in free-list
-            info = arena.get_bins_info(current_chunk)
-            if info:
-                freelist_hint = Color.colorify("  <-  {:s}".format(", ".join(info)), freelist_hint_color)
-                line += freelist_hint
+                # in or not in free-list
+                info = arena.get_bins_info(current_chunk)
+                if info:
+                    freelist_hint = Color.colorify("  <-  {:s}".format(", ".join(info)), freelist_hint_color)
+                    line += freelist_hint
 
-            self.out.append(line)
+                self.out.append(line)
 
-            # peek nbyte
-            if peek_nb:
-                peek_addr = current_chunk.chunk_base_address + peek_offset
-                peeked_data = read_memory(peek_addr, peek_nb, safe=True)
-                if peeked_data is None:
-                    self.err_add_out("Cannot read peek data at {:#x}".format(peek_addr))
-                else:
-                    self.out.append(hexdump(peeked_data, 0x10, base=peek_addr))
+                # peek nbyte
+                if peek_nb:
+                    peek_addr = current_chunk.chunk_base_address + peek_offset
+                    peeked_data = read_memory(peek_addr, peek_nb, safe=True)
+                    if peeked_data is None:
+                        self.err_add_out("Cannot read peek data at {:#x}".format(peek_addr))
+                    else:
+                        self.out.append(hexdump(peeked_data, 0x10, base=peek_addr))
 
-            # goto next
-            pbar.update(current_chunk.size)
-            next_chunk = current_chunk.get_next_chunk()
-            if next_chunk is None:
-                break
-            if not is_valid_addr(next_chunk.address):
-                self.err_add_out("Corrupted: next_chunk_address is invalid")
-                break
-            current_chunk = next_chunk
-        pbar.close()
+                # goto next
+                pbar.update(current_chunk.size)
+                next_chunk = current_chunk.get_next_chunk()
+                if next_chunk is None:
+                    break
+                if not is_valid_addr(next_chunk.address):
+                    self.err_add_out("Corrupted: next_chunk_address is invalid")
+                    break
+                current_chunk = next_chunk
+            pbar.close()
         return
 
     @Decorator.parse_args
@@ -32504,14 +32627,14 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             err("Heap is not initialized")
             return
 
-        if args.location is None:
-            dump_start = arena.heap_base
-            # specific pattern
-            if arena.is_main_arena:
-                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
-                    dump_start += 8
-        else:
-            dump_start = args.location
+        if args.location is not None and not is_valid_addr(args.location):
+            err("Invalid heap start: {:#x}".format(args.location))
+            return
+
+        heaps = arena.get_heaps(args.location)
+        if not heaps:
+            # LOCATION is outside the heaps (e.g., fake chunks), so it is walked to top.
+            heaps = [(args.location, arena.top, arena.top)]
 
         if args.peek_offset is not None:
             peek_offset = args.peek_offset
@@ -32519,7 +32642,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             peek_offset = Config.get("heap_chunks.peek_offset")
 
         self.out = []
-        self.print_heap_chunks(arena, dump_start, peek_nb, peek_offset)
+        self.print_heap_chunks(arena, heaps, peek_nb, peek_offset)
         self.print_output(check_terminal_size=True)
         return
 
@@ -32599,7 +32722,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
             hint,
         )
 
-    def parse_heap(self, arena, dump_start):
+    def parse_heap(self, arena, heaps):
         # Do not show if top is broken, as it affects exit conditions.
         if is_32bit() and arena.top % 0x08:
             self.err_add_out("arena.top is corrupted")
@@ -32626,32 +32749,36 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
         legend = ["addr", width, "prev_size", prev_width, "size", width, "status", width, "fd", width, "bk", width, "hint"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
 
-        current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
-        pbar = ProgressBar(total=max(arena.top - dump_start, 0))
-        while True:
-            if current_chunk.chunk_base_address == arena.top:
-                self.out.append(self.make_line(arena, current_chunk))
-                break
-            if current_chunk.chunk_base_address > arena.top:
-                self.err_add_out("Corrupted: chunk > top")
-                break
-            if current_chunk.size == 0:
-                # EOF
-                break
+        for dump_start, dump_end, top in heaps:
+            current_chunk = GlibcHeap.GlibcChunk(arena, dump_start, from_base=True)
+            pbar = ProgressBar(total=max(dump_end - dump_start, 0))
+            while True:
+                if current_chunk.chunk_base_address == top:
+                    self.out.append(self.make_line(arena, current_chunk))
+                    break
+                if current_chunk.chunk_base_address > dump_end:
+                    if top is None:
+                        self.err_add_out("Corrupted: chunk > end of heap")
+                    else:
+                        self.err_add_out("Corrupted: chunk > top")
+                    break
+                if current_chunk.size == 0:
+                    # EOF (or the last fencepost of an old heap)
+                    break
 
-            line = self.make_line(arena, current_chunk)
-            self.out.append(line)
+                line = self.make_line(arena, current_chunk)
+                self.out.append(line)
 
-            # goto next
-            pbar.update(current_chunk.size)
-            next_chunk = current_chunk.get_next_chunk()
-            if next_chunk is None:
-                break
-            if not is_valid_addr(next_chunk.address):
-                self.err_add_out("Corrupted: next_chunk_address is invalid")
-                break
-            current_chunk = next_chunk
-        pbar.close()
+                # goto next
+                pbar.update(current_chunk.size)
+                next_chunk = current_chunk.get_next_chunk()
+                if next_chunk is None:
+                    break
+                if not is_valid_addr(next_chunk.address):
+                    self.err_add_out("Corrupted: next_chunk_address is invalid")
+                    break
+                current_chunk = next_chunk
+            pbar.close()
         return
 
     @Decorator.parse_args
@@ -32671,14 +32798,8 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
             err("Heap is not initialized")
             return
 
-        dump_start = arena.heap_base
-        # specific pattern
-        if arena.is_main_arena:
-            if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
-                dump_start += 8
-
         self.out = []
-        self.parse_heap(arena, dump_start)
+        self.parse_heap(arena, arena.get_heaps())
         self.print_output(check_terminal_size=True)
         return
 
@@ -33333,27 +33454,19 @@ class GlibcHeapTcachebinsCommand(GenericCommand, GlibcHeapBinsDump, BufferingOut
         # doit
         self.out = []
         if args.all:
-            seen = set()
-            with ContextManager.threads() as threads:
-                for thread in threads:
-                    tls = current_arch.get_tls()
-                    if tls is None:
-                        continue
-                    for arena in arenas:
-                        tcache = GlibcHeap.search_for_tcache_from_tls(arena.addr, tls)
-                        if tcache is None or tcache in seen:
-                            continue
-                        seen.add(tcache)
-                        arena.tcache_override = tcache
-                        try:
-                            self.out.append(titlify("thread {:d}, arena: {:s}".format(
-                                thread.num, Symbol.format(arena.addr, show_address=True, nocolor=True)),
-                                color="bold", msg_color="bold",
-                            ))
-                            self.print_tcache(arena, args.verbose, args.index_filter)
-                        finally:
-                            del arena.tcache_override
-            if not seen:
+            # get_freelist_cache uses the tcaches of all threads, so the override does not change the cache.
+            tcaches = GlibcHeap.get_thread_tcaches(arenas)
+            for thread_num, arena, tcache in tcaches:
+                arena.tcache_override = tcache
+                try:
+                    self.out.append(titlify("thread {:d}, arena: {:s}".format(
+                        thread_num, Symbol.format(arena.addr, show_address=True, nocolor=True)),
+                        color="bold", msg_color="bold",
+                    ))
+                    self.print_tcache(arena, args.verbose, args.index_filter)
+                finally:
+                    del arena.tcache_override
+            if not tcaches:
                 self.err_add_out("Not found tcache_perthread_struct in any thread")
         else:
             self.out.append(titlify("arena: {:s}".format(
@@ -34368,7 +34481,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
         return
 
-    def generate_visual_chunk(self, chunk, idx):
+    def generate_visual_chunk(self, chunk, idx, top):
         """Generate a visual, colorized representation of a heap chunk's contents,
         grouping repeated rows and annotating bin info."""
 
@@ -34418,7 +34531,8 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
                     ).rstrip())
                     addr += current_arch.ptrsize * 2
 
-                    if addr > arena.top + current_arch.ptrsize * 4:
+                    # an old heap of a thread arena has no top
+                    if top is not None and addr > top + current_arch.ptrsize * 4:
                         exceed_top = True
                         break
             else:
@@ -34455,7 +34569,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             self.out.append(Color.boldify("..."))
         return
 
-    def generate_visual_heap(self, arena, dump_start, max_count):
+    def generate_visual_heap(self, arena, dump_start, top, max_count):
         """Generate a visual representation of the heap by iterating over chunks,
         handling corruption and optional progress display."""
         sect = ProcessMap.process_lookup_address(dump_start)
@@ -34469,6 +34583,13 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             # So it detects the end of the page from arena.top.
             end = arena.top + GlibcHeap.GlibcChunk(arena, arena.top, from_base=True).size
 
+        # An old heap of a thread arena ends with the fencepost of size 0 instead of top,
+        # so the data of a corrupted chunk is shown up to the end of the mapping.
+        if top is None:
+            data_end = end
+        else:
+            data_end = top + 0x10
+
         pbar = ProgressBar(total=end - dump_start)
 
         addr = dump_start
@@ -34477,22 +34598,24 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             chunk = GlibcHeap.GlibcChunk(arena, addr + current_arch.ptrsize * 2)
             # corrupt check
             if chunk.size == 0:
+                if top is None:
+                    break # the last fencepost of an old heap
                 msg = "{} Corrupted (chunk.size == 0)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(chunk, i)
+                chunk.data = read_memory(addr, max(data_end - addr, 0))
+                self.generate_visual_chunk(chunk, i, top)
                 break
-            elif addr != arena.top and addr + chunk.size > arena.top:
+            elif top is not None and addr != top and addr + chunk.size > top:
                 msg = "{} Corrupted (addr + chunk.size > arena.top)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(chunk, i)
+                chunk.data = read_memory(addr, max(data_end - addr, 0))
+                self.generate_visual_chunk(chunk, i, top)
                 break
             elif addr + chunk.size > end:
                 msg = "{} Corrupted (addr + chunk.size > sect.page_end)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
-                chunk.data = read_memory(addr, max(arena.top - addr + 0x10, 0))
-                self.generate_visual_chunk(chunk, i)
+                chunk.data = read_memory(addr, max(data_end - addr, 0))
+                self.generate_visual_chunk(chunk, i, top)
                 break
             # maybe not corrupted
             chunk.data = read_memory(addr, chunk.size, safe=True)
@@ -34500,7 +34623,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
                 msg = "{} Corrupted (Memory access denied)".format(Color.colorify("[!]", "bold red"))
                 self.out.append(msg)
                 break
-            self.generate_visual_chunk(chunk, i)
+            self.generate_visual_chunk(chunk, i, top)
             addr += chunk.size
             i += 1
 
@@ -34529,21 +34652,16 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             err("Heap is not initialized")
             return
 
-        if args.location is None:
-            dump_start = arena.heap_base
-            # specific pattern
-            if arena.is_main_arena:
-                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
-                    dump_start += 8
-        else:
-            dump_start = args.location
-
-        if not arena.heap_base <= dump_start <= arena.top or not is_valid_addr(dump_start):
-            err("Invalid heap start: {:#x}".format(dump_start))
-            return
+        # The heaps of a thread arena may be below heap_base, so LOCATION is checked against each heap.
+        heaps = arena.get_heaps(args.location)
+        if args.location is not None:
+            if not heaps or not is_valid_addr(args.location):
+                err("Invalid heap start: {:#x}".format(args.location))
+                return
 
         self.out = []
-        self.generate_visual_heap(arena, dump_start, args.max_count)
+        for dump_start, _, top in heaps:
+            self.generate_visual_heap(arena, dump_start, top, args.max_count)
         self.print_output()
         return
 
@@ -36075,7 +36193,24 @@ class GlibcHeapTimelineCommand(GenericCommand):
         mapping = ProcessMap.lookup(top)
         if mapping is None or mapping.section is None:
             raise OSError("The top chunk mapping is unavailable")
-        address = mapping.section.page_start
+        # heap_for_ptr() aligns down to heap_max_size(), which is HEAP_MAX_SIZE (2 * DEFAULT_MMAP_THRESHOLD_MAX).
+        # The mapping start is not used, since adjacent mappings are merged (e.g., 1MB heaps of 32-bit, mmapped chunks).
+        if current_arch.ptrsize == 4:
+            heap_max_size = 2 * 512 * 1024
+        else:
+            heap_max_size = 2 * 4 * 1024 * 1024 * 8
+        # 2.35-2.41 use hp_pagesize * 4 instead if glibc.malloc.hugetlb sets hp_pagesize.
+        if get_libc_version() >= (2, 35) and get_libc_version() < (2, 42):
+            mp = Symbol.resolve_address("mp_")
+            if mp is None:
+                mp = GlibcHeap.search_for_mp_()
+            if mp is not None:
+                hp_pagesize = int(GlibcHeap.MallocPar(mp).hp_pagesize)
+                if hp_pagesize:
+                    heap_max_size = hp_pagesize * 4
+        address = top & ~(heap_max_size - 1)
+        if not is_valid_addr(address) or int(GlibcHeap.HeapInfo(address).ar_ptr) != arena.addr:
+            address = mapping.section.page_start
         regions = []
         seen = set()
         while len(regions) < 256:
@@ -36086,11 +36221,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
             previous = int(info.prev)
             start = arena.heap_base if previous == 0 else address + info.sizeof
             end = address + int(info.size)
-            section = ProcessMap.lookup(address)
-            if (
-                int(info.ar_ptr) != arena.addr or section is None or section.section is None
-                or not address < start < end <= section.section.page_end
-            ):
+            # qemu-user does not merge the mappings that mprotect made rw one by one, so a heap may be split.
+            if int(info.ar_ptr) != arena.addr or not address < start < end or not is_valid_addr(end - 1):
                 raise OSError("Invalid heap_info at {:#x}".format(address))
             regions.append({
                 "base": address, "start": start, "end": end,
@@ -67933,8 +68065,13 @@ class HeapBaseCommand(GenericCommand):
             if not is_valid_addr(x):
                 break
             y = read_int_from_memory(x)
-            if is_valid_addr(y):
-                return y
+            if not is_valid_addr(y):
+                continue
+            # qemu-hppa maps the gateway page (--x) at 0, so 0 and small values such as tcache_count are also valid.
+            sect = ProcessMap.process_lookup_address(y)
+            if sect is not None and not sect.is_writable():
+                continue
+            return y
         return None
 
     @staticmethod
@@ -197704,7 +197841,7 @@ class UclibcNgChunksCommand(UclibcNgHeapDumpCommand, BufferingOutput):
     parser.add_argument("--malloc_state", type=AddressUtil.parse_address,
                         help="use specific address for malloc_state.")
     parser.add_argument("-b", "--nb-byte", type=AddressUtil.parse_address, default=0,
-                        help="hexdump N first byte(s) inside the chunk data.")
+                        help="hexdump N first byte(s) from the chunk base.")
     parser.add_argument("-o", "--peek-offset", type=AddressUtil.parse_address, default=0,
                         help="the offset to start dumping from when using --nb-byte.")
     parser.add_argument("-s", "--safe-linking-decode", action="store_true",
@@ -238389,13 +238526,13 @@ class GefUtil:
     @staticmethod
     def get_user_base(name):
         inferior = gdb.selected_inferior()
-        context = (inferior, inferior.pid, inferior.connection_num, inferior.progspace)
+        context = (inferior, inferior.pid, getattr(inferior, "connection_num", None), inferior.progspace) # GDB 11+
         return GefUtil.user_bases.get(context, {}).get(name)
 
     @staticmethod
     def set_user_base(name, address):
         inferior = gdb.selected_inferior()
-        context = (inferior, inferior.pid, inferior.connection_num, inferior.progspace)
+        context = (inferior, inferior.pid, getattr(inferior, "connection_num", None), inferior.progspace) # GDB 11+
         bases = GefUtil.user_bases.setdefault(context, {})
         if address is None:
             bases.pop(name, None)
