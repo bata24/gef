@@ -7467,8 +7467,8 @@ class Disasm:
             try:
                 insns = list(Disasm.gdb_disassemble(addr - i, end_pc=cur_insn_addr))
             except gdb.MemoryError:
-                # this is because we can hit an unmapped page trying to read backward
-                break
+                # this is because we can hit an unmapped page trying to read backward (a smaller i may be mapped)
+                continue
 
             # 1. check that the disassembled instructions list size can satisfy
             if len(insns) < n + 1: # we expect the current instruction plus the n before it
@@ -8263,6 +8263,9 @@ class RISCV(Architecture):
         branch_mnemos = [
             "beq", "bne", "blt", "bge", "bltu", "bgeu",
             "c.beqz", "c.bnez",
+            # the aliases that gdb shows, e.g., `blez a0` for `bge zero, a0` and `bgt a0, a1` for `blt a1, a0`
+            "beqz", "bnez", "bltz", "bgez", "blez", "bgtz",
+            "bgt", "ble", "bgtu", "bleu",
         ]
         return insn.mnemonic in branch_mnemos
 
@@ -8273,7 +8276,7 @@ class RISCV(Architecture):
         condition = mnemo[1:]
 
         if condition.endswith("z"):
-            # r2 is the zero register if we are comparing to 0
+            # r2 is the zero register if we are comparing to 0 (e.g., `blez a0` means a0 <= 0)
             rs1 = get_register(insn.operands[0])
             rs2 = get_register("$zero")
             condition = condition[:-1]
@@ -8292,26 +8295,19 @@ class RISCV(Architecture):
         else:
             condition = condition[:-1]
 
+        # the reason is the condition itself, since the caller shows `!(reason)` when not taken
         if condition == "eq":
-            if rs1 == rs2:
-                taken, reason = True, "{}={}".format(rs1, rs2)
-            else:
-                taken, reason = False, "{}!={}".format(rs1, rs2)
+            taken, reason = rs1 == rs2, "{}=={}".format(rs1, rs2)
         elif condition == "ne":
-            if rs1 != rs2:
-                taken, reason = True, "{}!={}".format(rs1, rs2)
-            else:
-                taken, reason = False, "{}={}".format(rs1, rs2)
+            taken, reason = rs1 != rs2, "{}!={}".format(rs1, rs2)
         elif condition == "lt":
-            if rs1 < rs2:
-                taken, reason = True, "{}<{}".format(rs1, rs2)
-            else:
-                taken, reason = False, "{}>={}".format(rs1, rs2)
+            taken, reason = rs1 < rs2, "{}<{}".format(rs1, rs2)
         elif condition == "ge":
-            if rs1 >= rs2:
-                taken, reason = True, "{}>={}".format(rs1, rs2)
-            else:
-                taken, reason = False, "{}<{}".format(rs1, rs2)
+            taken, reason = rs1 >= rs2, "{}>={}".format(rs1, rs2)
+        elif condition == "le":
+            taken, reason = rs1 <= rs2, "{}<={}".format(rs1, rs2)
+        elif condition == "gt":
+            taken, reason = rs1 > rs2, "{}>{}".format(rs1, rs2)
         else:
             raise OSError("RISC-V: Conditional instruction `{}` not supported yet".format(insn))
 
@@ -8647,30 +8643,19 @@ class ARM(Architecture):
         if mnemo in ["cbnz", "cbz", "tbnz", "tbz"]:
             reg = operands[0]
             op = get_register(reg)
+            # the reason is the condition itself, since the caller shows `!(reason)` when not taken
             if mnemo == "cbnz":
-                if op != 0:
-                    taken, reason = True, "{}!=0".format(reg)
-                else:
-                    taken, reason = False, "{}==0".format(reg)
+                taken, reason = op != 0, "{}!=0".format(reg)
             elif mnemo == "cbz":
-                if op == 0:
-                    taken, reason = True, "{}==0".format(reg)
-                else:
-                    taken, reason = False, "{}!=0".format(reg)
+                taken, reason = op == 0, "{}==0".format(reg)
             elif mnemo == "tbnz":
                 # operands[1] has a #, then the number
                 i = int(operands[1].lstrip("#"), 0)
-                if (op & (1 << i)) != 0:
-                    taken, reason = True, "{}&1<<{}!=0".format(reg, i)
-                else:
-                    taken, reason = False, "{}&1<<{}==0".format(reg, i)
+                taken, reason = (op & (1 << i)) != 0, "{}&1<<{}!=0".format(reg, i)
             elif mnemo == "tbz":
                 # operands[1] has a #, then the number
                 i = int(operands[1].lstrip("#"), 0)
-                if (op & (1 << i)) == 0:
-                    taken, reason = True, "{}&1<<{}==0".format(reg, i)
-                else:
-                    taken, reason = False, "{}&1<<{}!=0".format(reg, i)
+                taken, reason = (op & (1 << i)) == 0, "{}&1<<{}==0".format(reg, i)
         elif mnemo.endswith(("eq", "eq.n", "eq.w")):
             taken, reason = zero, "Z"
         elif mnemo.endswith(("ne", "ne.n", "ne.w")):
@@ -8894,11 +8879,16 @@ class AARCH64(ARM):
     def get_ra(self, insn, frame):
         try:
             if insn.mnemonic == "ret":
-                if insn.operands:
+                # `ret` without a register has the operands [""]
+                if insn.operands and insn.operands[0]:
                     reg = insn.operands[0]
                 else:
                     reg = "lr"
                 return get_register(reg)
+            if insn.mnemonic == "eret":
+                # the return address is in ELR_ELn of the current EL
+                el = (get_register("$cpsr") >> 2) & 0b11
+                return get_register("$ELR_EL{:d}".format(el))
             if frame and frame.older():
                 return frame.older().pc()
         except gdb.error:
@@ -10037,7 +10027,7 @@ class SPARC(Architecture):
             return mnemo not in ["btst", "bset", "bclr", "btog"]
         if mnemo.startswith("fb"):
             return True
-        if mnemo == "jmpl":
+        if mnemo in ["jmp", "jmpl"]: # gdb shows `jmpl %g1, %g0` as `jmp %g1`
             return True
         return False
 
@@ -10071,11 +10061,12 @@ class SPARC(Architecture):
                 if value is None:
                     return None, "register unavailable"
                 value = u2i(value, self.bit_length)
-                taken = {
-                    "brz": value == 0, "brlez": value <= 0, "brlz": value < 0,
-                    "brnz": value != 0, "brgz": value > 0, "brgez": value >= 0
+                taken, op = {
+                    "brz": (value == 0, "=="), "brlez": (value <= 0, "<="), "brlz": (value < 0, "<"),
+                    "brnz": (value != 0, "!="), "brgz": (value > 0, ">"), "brgez": (value >= 0, ">="),
                 }[mnemo]
-                return taken, "{:s} = {:d}".format(reg, value)
+                # the reason is the condition itself, since the caller shows `!(reason)` when not taken
+                return taken, "{:s}{:s}0".format(reg, op)
             if mnemo.startswith("fb"):
                 fsr = get_register("$fsr")
                 if fsr is None:
@@ -10096,12 +10087,16 @@ class SPARC(Architecture):
                 }
                 if suffix not in conditions:
                     return None, "unsupported FPU branch"
-                return condition in conditions[suffix], "{:s} = {:d}".format(fcc, condition)
+                reason = " || ".join("{:s}=={:d}".format(fcc, x) for x in conditions[suffix])
+                return condition in conditions[suffix], reason
             flags = {self.flags_table[k]: k for k in self.flags_table}
             val = get_register(self.flag_register)
             if val is None:
                 return None, "condition register unavailable"
             if any("xcc" in op for op in insn.operands):
+                if is_sparc32plus():
+                    # $psr has only icc, and gdb shows no $ccr for SPARC32PLUS
+                    return None, "xcc unavailable"
                 val >>= 4
         except (gdb.error, ValueError):
             return None, "condition register unavailable"
@@ -10372,6 +10367,7 @@ class MIPS(Architecture):
         branch_mnemos = [
             "bal", "balc", "jal", "jalr", "jalrc", "jalrc.hb",
             "bgezal", "bgezall", "bltzal", "bltzall",
+            "beqzalc", "bnezalc", "blezalc", "bgezalc", "bgtzalc", "bltzalc",
         ]
         return insn.mnemonic in branch_mnemos
 
@@ -10404,6 +10400,10 @@ class MIPS(Architecture):
             "bgec", "bgeic", "bgeiuc", "bgeuc",
             "bltc", "bltic", "bltiuc", "bltuc",
             "bbeqzc", "bbnezc",
+            # R6
+            "bgezc", "bltzc", "blezc", "bgtzc", "bovc", "bnvc",
+            "beqzalc", "bnezalc", "blezalc", "bgezalc", "bgtzalc", "bltzalc",
+            "bc1eqz", "bc1nez", "bc2eqz", "bc2nez",
         ]
         return insn.mnemonic in branch_mnemos
 
@@ -10419,18 +10419,30 @@ class MIPS(Architecture):
             taken, reason = get_register(ops[0]) != get_register(ops[1]), "{0[0]} != {0[1]}".format(ops)
         elif mnemo in ["bneic"]:
             taken, reason = get_register(ops[0]) != int(ops[1], 0), "{0[0]} != {0[1]}".format(ops)
-        elif mnemo in ["beqz", "beqzc"]:
+        elif mnemo in ["beqz", "beqzc", "beqzalc"]:
             taken, reason = get_register(ops[0]) == 0, "{0[0]} == 0".format(ops)
-        elif mnemo in ["bnez", "bnezc"]:
+        elif mnemo in ["bnez", "bnezc", "bnezalc"]:
             taken, reason = get_register(ops[0]) != 0, "{0[0]} != 0".format(ops)
-        elif mnemo in ["bgtz", "bgtzl"]:
+        elif mnemo in ["bgtz", "bgtzl", "bgtzc", "bgtzalc"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) > 0, "{0[0]} > 0".format(ops)
-        elif mnemo in ["bgez", "bgezl", "bgezal", "bgezall"]:
+        elif mnemo in ["bgez", "bgezl", "bgezal", "bgezall", "bgezc", "bgezalc"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) >= 0, "{0[0]} >= 0".format(ops)
-        elif mnemo in ["bltz", "bltzl", "bltzal", "bltzall"]:
+        elif mnemo in ["bltz", "bltzl", "bltzal", "bltzall", "bltzc", "bltzalc"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) < 0, "{0[0]} < 0".format(ops)
-        elif mnemo in ["blez", "blezl"]:
+        elif mnemo in ["blez", "blezl", "blezc", "blezalc"]:
             taken, reason = u2i(get_register(ops[0]), self.bit_length_reg) <= 0, "{0[0]} <= 0".format(ops)
+        elif mnemo in ["bovc", "bnvc"]:
+            # the signed 32-bit addition overflows (a 64-bit value that is not a sign-extended word also counts)
+            v0 = u2i(get_register(ops[0]), self.bit_length_reg)
+            v1 = u2i(get_register(ops[1]), self.bit_length_reg)
+            overflow = False
+            for x in [v0, v1, v0 + v1]:
+                if x < -0x8000_0000 or x > 0x7fff_ffff:
+                    overflow = True
+            if mnemo == "bovc":
+                taken, reason = overflow, "{0[0]} + {0[1]} overflows".format(ops)
+            else:
+                taken, reason = not overflow, "{0[0]} + {0[1]} does not overflow".format(ops)
         elif mnemo in ["bbeqzc"]:
             taken, reason = (get_register(ops[0]) >> int(ops[1], 0) & 1) == 0, "(({0[0]} >> {0[1]}) & 1) == 0".format(ops)
         elif mnemo in ["bbnezc"]:
@@ -10479,7 +10491,17 @@ class MIPS(Architecture):
                 taken, reason = cond == 1, "fcc{:d} == 1".format(cc)
             else:
                 taken, reason = cond == 0, "fcc{:d} == 0".format(cc)
-        elif mnemo in ["bc2t", "bc2tl", "bc2f", "bc2fl"]:
+        elif mnemo in ["bc1eqz", "bc1nez"]:
+            # R6 tests bit 0 of the FPR, so read the raw bits instead of the float value
+            try:
+                fpr = int(gdb.parse_and_eval(ops[0]).format_string(format="x"), 16)
+            except (gdb.error, ValueError):
+                return None, "{:s} unavailable".format(ops[0])
+            if mnemo == "bc1eqz":
+                taken, reason = (fpr & 1) == 0, "({:s}&1) == 0".format(ops[0])
+            else:
+                taken, reason = (fpr & 1) != 0, "({:s}&1) != 0".format(ops[0])
+        elif mnemo in ["bc2t", "bc2tl", "bc2f", "bc2fl", "bc2eqz", "bc2nez"]:
             taken, reason = None, "COP2 condition unavailable"
         return taken, reason
 
@@ -10501,6 +10523,9 @@ class MIPS(Architecture):
     def get_ra(self, insn, frame):
         ra = None
         try:
+            if insn.mnemonic in ["deret", "eret", "eretnc"]:
+                # the return address is in DEPC, EPC or ErrorEPC of CP0, which gdb does not show
+                return None
             if self.is_ret(insn):
                 ra = get_register("$ra")
             elif frame.older():
@@ -10674,10 +10699,25 @@ class S390X(Architecture):
             return False
         return insn.mnemonic in ["bal", "balr", "bas", "basr", "bassm", "bsm", "bras", "brasl"]
 
+    def get_branch_mask(self, insn):
+        """Return M1 of BC, BCR, BRC and BRCL, or None for the other instructions."""
+        # judge by the opcode, since the extended mnemonics vary by assembler (e.g., `jhe` and `jgle` of GNU)
+        if len(insn.opcodes) < 2:
+            return None
+        opcode = insn.opcodes[0]
+        if opcode == 0x07 and (insn.opcodes[1] & 0xf) == 0:
+            # BCR with R2=0 does not branch, e.g., `bcr 15, %r0` only serializes
+            return None
+        if opcode in [0x47, 0x07]: # BC, BCR
+            return insn.opcodes[1] >> 4
+        if opcode in [0xa7, 0xc0] and (insn.opcodes[1] & 0xf) == 4: # BRC, BRCL
+            return insn.opcodes[1] >> 4
+        return None
+
     def is_jump(self, insn):
         if self.is_ret(insn):
             return False
-        if insn.mnemonic in ["b", "br", "j", "bru", "brul", "jlu"]:
+        if self.get_branch_mask(insn) == 15: # e.g., `b`, `br`, `j` and `jg`
             return True
         return self.is_conditional_branch(insn)
 
@@ -10685,19 +10725,13 @@ class S390X(Architecture):
         return insn.mnemonic == "br" and insn.operands[-1] == "%r14"
 
     def is_conditional_branch(self, insn):
-        if insn.mnemonic in ["bc", "bcr", "brc", "brcl"]:
-            return True
-        conditions = ["h", "l", "e", "nh", "nl", "ne", "p", "m", "z", "o", "np", "nm", "nz", "no"]
-        for cc in conditions:
-            if insn.mnemonic == f"b{cc}": # alias for `bc N, ...`
-                return True
-            if insn.mnemonic == f"b{cc}r": # alias for `bcr N, ...`
-                return True
-            if insn.mnemonic in [f"br{cc}", f"j{cc}"]: # alias for `brc N, ...`
-                return True
-            if insn.mnemonic in [f"br{cc}l", f"jl{cc}"]: # alias for `brcl N, ...`
-                return True
+        mask = self.get_branch_mask(insn)
+        if mask is not None:
+            return 0 < mask < 15 # 0 is nop, 15 is unconditional
 
+        if insn.mnemonic in ["bctr", "bctgr"] and insn.operands[-1] == "%r0":
+            # R2=0 does not branch, e.g., `bctr %r1, %r0` only decrements
+            return False
         if insn.mnemonic in ["bct", "bctr", "bctg", "bctgr", "brct", "brctg"]:
             return True
         if insn.mnemonic in ["bxh", "bxhg", "brxh", "brxhg"]:
@@ -10751,24 +10785,6 @@ class S390X(Architecture):
 
     def is_branch_taken(self, insn):
         taken, reason = False, ""
-
-        def is_insn_condition_type1(insn):
-            if insn.mnemonic in ["bc", "bcr", "brc", "brcl"]:
-                return True
-            conditions = [
-                "h", "l", "e", "nh", "nl", "ne", "p", "m",
-                "z", "o", "np", "nm", "nz", "no",
-            ]
-            for cc in conditions:
-                if insn.mnemonic == f"b{cc}": # alias for `bc N, ...`
-                    return True
-                if insn.mnemonic == f"b{cc}r": # alias for `bcr N, ...`
-                    return True
-                if insn.mnemonic in [f"br{cc}", f"j{cc}"]: # alias for `brc N, ...`
-                    return True
-                if insn.mnemonic in [f"br{cc}l", f"jl{cc}"]: # alias for `brcl N, ...`
-                    return True
-            return False
 
         def is_insn_condition_type2_signed32(insn):
             if insn.mnemonic in ["crb", "crj"]:
@@ -10838,9 +10854,8 @@ class S390X(Architecture):
                     return True
             return False
 
-        if is_insn_condition_type1(insn):
-            mask = insn.opcodes[1] >> 4
-
+        mask = self.get_branch_mask(insn)
+        if mask is not None:
             val = get_register(self.flag_register)
             flags = {self.flags_table[k]: k for k in self.flags_table}
             cc1 = (val >> flags["cc1"]) & 1
@@ -10857,7 +10872,11 @@ class S390X(Architecture):
                 return True, "cc==0"
             return False, ""
 
-        if insn.mnemonic in ["bct", "bctr", "bctg", "bctgr", "brct", "brctg"]:
+        if insn.mnemonic in ["bct", "bctr", "brct"]:
+            reg = insn.operands[0]
+            # only the lower 32 bits are decremented and compared with 0
+            return (get_register(reg) & 0xffff_ffff) != 1, "{:s}!=1".format(reg)
+        if insn.mnemonic in ["bctg", "bctgr", "brctg"]:
             reg = insn.operands[0]
             return get_register(reg) != 1, "{:s}!=1".format(reg)
 
@@ -11642,7 +11661,8 @@ class HPPA(Architecture):
         return False
 
     def is_ret(self, insn):
-        return insn.mnemonic == "bv,n" and insn.operands[-1] == "r0(rp)"
+        # gcc usually returns by `bv r0(rp)` with the delay slot
+        return insn.mnemonic in ["bv", "bv,n"] and insn.operands[-1] == "r0(rp)"
 
     def is_conditional_branch(self, insn):
         if insn.mnemonic.startswith(("movb", "movib")): # alias for MOVB,cond,n / MOVIB,cond,n
@@ -11682,10 +11702,10 @@ class HPPA(Architecture):
                 taken, reason = True, "Always True"
             elif c == 5: # <>
                 taken, reason = v != 0, "{:s}!=0".format(name)
-            elif c == 6: # EV
+            elif c == 6: # >=
+                taken, reason = get_sign(v) == 0, "MSB({:s})==0".format(name)
+            else: # EV
                 taken, reason = (v & 1) == 0, "LSB({:s})==0".format(name)
-            else:
-                taken, reason = False, ""
             return taken, reason
 
         def check_cond_cmp(c, neg, name1, val1, name2, val2):
@@ -11742,6 +11762,8 @@ class HPPA(Architecture):
             v1 = get_masked(val1)
             v2 = get_masked(val2)
             res = get_masked(v1 + v2)
+            # the signed conditions see the sum without overflow (i.e., N xor V)
+            ssum = u2i(v1, bits) + u2i(v2, bits)
 
             if c == 0: # never
                 if not neg:
@@ -11754,17 +11776,15 @@ class HPPA(Architecture):
                 else:
                     taken, reason = res != 0, "{:s}!=-{:s}".format(name1, name2)
             elif c == 2: # < (signed)
-                sres = u2i(res, bits)
                 if not neg:
-                    taken, reason = sres < 0, "{:s}<-{:s} (signed)".format(name1, name2)
+                    taken, reason = ssum < 0, "{:s}<-{:s} (signed)".format(name1, name2)
                 else:
-                    taken, reason = sres >= 0, "{:s}>=-{:s} (signed)".format(name1, name2)
+                    taken, reason = ssum >= 0, "{:s}>=-{:s} (signed)".format(name1, name2)
             elif c == 3: # <= (signed)
-                sres = u2i(res, bits)
                 if not neg:
-                    taken, reason = sres <= 0, "{:s}<=-{:s} (signed)".format(name1, name2)
+                    taken, reason = ssum <= 0, "{:s}<=-{:s} (signed)".format(name1, name2)
                 else:
-                    taken, reason = sres > 0, "{:s}>-{:s} (signed)".format(name1, name2)
+                    taken, reason = ssum > 0, "{:s}>-{:s} (signed)".format(name1, name2)
             elif c == 4: # NUV (unsigned)
                 full = v1 + v2 # addition overflow
                 if is_64bit():
@@ -12530,7 +12550,8 @@ class XTENSA(Architecture):
             if self.is_ret(insn):
                 ra = get_register("$a0")
                 if insn.mnemonic in ["retw", "retw.n"]:
-                    ra &= ~(0b11 << 30)
+                    # the upper 2 bits of a0 have the window increment, so take them from pc
+                    ra = (ra & 0x3fff_ffff) | (insn.address & 0xc000_0000)
             elif frame.older():
                 ra = frame.older().pc()
         except gdb.error:
@@ -12552,23 +12573,50 @@ class CRIS(Architecture):
         "CRIS",
     ]
 
+    def is_v32(self):
+        # GDB names the flag register $ccs on CRISv32
+        return get_register("$ccs") is not None
+
     # https://www.axis.com/dam/public/25/67/ab/etrax-100lx-programmer%E2%80%99s-manual-en-US-33419.pdf
-    all_registers = [
-        "$r0", "$r1", "$r2", "$r3", "$r4", "$r5", "$r6", "$r7",
-        "$r8", "$r9", "$r10", "$r11", "$r12", "$r13", "$sp", "$pc",
-        "$srp", "$ccr",
-    ]
+    @property
+    def all_registers(self):
+        return [
+            "$r0", "$r1", "$r2", "$r3", "$r4", "$r5", "$r6", "$r7",
+            "$r8", "$r9", "$r10", "$r11", "$r12", "$r13", "$sp", "$pc",
+            "$srp", self.flag_register,
+        ]
+
     alias_registers = {
         "$sp": "$r14", "$pc": "$r15",
     }
-    flag_register = "$ccr"
-    flags_table = {
-        9: "write-fail",
-        3: "negative",
-        2: "zero",
-        1: "overflow",
-        0: "carry",
-    }
+
+    @property
+    def flag_register(self):
+        if self.is_v32():
+            return "$ccs"
+        else:
+            # The 16-bit $ccr is the lower half of $dccr, but qemu-cris keeps the flags only in $dccr ($ccr is always 0)
+            return "$dccr"
+
+    @property
+    def flags_table(self):
+        if self.is_v32():
+            return {
+                7: "p",
+                3: "negative",
+                2: "zero",
+                1: "overflow",
+                0: "carry",
+            }
+        else:
+            return {
+                9: "write-fail",
+                3: "negative",
+                2: "zero",
+                1: "overflow",
+                0: "carry",
+            }
+
     return_register = "$r10"
     function_parameters = ["$r10", "$r11", "$r12", "$r13"]
     # As of linux 4.17, CRIS is no longer supported.
@@ -12620,11 +12668,9 @@ class CRIS(Architecture):
 
     def is_branch_taken(self, insn):
         mnemo = insn.mnemonic
-        val = get_register("$ccs") # CRISv32
+        val = get_register(self.flag_register)
         if val is None:
-            val = get_register(self.flag_register)
-        if val is None:
-            return None, "Could not read CCS or CCR"
+            return None, "Could not read {:s}".format(self.flag_register)
         flags = {self.flags_table[k]: k for k in self.flags_table}
         taken, reason = False, ""
 
@@ -12632,7 +12678,6 @@ class CRIS(Architecture):
         negative = bool(val & (1 << flags["negative"]))
         overflow = bool(val & (1 << flags["overflow"]))
         carry = bool(val & (1 << flags["carry"]))
-        write_fail = bool(val & (1 << flags["write-fail"]))
 
         if mnemo in ("bcc", "bhs"):
             taken, reason = not carry, "!C"
@@ -12664,9 +12709,13 @@ class CRIS(Architecture):
         elif mnemo == "ble":
             taken, reason = zero or (negative and not overflow) or (not negative and overflow), "Z || (N && !V) || (!N && V)"
         elif mnemo == "bwf":
-            taken, reason = write_fail, "WF"
+            if is_qemu():
+                # qemu-cris tests the P flag of CRISv32 (bit 7) also for condition 15 of CRISv10
+                taken, reason = bool(val & (1 << 7)), "bit7"
+            else:
+                taken, reason = bool(val & (1 << flags["write-fail"])), "WF"
         elif mnemo == "bsb":
-            taken, reason = bool(val & (1 << 7)), "P" # CRISv32 condition 15
+            taken, reason = bool(val & (1 << flags["p"])), "P" # CRISv32 condition 15
         return taken, reason
 
     def flag_register_to_human(self, val=None):
@@ -13044,12 +13093,15 @@ class ARC(Architecture):
         carry = bool(val & (1 << flags["carry"]))
 
         if len(ops) >= 2:
-            v0u = get_register(ops[0])
-            if v0u is None:
+            # parse an immediate first, since get_register("0") returns $0 of the value history
+            try:
                 v0u = int(ops[0], 0)
-            v1u = get_register(ops[1])
-            if v1u is None:
+            except ValueError:
+                v0u = get_register(ops[0])
+            try:
                 v1u = int(ops[1], 0)
+            except ValueError:
+                v1u = get_register(ops[1])
             v0s = u2i(v0u, self.bit_length)
             v1s = u2i(v1u, self.bit_length)
 
@@ -45487,7 +45539,7 @@ class EntryBreakCommand(GenericCommand):
 
 
 class CommandBreakBreakpoint(gdb.Breakpoint):
-    """Breakpoint which executes user-defined command silently and continue."""
+    """Breakpoint which executes user-defined command silently and continues."""
 
     def __init__(self, loc, cmd):
         super().__init__(AddressUtil.breakpoint_spec(loc), gdb.BP_BREAKPOINT, internal=False, temporary=False)
@@ -45502,7 +45554,7 @@ class CommandBreakBreakpoint(gdb.Breakpoint):
 
 @register_command
 class CommandBreakCommand(GenericCommand):
-    """Set a breakpoint which executes user-defined command silently and continue, if hit."""
+    """Set a breakpoint which executes user-defined command silently and continues, if hit."""
 
     _cmdline_ = "command-break"
     _category_ = "01-b. Debugging Support - Breakpoint"
@@ -45510,7 +45562,7 @@ class CommandBreakCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?",
                         help="the address to set a breakpoint. (default: current_arch.pc)")
-    parser.add_argument("command", metavar="COMMAND", type=str, help="the command executed if breakpoint is hit.")
+    parser.add_argument("command", metavar="COMMAND", type=str, help="the command executed when the breakpoint is hit.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -45533,7 +45585,7 @@ class CommandBreakCommand(GenericCommand):
 
 
 class RegisterDumpBreakBreakpoint(gdb.Breakpoint):
-    """Breakpoint which dump registers silently and continue."""
+    """Breakpoint which dumps registers silently and continues."""
 
     def __init__(self, loc, tag, regs):
         super().__init__(AddressUtil.breakpoint_spec(loc), gdb.BP_BREAKPOINT, internal=False, temporary=False)
@@ -45557,7 +45609,10 @@ class RegisterDumpBreakBreakpoint(gdb.Breakpoint):
             warn("No requested registers could be read: {:s}".format(", ".join(self.regs)))
             return False
 
-        colored_addr = Color.colorify_hex(current_arch.pc, "bold yellow")
+        pc = current_arch.pc
+        if is_arm32() or is_arm32_cortex_m():
+            pc &= ~1 # current_arch.pc has the LSB for Thumb
+        colored_addr = Color.colorify_hex(pc, "bold yellow")
         if self.tag:
             tag = "{:s}: ".format(self.tag)
         else:
@@ -45568,7 +45623,7 @@ class RegisterDumpBreakBreakpoint(gdb.Breakpoint):
 
 @register_command
 class RegisterDumpBreakCommand(GenericCommand):
-    """Set a breakpoint which dumps registers silently and continue, if hit."""
+    """Set a breakpoint which dumps registers silently and continues, if hit."""
 
     _cmdline_ = "regdump-break"
     _category_ = "01-b. Debugging Support - Breakpoint"
@@ -45576,8 +45631,8 @@ class RegisterDumpBreakCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?",
                         help="the address to set a breakpoint. (default: current_arch.pc)")
-    parser.add_argument("-t", "--tag", help="the tag if breakpoint is hit.")
-    parser.add_argument("-r", "--regs", action="append", help="the register name dumped if breakpoint is hit.")
+    parser.add_argument("-t", "--tag", help="the tag printed when the breakpoint is hit.")
+    parser.add_argument("-r", "--regs", action="append", help="the register name dumped when the breakpoint is hit.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -45602,7 +45657,7 @@ class RegisterDumpBreakCommand(GenericCommand):
 
 
 class TakenOrNotBreakpoint(gdb.Breakpoint):
-    """Breakpoint which only branch is taken or not."""
+    """Breakpoint which stops only if the branch is taken (or not taken)."""
 
     def __init__(self, loc, taken, is_hwbp):
         if is_hwbp:
@@ -45616,9 +45671,20 @@ class TakenOrNotBreakpoint(gdb.Breakpoint):
     def stop(self):
         Cache.reset_gef_caches()
         insn = get_insn()
+        pc = current_arch.pc
+
+        if is_arm32() or is_arm32_cortex_m():
+            pc &= ~1 # current_arch.pc has the LSB for Thumb
+            # gdb moves a breakpoint in an IT block to the `it` instruction (e.g., `it eq; bxeq lr`), so judge the requested one
+            if insn.mnemonic.startswith("it") and self.location.startswith("*"):
+                requested = int(self.location[1:], 16) & ~1
+                for x in Disasm.gef_disassemble(insn.address, 5): # `it` and up to 4 instructions in the block
+                    if (x.address & ~1) == requested:
+                        insn, pc = x, requested
+                        break
 
         if not current_arch.is_conditional_branch(insn):
-            warn("Breakpoint at {:#x} is not a conditional branch".format(current_arch.pc))
+            warn("Breakpoint at {:#x} is not a conditional branch".format(pc))
             return True
 
         taken, reason = current_arch.is_branch_taken(insn)
@@ -45640,7 +45706,7 @@ class BreakIfTakenCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION",
-                        help="the address to set breakpoint.")
+                        help="the address to set a breakpoint.")
     parser.add_argument("--hw", action="store_true", help="use hardware breakpoint.")
     _syntax_ = parser.format_help()
 
@@ -45663,7 +45729,7 @@ class BreakIfNotTakenCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION",
-                        help="the address to set breakpoint.")
+                        help="the address to set a breakpoint.")
     parser.add_argument("--hw", action="store_true", help="use hardware breakpoint.")
     _syntax_ = parser.format_help()
 
@@ -46418,8 +46484,8 @@ class ContextCodeCommand(GenericCommand):
         self.add_setting("peek_ret", True, "Peek into ret opcode")
         self.add_setting("use_native_x_command", False, "Use x/16i instead of Disasm.gef_disassemble")
         self.add_setting("use_capstone", False, "Use capstone as disassembler in the code pane (instead of GDB)")
-        self.add_setting("nb_lines", 6, "Number of instruction after $pc")
-        self.add_setting("nb_lines_prev", 3, "Number of instruction before $pc")
+        self.add_setting("nb_lines", 6, "Number of instructions from $pc (including $pc)")
+        self.add_setting("nb_lines_prev", 3, "Number of instructions before $pc")
         return
 
     RE_SUB_BRANCH_ADDR1 = re.compile(r".*# (0x[a-fA-F0-9]+).*")
@@ -46429,6 +46495,8 @@ class ContextCodeCommand(GenericCommand):
     RE_SUB_BRANCH_ADDR5 = re.compile(r".* (PTR|ptr) gs:\[?(0x[a-fA-F0-9]+)\]?.*")
     RE_SUB_BRANCH_ADDR6 = re.compile(r"^.*\s+([-0-9]+)$")
     RE_SUB_BRANCH_ADDR7 = re.compile(r".*(0x[a-fA-F0-9]+).*")
+    RE_SUB_BRANCH_ADDR8 = re.compile(r".* PTR ds:(0x[a-fA-F0-9]+).*")
+    RE_SUB_BRANCH_ADDR9 = re.compile(r".* @ \(?(0x[a-fA-F0-9]+).*")
 
     @staticmethod
     def get_branch_addr(insn, to_str=False, use_regs=True):
@@ -46479,6 +46547,30 @@ class ContextCodeCommand(GenericCommand):
                     return None
                 if is_x86_64() and re.search(r"\$e(?:ax|bx|cx|dx|si|di|sp|bp|ip)\b|\$r\d+d\b", addr):
                     ptr &= 0xffffffff
+                if is_x86_16():
+                    # the real mode reads the near pointer at DS:offset (SS:offset with bp) and jumps to CS:pointer
+                    if "$bp" in addr:
+                        ptr = current_arch.real2phys("$ss", ptr & 0xffff)
+                    else:
+                        ptr = current_arch.real2phys("$ds", ptr & 0xffff)
+                    value = read_int16_from_memory(ptr, safe=True)
+                    if value is not None:
+                        value = current_arch.real2phys("$cs", value)
+                else:
+                    value = read_int_from_memory(ptr, safe=True)
+                if value is None:
+                    if to_str:
+                        return "*{:#x}".format(ptr)
+                    return None
+                if to_str:
+                    return "{:#x}".format(value)
+                return value
+
+        # is there a memory reference by an absolute address?
+        #   x86 (default): jmp DWORD PTR ds:0x804c00c
+        if is_x86():
+            if " PTR ds:0x" in ops:
+                ptr = int(ContextCodeCommand.RE_SUB_BRANCH_ADDR8.sub(r"\1", ops), 16)
                 value = read_int_from_memory(ptr, safe=True)
                 if value is None:
                     if to_str:
@@ -46540,6 +46632,50 @@ class ContextCodeCommand(GenericCommand):
             except Exception:
                 pass
 
+        # is there a relative immediate?
+        #   RISCV (capstone): blt a0, a1, 6
+        #   RISCV (capstone): bgeu a4, a2, 0xa4
+        #   RISCV (capstone): jalr ra, ra, -0x2e8
+        # capstone shows the offset from pc (or a register) while gdb shows the target, so decode it from the opcode.
+        if is_riscv():
+            if current_arch.is_conditional_branch(insn) or insn.mnemonic in ["j", "jal", "jr", "jalr", "c.j", "c.jal"]:
+
+                def decode(pairs, sign_bit):
+                    # pairs are (the bit of the instruction, the bit of the offset)
+                    offset = 0
+                    for ibit, obit in pairs:
+                        offset |= ((code >> ibit) & 1) << obit
+                    if offset >> sign_bit:
+                        offset -= 1 << (sign_bit + 1)
+                    return offset
+
+                code = int.from_bytes(insn.opcodes, "little")
+                addr = None
+                if len(insn.opcodes) == 4 and (code & 0x7f) == 0x63: # B-type
+                    pairs = [(31, 12), (7, 11)] + [(25 + i, 5 + i) for i in range(6)] + [(8 + i, 1 + i) for i in range(4)]
+                    addr = insn.address + decode(pairs, 12)
+                elif len(insn.opcodes) == 4 and (code & 0x7f) == 0x6f: # J-type
+                    pairs = [(31, 20), (20, 11)] + [(21 + i, 1 + i) for i in range(10)] + [(12 + i, 12 + i) for i in range(8)]
+                    addr = insn.address + decode(pairs, 20)
+                elif len(insn.opcodes) == 4 and (code & 0x7f) == 0x67: # I-type (jalr)
+                    if not use_regs:
+                        return None
+                    base = get_register("$x{:d}".format((code >> 15) & 0x1f))
+                    if base is not None:
+                        addr = (base + decode([(20 + i, i) for i in range(12)], 11)) & ~1
+                elif len(insn.opcodes) == 2 and (code & 0b11) == 0b01 and (code >> 13) in [0b110, 0b111]: # CB (c.beqz, c.bnez)
+                    pairs = [(12, 8), (11, 4), (10, 3), (6, 7), (5, 6), (4, 2), (3, 1), (2, 5)]
+                    addr = insn.address + decode(pairs, 8)
+                elif len(insn.opcodes) == 2 and (code & 0b11) == 0b01 and (code >> 13) in [0b001, 0b101]: # CJ (c.jal, c.j)
+                    pairs = [(12, 11), (11, 4), (10, 9), (9, 8), (8, 10), (7, 6), (6, 7), (5, 3), (4, 2), (3, 1), (2, 5)]
+                    addr = insn.address + decode(pairs, 11)
+                if addr is not None:
+                    addr &= (1 << current_arch.bit_length) - 1
+                    if to_str:
+                        return "{:#x}".format(addr)
+                    else:
+                        return addr
+
         # is there a absolute immediate value (with segment)?
         #   x86_16:  ljmp   0xf000:0xe05b
         if is_x86_16() and ":0x" in ops:
@@ -46552,6 +46688,55 @@ class ContextCodeCommand(GenericCommand):
                 return "{:#x}".format(addr)
             else:
                 return addr
+
+        # is there a memory reference by an evaluated address?
+        #   arm (default): ldr pc, [pc, #-4] @ 0x100a0
+        #   thumb (default): ldr.w pc, [pc, #4] @ (0x100c4 <f>)
+        if is_arm32() or is_arm32_cortex_m():
+            if insn.mnemonic.startswith("ldr") and ContextCodeCommand.RE_SUB_BRANCH_ADDR9.match(ops):
+                ptr = int(ContextCodeCommand.RE_SUB_BRANCH_ADDR9.sub(r"\1", ops), 16)
+                value = read_int_from_memory(ptr, safe=True)
+                if value is None:
+                    if to_str:
+                        return "*{:#x}".format(ptr)
+                    return None
+                if to_str:
+                    return "{:#x}".format(value)
+                return value
+
+        # is there a register in parentheses?
+        #   alpha:   jsr    ra,(t12),0x12000016c
+        # The last address is the hint for the branch prediction, not the target.
+        if is_alpha():
+            if insn.mnemonic in ["jsr", "jmp"]:
+                m = re.search(r"\((\w+)\)", ops)
+                if m:
+                    if not use_regs:
+                        return None
+                    addr = get_register(m.group(1))
+                    if addr is None:
+                        return None
+                    addr &= ~0b11
+                    if to_str:
+                        return "{:#x}".format(addr)
+                    else:
+                        return addr
+
+        # is there a register with an offset?
+        #   sparc:   jmp    %g1 + 8
+        #   sparc:   jmpl   %g1 + 8, %o7
+        if is_sparc():
+            if insn.mnemonic in ["jmp", "jmpl"]:
+                if not use_regs:
+                    return None
+                try:
+                    addr = to_unsigned_long(gdb.parse_and_eval(insn.operands[0].replace("%", "$")))
+                except gdb.error:
+                    return None
+                if to_str:
+                    return "{:#x}".format(addr)
+                else:
+                    return addr
 
         # is there a absolute immediate value?
         #   s390x:   bra    0x3ffdfc60
@@ -46567,17 +46752,40 @@ class ContextCodeCommand(GenericCommand):
 
         # is there register(s)?
         #   x86/x64: call   rax
+        #   x86/x64: notrack jmp rax
         #   s390x:   basr   %lr, %r1
         #   sh4:     jsr    @r1
         #   alpha:   jmp    (t0)
-        if insn.operands[-1].split():
-            maybe_reg = insn.operands[-1].split()[0]
+        #   m68k:    jsr    %a0@
+        #   arc:     jl     [r12]
+        if is_x86():
+            # gdb shows the prefix of `notrack jmp rax` and `bnd call rax` as the mnemonic
+            _, last_operand = X86.get_mnemonic_operands(insn)
+            last_operand = last_operand.split(",")[-1]
+        else:
+            last_operand = insn.operands[-1]
+        if last_operand.split():
+            maybe_reg = last_operand.split()[0]
             if len(maybe_reg) <= 5 and maybe_reg[0] == "(" and maybe_reg[-1] == ")":
                 maybe_reg = maybe_reg[1:-1]
-            ptr = get_register(maybe_reg)
+            elif is_m68k() and maybe_reg.endswith("@"):
+                maybe_reg = maybe_reg[:-1]
+            elif (is_arc32() or is_arc64()) and maybe_reg[0] == "[" and maybe_reg[-1] == "]":
+                maybe_reg = maybe_reg[1:-1]
+            if maybe_reg.lstrip("-").isdigit():
+                # e.g., the relative target of capstone, but get_register("6") returns $6 of the value history
+                ptr = None
+            else:
+                ptr = get_register(maybe_reg)
             if ptr is not None:
                 if not use_regs:
                     return None
+                if is_x86_16():
+                    # the real mode jumps to CS:register
+                    ptr = current_arch.real2phys("$cs", ptr & 0xffff)
+                elif is_sh4() and insn.mnemonic in ["braf", "bsrf"]:
+                    # the target is relative to pc + 4
+                    ptr = (insn.address + 4 + ptr) & 0xffff_ffff
                 if to_str:
                     return "{:#x}".format(ptr)
                 else:
@@ -46585,8 +46793,9 @@ class ContextCodeCommand(GenericCommand):
 
         # bctr?
         #   ppc: bctr
+        #   ppc: bctrl, beqctr, bnectr+
         if is_ppc():
-            if insn.mnemonic == "bctr":
+            if insn.mnemonic.rstrip("+-").endswith(("ctr", "ctrl")):
                 if not use_regs:
                     return None
                 addr = get_register("ctr")
@@ -46646,8 +46855,19 @@ class ContextCodeCommand(GenericCommand):
 
         pc = current_arch.pc
         disasm_pc = pc
+        it_cond = None
         if is_arm32() or is_arm32_cortex_m():
             pc &= ~1
+            if use_capstone:
+                # capstone uses the odd address of Thumb as the base, which shifts the previous instructions and the targets
+                disasm_pc = pc
+                # capstone does not know the IT state at pc, so take the condition from the IT bits of CPSR
+                cpsr = get_register(current_arch.flag_register)
+                if cpsr is not None:
+                    itstate = ((cpsr >> 8) & 0xfc) | ((cpsr >> 25) & 0b11)
+                    conditions = ["eq", "ne", "cs", "cc", "mi", "pl", "vs", "vc", "hi", "ls", "ge", "lt", "gt", "le"]
+                    if itstate & 0xf and (itstate >> 4) < len(conditions):
+                        it_cond = conditions[itstate >> 4]
         bp_locations = self.get_breakpoints()
 
         try:
@@ -46667,12 +46887,16 @@ class ContextCodeCommand(GenericCommand):
 
         ContextCommand.context_title("code: {:s}".format(arch_name), redirect)
         if use_native_x_command:
-            ContextCommand.execute_command("x/16i {:#x}".format(current_arch.pc), redirect)
+            # current_arch.pc has the LSB for Thumb, and gdb does not show `=>` for it
+            ContextCommand.execute_command("x/16i $pc", redirect)
             return
 
         for insn in Disasm.gef_disassemble(disasm_pc, nb_insn, nb_prev=nb_insn_prev):
             if is_arm32() or is_arm32_cortex_m():
                 insn.address &= ~1
+                if insn.address == pc and it_cond and insn.is_branch:
+                    # e.g., `pop {r4, pc}` to `popeq {r4, pc}`, then it is judged as a conditional branch
+                    insn.mnemonic = re.sub(r"^[^.]+", r"\g<0>" + it_cond, insn.mnemonic)
             line = ""
             is_taken = False
             target = None
@@ -46745,6 +46969,13 @@ class ContextCodeCommand(GenericCommand):
 
                 if is_arc32() or is_arc64():
                     delay_slot = insn.mnemonic.endswith(".d") or insn.mnemonic.endswith(".d.nt")
+                elif is_mips():
+                    if insn.mnemonic.endswith("c"):
+                        # the compact branches of R6 (e.g., `bc`, `beqzc` and `jrc`) have no delay slot
+                        delay_slot = False
+                elif is_microblaze():
+                    # only the branches with `d` (e.g., `brid`, `bneid` and `rtsd`) have the delay slot
+                    delay_slot = insn.mnemonic.endswith("d")
 
             # comment
             if insn.address in self.context_comments:
@@ -46758,8 +46989,12 @@ class ContextCodeCommand(GenericCommand):
                 try:
                     if delay_slot:
                         next_insn = list(Disasm.gef_disassemble(insn.address, 2))[-1]
+                        if next_insn.address in bp_locations:
+                            next_bp_prefix = Color.redify("*")
+                        else:
+                            next_bp_prefix = " "
                         text = "{:s}   {:s}\t{:s}".format(
-                            bp_prefix,
+                            next_bp_prefix,
                             next_insn.colored_text(show_opcodes_size, highlight=False),
                             Color.colorify("Maybe delay-slot", "bold yellow"),
                         )
@@ -46768,8 +47003,28 @@ class ContextCodeCommand(GenericCommand):
                     pass
 
                 # branch target address
+                target_mode = None
+                if is_arm32_cortex_m():
+                    target_mode = "THUMB"
+                elif is_arm32():
+                    # the LSB selects Thumb for bx, blx, pop {pc}, etc., and `blx #imm` always switches the instruction set
+                    if target & 1:
+                        target_mode = "THUMB"
+                    elif insn.mnemonic.startswith("blx") and re.match(r"#?0x", insn.operands[0]):
+                        if current_arch.is_thumb():
+                            target_mode = "ARM"
+                        else:
+                            target_mode = "THUMB"
+                    elif insn.mnemonic.startswith(("bx", "blx")) or current_arch.is_ret(insn):
+                        target_mode = "ARM"
                 try:
-                    for i, tinsn in enumerate(Disasm.gef_disassemble(target, nb_insn)):
+                    if use_capstone and target_mode:
+                        target_insns = Disasm.capstone_disassemble(target & ~1, nb_insn, mode=target_mode)
+                    else:
+                        target_insns = Disasm.gef_disassemble(target, nb_insn)
+                    for i, tinsn in enumerate(target_insns):
+                        if is_arm32() or is_arm32_cortex_m():
+                            tinsn.address &= ~1
                         text = tinsn.colored_text(show_opcodes_size, highlight=False)
                         if i == 0:
                             gef_print("", redirect=redirect) # need blank line
@@ -47255,6 +47510,9 @@ class ContextArgumentsCommand(GenericCommand):
         else:
             # failed, use raw operands
             function_name = " ".join(insn.operands)
+            if not function_name:
+                # e.g., `bctrl` of PPC
+                function_name = insn.mnemonic
         self.print_guessed_arguments(function_name, redirect)
         return
 
@@ -238901,6 +239159,17 @@ class GefUtil:
                     addresses.append(int(bp.location[1:], 16))
                 except ValueError:
                     pass
+            elif bp.location:
+                # e.g., `b main` and `b file.c:10`. gdb.decode_line returns the address before the prologue, so do not use it
+                try:
+                    res = gdb.execute("info breakpoints {:d}".format(bp.number), to_string=True)
+                except gdb.error:
+                    res = ""
+                for line in res.splitlines():
+                    # e.g., `1       breakpoint     keep y   0x0000555555555139 in main at t.c:3` and `1.2  y  0x...`
+                    m = re.match(r"{:d}(?:\.\d+)?\s.*?\s[yn]\s+(0x[0-9a-f]+)\s".format(bp.number), line)
+                    if m:
+                        addresses.append(int(m.group(1), 16))
         return addresses
 
     @staticmethod
