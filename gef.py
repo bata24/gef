@@ -5638,10 +5638,16 @@ class GlibcHeap:
                 return ["Corrupted"]
 
             head = self.addrof_bins_i(index) - current_arch.ptrsize * 2
-            if fw == head:
+            if fw == head and bk == head:
                 return [] # no entry
 
-            corrupted = False
+            # glibc takes a chunk from bk (e.g., `last (bin)`), so a bin is corrupted if only one of fd and bk is the head.
+            broken_link = None
+            if fw == head:
+                broken_link = "fd"
+            elif bk == head:
+                broken_link = "bk"
+            corrupted = broken_link is not None
             chunks_bk = []
             chunks_bk_addresses = set()
 
@@ -5687,6 +5693,10 @@ class GlibcHeap:
 
                 chunks = chunks_fw + chunks
 
+            if broken_link == "fd":
+                chunks.insert(0, "Corrupted")
+            elif broken_link == "bk":
+                chunks.append("Corrupted")
             return chunks
 
         def get_unsortedbin_list(self):
@@ -5799,11 +5809,12 @@ class GlibcHeap:
                 position_table = GefUtil.make_position_table(largebin_list)
                 for base_address in set(largebin_list):
                     pos = position_table[base_address]
-                    sz_min = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_min"]
-                    sz_max = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]["size_max"]
-                    m = "largebins[idx={:d},sz={:#x}-{:#x}][{:s}/{:d}]".format(
-                        largebin_idx, sz_min, sz_max, pos, len(largebin_list),
-                    )
+                    bin_size = GlibcHeap.get_binsize_table()["large_bins"][largebin_idx]
+                    if "size_max" in bin_size:
+                        sz = "{:#x}-{:#x}".format(bin_size["size_min"], bin_size["size_max"])
+                    else:
+                        sz = "{:#x}-".format(bin_size["size_min"])
+                    m = "largebins[idx={:d},sz={:s}][{:s}/{:d}]".format(largebin_idx, sz, pos, len(largebin_list))
                     bins_dict_for_base_address.setdefault(base_address, []).append(m)
             return addr_lists, bins_dict_for_address, bins_dict_for_base_address
 
@@ -6485,7 +6496,7 @@ class GlibcHeap:
         table["large_bins"][122] = {"size_min": 0x20000, "size_max": 0x28000}
         table["large_bins"][123] = {"size_min": 0x28000, "size_max": 0x40000}
         table["large_bins"][124] = {"size_min": 0x40000, "size_max": 0x80000}
-        table["large_bins"][125] = {"size_min": 0x80000, "size_max": 0x0}
+        table["large_bins"][125] = {"size_min": 0x80000} # no upper limit
         table["large_bins"][126] = {"size_min": 0x0, "size_max": 0x0} # maybe unused
         return table
 
@@ -28629,6 +28640,7 @@ class UnicornEmulator:
             self.mem_write_callback = kwargs.get("mem_write_callback")
             self.failed = None        # set by run(): the reason string when emulation stops abnormally (else None)
             self.last_syscall = None  # set by handle_syscall(): the first syscall number encountered (else None)
+            self.failed_syscall = None  # set by handle_syscall(): the syscall number that stopped the run (else None)
             hook = getattr(self.unicorn, "UC_HOOK_MEM_INVALID", None)
             if hook is None:
                 hook = self.unicorn.UC_HOOK_MEM_READ_INVALID | self.unicorn.UC_HOOK_MEM_WRITE_INVALID
@@ -29399,6 +29411,7 @@ class UnicornEmulator:
                         return None
             if not self.kwargs["quiet"]:
                 gef_print("  --> syscall={!s} (not emulated)".format(sysno))
+            self.failed_syscall = sysno
             return "syscall {!s} not emulated".format(sysno)
 
         def emulate_mmap(self, sysno):
@@ -29470,14 +29483,17 @@ class UnicornEmulator:
             a2 = self.emu.reg_read(self.regs[entry.arg_regs[1]])
             if a2 == 0 or (a2 & 0xfff) != 0:
                 return False
-            try:
-                self.emu.mem_unmap(a1, a2)
-                self.emu.reg_write(self.regs[entry.ret_regs[0]], 0)
-            except Exception:
-                return False
+            # Only the touched pages are mapped (e.g., a mmapped chunk of try-free), so unmap them one by one.
             for page in range(a1 & self.page_mask, a1 + a2, self.page_size):
+                if page not in self.mapped:
+                    continue
+                try:
+                    self.emu.mem_unmap(page, self.page_size)
+                except Exception:
+                    return False
                 self.mapped.discard(page)
                 self.synthetic_pages.discard(page)
+            self.emu.reg_write(self.regs[entry.ret_regs[0]], 0)
             if not self.kwargs["quiet"]:
                 gef_print("  --> syscall={:d} (emulated)".format(sysno))
                 gef_print("    --> munmap({:#x}, {:#x})".format(a1, a2))
@@ -29936,6 +29952,17 @@ class UnicornEmulator:
                 cpsr = self.emu.reg_read(self.regs["$cpsr"])
                 self.emu.reg_write(self.regs["$cpsr"], (cpsr & ~0x20) | ((start & 1) << 5))
             self.write_pc(start)
+
+            # unicorn fetches the next instruction even with count=1, so the end address needs a page
+            # even if it is just a mark without any mapping (e.g., the return address of heap try-free).
+            if end is not None and not self.map_page(end, translate=False):
+                end_page = self.to_emu(end) & self.page_mask
+                try:
+                    self.emu.mem_map(end_page, self.page_size, Permission.ALL)
+                    self.mapped.add(end_page)
+                    self.synthetic_pages.add(end_page)
+                except self.unicorn.UcError:
+                    pass
 
             if not kwargs["only_insns"]:
                 gef_print("========================= Initial registers =========================")
@@ -32828,8 +32855,9 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
 
     _note_ = "\n".join([
         "The meaning of the tcache expression:",
-        "  e.g.; 0x80 [6] (1): 0x55555557e480",
-        "    0x80: size; [6]: tcache index; (1): tcache_perthread_struct.count[i]",
+        "  e.g.: 0x70 [5] (7/7): 0x55555557e480",
+        "    0x70: size; [5]: tcache index;",
+        "    (7/7): tcache_perthread_struct.counts[i] / TCACHE_FILL_COUNT (2.42+: TCACHE_FILL_COUNT - num_slots[i])",
     ])
 
     def bins_simple(self, arenas):
@@ -32948,8 +32976,10 @@ class GlibcHeapBinsSimpleCommand(GenericCommand):
                     bin_size = GlibcHeap.get_binsize_table()["large_bins"].get(i)
                     if bin_size is None:
                         label = "unused"
-                    else:
+                    elif "size_max" in bin_size:
                         label = "{:#x}-{:#x}".format(bin_size["size_min"], bin_size["size_max"])
+                    else:
+                        label = "{:#x}-".format(bin_size["size_min"])
                     gef_print("{:s} [{:d}]: {:s}".format(label, i, " <-> ".join(m)).rstrip())
 
             gef_print(titlify("arena"))
@@ -33075,6 +33105,7 @@ class GlibcHeapBinsDump:
             return
 
         def fastbin_index(sz):
+            sz &= 0xffff_ffff # glibc casts it to unsigned int, so the upper 4 bytes of the size field are ignored
             if SIZE_SZ == 8:
                 return (sz >> 4) - 2
             return (sz >> 3) - 2
@@ -33160,7 +33191,7 @@ class GlibcHeapBinsDump:
 
         bins_addr = arena.addrof_bins_i(index)
         head = bins_addr - current_arch.ptrsize * 2
-        if fw == head and not verbose:
+        if fw == head and bk == head and not verbose:
             return 0
 
         bin_table = GlibcHeap.get_binsize_table()[bin_name]
@@ -33172,11 +33203,15 @@ class GlibcHeapBinsDump:
             size_str = "{:#x}".format(bin_info["size"])
         elif "size_min" in bin_info and "size_max" in bin_info:
             size_str = "{:#x}-{:#x}".format(bin_info["size_min"], bin_info["size_max"])
+        elif "size_min" in bin_info:
+            size_str = "{:#x}-".format(bin_info["size_min"])
         else:
             size_str = "any"
 
         corrupted_msg_color = Config.get("theme.heap_corrupted_msg")
-        corrupted = False
+        # glibc takes a chunk from bk (e.g., `last (bin)`), so a bin is corrupted if only one of fd and bk is the head.
+        # Then the forward link is also followed.
+        corrupted = (fw == head) != (bk == head)
 
         # follow the link backward
         mb = []
@@ -33260,6 +33295,8 @@ class GlibcHeapBinsDump:
             ProcessMap.lookup(fw),
             ProcessMap.lookup(bk),
         ))
+        if (fw == head) != (bk == head):
+            m[-1] += Color.colorify(" [Corrupted]", corrupted_msg_color)
         if corrupted and mf:
             m += mf
         m += mb[::-1]
@@ -33697,7 +33734,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
     def get_caller_address(self, name):
         """Resolve and return the caller address for a given symbol name,
-        considering user input, PLT, and real addresses."""
+        considering user input, GOT, and real addresses."""
         # user specified address
         if self.args.caller_address is not None:
             return self.args.caller_address
@@ -33705,78 +33742,120 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         # searching through symbols
         caller_address = None
 
-        # PLT pattern (e.g., &'malloc@plt')
-        caller_address = Symbol.resolve_address("'{:s}@plt'".format(name))
-        if caller_address is not None:
-            # If you use PLT, only userland binary's PLT is valid (libc PLT is invalid)
-            x = ProcessMap.lookup(caller_address)
-            if x and x.section and x.section.path == Path.get_filepath(append_proc_root_prefix=False):
-                return caller_address
+        # GOT pattern (e.g., &'malloc@got.plt'), to follow the GOT of the binary even if it is overwritten.
+        # The PLT itself is not called: an unresolved GOT goes to _dl_runtime_resolve that unicorn cannot emulate
+        # (e.g., xsavec), and the PLT of x86_32 PIC needs the GOT in ebx, which may be another value.
+        got = Symbol.resolve_address("'{:s}@got.plt'".format(name))
+        if got is not None:
+            # If you use GOT, only userland binary's GOT is valid (libc GOT is invalid)
+            filepath = Path.get_filepath(append_proc_root_prefix=False)
+            x = ProcessMap.lookup(got)
+            if x and x.section and x.section.path == filepath:
+                caller_address = read_int_from_memory(got)
+                # an unresolved GOT points to the PLT of the binary
+                x = ProcessMap.lookup(caller_address)
+                if x and x.section and x.section.path != filepath:
+                    return caller_address
 
         # real address (not PLT)
         caller_address = Symbol.resolve_address(name)
-        return caller_address
+
+        # The ld.so of glibc 2.31 and earlier also exports the minimal malloc/free/calloc/realloc as weak symbols,
+        # and gdb resolves the name to them first. They do almost nothing (e.g., free just returns), so use another one.
+        auxv = Auxv.get_auxiliary_values()
+        if caller_address is None or not auxv or not auxv.get("AT_BASE"):
+            return caller_address
+        x = ProcessMap.lookup(auxv["AT_BASE"]) # gdb.solib_name() returns None for the ELF header
+        if not x or not x.section:
+            return caller_address
+        loader = x.section.path
+        x = ProcessMap.lookup(caller_address)
+        if not x or not x.section or x.section.path != loader:
+            return caller_address
+        res = gdb.execute("info functions ^{:s}$".format(name), to_string=True)
+        for line in res.splitlines():
+            m = re.fullmatch(r"(0x[0-9a-f]+)\s+{:s}".format(re.escape(name)), line.strip())
+            if not m:
+                continue
+            address = int(m.group(1), 16)
+            x = ProcessMap.lookup(address)
+            if x and x.section and x.section.path != loader:
+                return address
+        return None
 
     def make_patch_info(self, caller_address, arg1, arg2):
         """Prior to running unicorn-emulate, generate a patch to be applied."""
+        # The emulation starts at the function and stops when it returns to an address without any mapping
+        # (below mmap_min_addr). A call instruction is not patched at $pc, since $pc may be on the emulated path
+        # (e.g., stopped at free), and then the emulated function would execute the call again and again.
+        return_address = 0x1000
         patches = {}
         if is_x86_64():
-            regs_new = {"$rdi": arg1, "$rsi": arg2, "$rax": caller_address}
-            patches[current_arch.pc] = bytes.fromhex("ffd0") # call rax
-            stop_address = current_arch.pc + 2
+            # the return address below the red zone, aligned as a call does
+            sp = ((current_arch.sp - 128) & ~0xf) - 8
+            regs_new = {"$rdi": arg1, "$rsi": arg2, "$rsp": sp}
+            patches[sp] = return_address.to_bytes(8, "little")
 
         elif is_x86_32():
-            regs_new = {"$edi": arg1, "$esi": arg2, "$eax": caller_address}
-            patches[current_arch.pc] = bytes.fromhex("5657ffd0") # push esi; push edi; call eax
-            stop_address = current_arch.pc + 4
+            # the return address and the arguments, aligned as a call does
+            sp = ((current_arch.sp - 128) & ~0xf) - 4
+            regs_new = {"$esp": sp}
+            if arg2 is None:
+                arg2 = 0
+            patches[sp] = b"".join((x & 0xffff_ffff).to_bytes(4, "little") for x in (return_address, arg1, arg2))
 
         elif is_arm32():
-            # Check if caller_address is thumb2
-            # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
-            res = gdb.execute("x/3i {:#x}".format(caller_address), to_string=True)
-            # pattern 1 (thumb2)
-            #   0x4085fdb0 <realloc@plt>:                    @ <UNDEFINED> instruction: 0xe7fd4778
-            #   0x4085fdb4 <realloc@plt+4>:  add     r12, pc, #0, 12
-            #   0x4085fdb8 <realloc@plt+8>:  add     r12, r12, #240, 20      @ 0xf0000
-            # in fact:
-            #   0x4085fdb1 <realloc@plt>:    bx      pc
-            if "UNDEFINED" in res.splitlines()[0]:
-                caller_address += 1
-            else:
-                # pattern 2 (thumb2)
-                #   0x408abb60 <__GI___libc_malloc>:     push    {r3, r4, r5, r6, r7, lr}
-                #   0x408abb62 <__GI___libc_malloc+2>:   mov     r6, r0
-                #   0x408abb64 <__GI___libc_malloc+4>:   ldr     r3, [pc, #548]
-                addrs = [int(x.strip().split()[0], 16) for x in res.splitlines()]
-                if any(a % 4 == 2 for a in addrs):
+            # Check if caller_address is thumb2 (bit 0 is already set for the value of a GOT entry)
+            if (caller_address & 1) == 0:
+                # The reason for checking only 3 instructions is that xxx@plt is 3 instructions.
+                insns = list(Disasm.gdb_disassemble(caller_address, nb_insn=3))
+                # pattern 1 (thumb2)
+                #   0x4085fdb0 <realloc@plt>:                    @ <UNDEFINED> instruction: 0xe7fd4778
+                #   0x4085fdb4 <realloc@plt+4>:  add     r12, pc, #0, 12
+                #   0x4085fdb8 <realloc@plt+8>:  add     r12, r12, #240, 20      @ 0xf0000
+                # in fact:
+                #   0x4085fdb1 <realloc@plt>:    bx      pc
+                if insns and "UNDEFINED" in insns[0].operands:
                     caller_address += 1
                 else:
-                    # pattern 3 (ARM)
-                    #   0x4085fdc0 <calloc@plt>:     add     r12, pc, #0, 12
-                    #   0x4085fdc4 <calloc@plt+4>:   add     r12, r12, #240, 20      @ 0xf0000
-                    #   0x4085fdc8 <calloc@plt+8>:   ldr     pc, [r12, #152]!        @ 0x98
-                    pass
-            # Check current $pc is thumb2
-            if current_arch.is_thumb():
-                regs_new = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
-                patches[current_arch.pc & ~1] = bytes.fromhex("9047") # blx r2
-                stop_address = (current_arch.pc & ~1) + 2
-            else:
-                regs_new = {"$r0": arg1, "$r1": arg2, "$r2": caller_address}
-                patches[current_arch.pc] = bytes.fromhex("32ff2fe1") # blx r2
-                stop_address = current_arch.pc + 4
+                    # pattern 2 (thumb2)
+                    #   0x408abb60 <__GI___libc_malloc>:     push    {r3, r4, r5, r6, r7, lr}
+                    #   0x408abb62 <__GI___libc_malloc+2>:   mov     r6, r0
+                    #   0x408abb64 <__GI___libc_malloc+4>:   ldr     r3, [pc, #548]
+                    # pattern 2' (thumb2 with only 32-bit instructions)
+                    #   0x180e0 <realloc>:      stmdb   sp!, {r4, r5, r6, r7, r8, r9, r10, r11, lr}
+                    #   0x180e4 <realloc+4>:    ldr.w   r8, [pc, #784]  @ 0x183f8 <realloc+792>
+                    # gdb selects the mode by the symbols (e.g., the mapping symbol $t), and bit 0 forces Thumb.
+                    # So it is Thumb if both are disassembled in the same way. Only the first instruction is compared,
+                    # since gdb carries the IT block state over and may add a condition to the following ones.
+                    asm = None
+                    thumb_asm = None
+                    if insns:
+                        asm = (insns[0].mnemonic, insns[0].operands)
+                    for insn in Disasm.gdb_disassemble(caller_address | 1, nb_insn=1):
+                        thumb_asm = (insn.mnemonic, insn.operands)
+                    if any(insn.address % 4 == 2 for insn in insns):
+                        caller_address += 1
+                    elif asm is not None and asm == thumb_asm:
+                        caller_address += 1
+                    else:
+                        # pattern 3 (ARM)
+                        #   0x4085fdc0 <calloc@plt>:     add     r12, pc, #0, 12
+                        #   0x4085fdc4 <calloc@plt+4>:   add     r12, r12, #240, 20      @ 0xf0000
+                        #   0x4085fdc8 <calloc@plt+8>:   ldr     pc, [r12, #152]!        @ 0x98
+                        pass
+            regs_new = {"$r0": arg1, "$r1": arg2, "$lr": return_address}
 
         elif is_arm64():
-            regs_new = {"$x0": arg1, "$x1": arg2, "$x2": caller_address}
-            patches[current_arch.pc] = bytes.fromhex("40003fd6") # blr x2
-            stop_address = current_arch.pc + 4
+            regs_new = {"$x0": arg1, "$x1": arg2, "$x30": return_address}
 
         # create namedtuple
         dic = {}
         dic["regs_new"] = {r: v for r, v in regs_new.items() if v is not None}
         dic["regs_old"] = {r: get_register(r) for r, v in regs_new.items() if v is not None}
         dic["patches"] = patches
-        dic["stop_address"] = stop_address
+        dic["start_address"] = caller_address
+        dic["stop_address"] = return_address
         return GefUtil.dict_to_namedtuple("Info", dic)
 
     def get_reason(self, emulator):
@@ -33808,7 +33887,12 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 continue
             if len(s) <= ptrsize: # too short
                 continue
-            if " " not in s or "(" not in s or ")" not in s: # wrong message
+            if " " not in s: # wrong message
+                continue
+            # The messages of malloc_printerr have the function name (e.g., "free(): invalid pointer"), except for
+            # "corrupted size vs. prev_size ...", "corrupted double-linked list" and "break adjusted to free malloc space".
+            has_function_name = "(" in s and ")" in s
+            if not has_function_name and not s.startswith(("corrupted ", "break adjusted ")): # wrong message
                 continue
             message_strings.add(s)
         if message_strings:
@@ -33820,19 +33904,18 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             return "Maybe try to execute unicorn unsupported instruction"
         return emulator.failed or "???"
 
-    def get_syscall(self, emulator):
-        """From the emulator state, get information about the system call that was called."""
-        # the first syscall number encountered during emulation, recorded by the emulator
-        if emulator.last_syscall is None:
+    def get_syscall(self, sysno):
+        """Get the number and the name of the system call recorded by the emulator."""
+        if sysno is None:
             return None
 
         # match against syscall_table
-        syscall_entry = Syscall.get_syscall_table().nr_table.get(emulator.last_syscall, None)
+        syscall_entry = Syscall.get_syscall_table().nr_table.get(sysno, None)
         if syscall_entry:
             syscall_name = syscall_entry.name
         else:
             syscall_name = "???"
-        return emulator.last_syscall, syscall_name
+        return sysno, syscall_name
 
     def get_allocated_address(self, emulator):
         """From the emulator state, get the allocated address (the return register)."""
@@ -33848,25 +33931,26 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
     def print_result(self, name, emulator):
         """Print the result of an emulation run, displaying errors or success messages based on system call outcomes."""
-        syscall = self.get_syscall(emulator)
         if emulator.failed is not None:
             # fail
             success = False
 
-            # The system call that could not be emulated
+            # The system call that could not be emulated (not the first one, which may have been emulated)
+            syscall = self.get_syscall(emulator.failed_syscall)
             if syscall:
                 err("Trace failed: system call emulation error: {:d} (={:s})".format(syscall[0], syscall[1]))
 
-            # If write* system call was called, it is assumed that an abort was called.
-            # By investigating the changed memory address, the reason may be found.
-            if not syscall or "write" in syscall[1]:
-                reason = self.get_reason(emulator)
-                err("{:s} failed: {:s}".format(name, Color.boldify(reason)))
+            # If abort was called, the message is written by write*, but __libc_message of 2.23-2.25 opens /dev/tty
+            # before it. So by investigating the changed memory address regardless of the system call,
+            # the reason may be found.
+            reason = self.get_reason(emulator)
+            err("{:s} failed: {:s}".format(name, Color.boldify(reason)))
         else:
             # success
             success = True
 
-            # The system call that could be emulated
+            # The system call that could be emulated (the first one encountered during emulation)
+            syscall = self.get_syscall(emulator.last_syscall)
             if syscall:
                 info("System call emulated: {:d} (={:s})".format(syscall[0], syscall[1]))
 
@@ -33911,13 +33995,19 @@ class GlibcHeapTryFreeCommand(GenericCommand):
         if caller_address is None:
             err("Could not find `{:s}`".format(name))
             return
-        if any(value is not None and not AddressUtil.fits_width(value, 64) for value in (caller_address, arg1, arg2)):
-            err("Argument exceeds GDB integer width")
+        # a value wider than the pointer is truncated by `set $reg` of 32-bit arches
+        width = current_arch.ptrsize * 8
+        if any(value is not None and not AddressUtil.fits_width(value, width) for value in (caller_address, arg1, arg2)):
+            err("Argument exceeds the pointer width")
             return
 
         # make patch info
         # The arguments of free, malloc, realloc, and calloc are at most 2
-        patch_info = self.make_patch_info(caller_address, arg1, arg2)
+        try:
+            patch_info = self.make_patch_info(caller_address, arg1, arg2)
+        except gdb.error as e: # e.g., cannot disassemble an invalid -a on ARM32
+            err("Invalid address of `{:s}`: {!s}".format(name, e))
+            return
 
         tag = PatchCommand.PatchInfo.get_unique_tag()
         try:
@@ -33933,9 +34023,9 @@ class GlibcHeapTryFreeCommand(GenericCommand):
 
             # execute: run the emulation in-process and read its result directly, instead of
             # invoking the `unicorn-emulate` command and parsing its text output.
-            # equivalent to `unicorn-emulate -t <stop_address> -A -E`.
+            # equivalent to `unicorn-emulate -f <start_address> -t <stop_address> -A -E`.
             kwargs = {
-                "start_insn": current_arch.pc,
+                "start_insn": patch_info.start_address,
                 "end_insn": patch_info.stop_address,
                 "nb_gadget": None,
                 "add_sse": False,
@@ -34225,55 +34315,43 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
         "It is not possible to find candidates that straddle the two regions.",
     ])
 
-    def print_result(self, m, pos, size_candidate):
+    def print_result(self, m, addr):
         """Display the result of a memory search, including address, flags, and a memory dump with colored highlights."""
         if m.path == "":
             path = "unknown"
         else:
             path = m.path
-        address = ProcessMap.lookup(m.page_start + pos)
+        address = ProcessMap.lookup(addr)
         self.info_add_out("Found at {!s} in {!r} [{!s}]".format(address, path, m.permission))
 
-        # flag with coloring
-        flag = []
+        # flag with coloring (the same as other heap commands)
+        flags = GlibcHeap.GlibcChunk(None, addr, from_base=True).flags_as_string()
+        if flags:
+            self.out.append("    [{:s}]".format(flags))
 
-        if size_candidate & 0b100:
-            flag.append(Color.colorify("NON_MAIN_ARENA", Config.get("theme.heap_chunk_flag_non_main_arena")))
-
-        if size_candidate & 0b10:
-            flag.append(Color.colorify("IS_MMAPED", Config.get("theme.heap_chunk_flag_is_mmapped")))
-
-        if size_candidate & 0b1:
-            flag.append(Color.colorify("PREV_INUSE", Config.get("theme.heap_chunk_flag_prev_inuse")))
-
-        self.out.append("    [{:s}]".format(" ".join(flag)))
-
-        # dump
-        try:
-            if is_64bit():
-                res = gdb.execute("x/6xg {:#x}".format(address.value), to_string=True)
-            else:
-                res = gdb.execute("x/6xw {:#x}".format(address.value), to_string=True)
-            truncated_flag = False
-        except Exception:
-            if is_64bit():
-                res = gdb.execute("x/2xg {:#x}".format(address.value), to_string=True)
-            else:
-                res = gdb.execute("x/2xw {:#x}".format(address.value), to_string=True)
-            truncated_flag = True
+        # dump the words up to the inaccessible address
+        nb_word = 2 # the size field was read
+        while nb_word < 6 and is_valid_addr(addr + current_arch.ptrsize * (nb_word + 1) - 1):
+            nb_word += 1
+        if is_64bit():
+            res = gdb.execute("x/{:d}xg {:#x}".format(nb_word, addr), to_string=True)
+        else:
+            res = gdb.execute("x/{:d}xw {:#x}".format(nb_word, addr), to_string=True)
 
         for line in res.splitlines():
             self.out.append("    {:s}".format(line))
 
-        if truncated_flag:
-            self.warn_add_out("Areas from {!s} are inaccessible and display truncated.".format(address))
+        if nb_word < 6:
+            inaccessible = ProcessMap.lookup(addr + current_arch.ptrsize * nb_word)
+            self.warn_add_out("Areas from {!s} are inaccessible and display truncated.".format(inaccessible))
         return
 
     def find_fake_fast(self, target_size):
         """Scan memory regions for fake fastbin chunks matching the target size and display findings."""
         unpack = GefUtil.get_unpack()
         if is_64bit():
-            mask = ~0xf
+            # fastbin_index() casts the size to unsigned int, so the upper 4 bytes of the size field can be anything
+            mask = 0xffff_fff0
         else:
             mask = ~0x7
 
@@ -34282,8 +34360,10 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
         else:
             unit = 0x1
 
-        ZERO_PAGE = b"\0" * get_pagesize()
+        page_size = get_pagesize()
+        ZERO_PAGE = b"\0" * page_size
         target_size &= mask
+        reader = lambda addr, size: read_memory(addr, size, safe=True)
         vmmap = ProcessMap.get_process_maps_exclude_special_regions()
 
         for m in vmmap:
@@ -34309,36 +34389,45 @@ class GlibcHeapFindFakeFastCommand(GenericCommand, BufferingOutput):
                 ))
                 continue
 
-            data = read_memory(m.page_start, m.size, safe=True)
-            if data is None:
-                self.warn_add_out("Cannot read region {:#x}-{:#x}; skipped".format(m.page_start, m.page_end))
-                continue
-            # Scanning page-by-page
-            pos = 0
-            while pos < m.size:
-                if (pos & get_pagesize_mask_low()) == 0:
-                    # fast check for all zero, because there may be huge mmap-ed memory
-                    if data[pos:pos + get_pagesize()] == ZERO_PAGE:
-                        pos += get_pagesize()
+            # A region may have unreadable pages (e.g., the guard page at the start of a thread stack), so skip only them.
+            found_readable = False
+            for chunk_addr, data in GefUtil.iter_readable_chunks(m.page_start, m.page_end, m.size, reader, merge_adjacent=True):
+                if data is None:
+                    continue
+                found_readable = True
+
+                # Scanning page-by-page.
+                # glibc aligns the user data (chunk2mem), so the base of an aligned chunk is 2 * SIZE_SZ before it
+                # (e.g., i386 has the base at 8 mod 16).
+                pos = -(chunk_addr + current_arch.ptrsize * 2) % unit
+                while pos < len(data):
+                    if pos % page_size < unit:
+                        # fast check for all zero, because there may be huge mmap-ed memory
+                        page_pos = pos - pos % page_size
+                        if data[page_pos:page_pos + page_size] == ZERO_PAGE:
+                            pos += page_size
+                            continue
+
+                    pos_of_size_start = pos + current_arch.ptrsize
+                    pos_of_size_end = pos + current_arch.ptrsize * 2
+                    size_candidate = data[pos_of_size_start:pos_of_size_end]
+
+                    # even if it is found near the end of region, it cannot be used.
+                    if len(size_candidate) != current_arch.ptrsize:
+                        break
+
+                    # check if it's the size you want
+                    size_candidate = unpack(size_candidate)
+                    if (size_candidate & mask) != target_size:
+                        pos += unit
                         continue
 
-                pos_of_size_start = pos + current_arch.ptrsize
-                pos_of_size_end = pos + current_arch.ptrsize * 2
-                size_candidate = data[pos_of_size_start:pos_of_size_end]
-
-                # even if it is found near the end of region, it cannot be used.
-                if len(size_candidate) != current_arch.ptrsize:
-                    break
-
-                # check if it's the size you want
-                size_candidate = unpack(size_candidate)
-                if (size_candidate & mask) != target_size:
+                    # found
+                    self.print_result(m, chunk_addr + pos)
                     pos += unit
-                    continue
 
-                # found
-                self.print_result(m, pos, size_candidate)
-                pos += unit
+            if not found_readable:
+                self.warn_add_out("Cannot read region {:#x}-{:#x}; skipped".format(m.page_start, m.page_end))
         return
 
     @Decorator.parse_args
