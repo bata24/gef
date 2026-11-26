@@ -352,7 +352,7 @@ Display many or all register values from current architecture.
 usage: registers [-h] [-s] [REGISTERS ...]
 
 positional arguments:
-  REGISTERS     An array of registers. (default: current_arch.all_registers)
+  REGISTERS     an array of registers. (default: current_arch.all_registers, with $fs_base/$gs_base of x86 and $cs:$ip etc. of x86_16)
 
 options:
   -h, --help    show this help message and exit
@@ -395,7 +395,7 @@ Set a breakpoint which breaks if branch is not taken.
 usage: break-if-not-taken [-h] [--hw] LOCATION
 
 positional arguments:
-  LOCATION    the address to set breakpoint.
+  LOCATION    the address to set a breakpoint.
 
 options:
   -h, --help  show this help message and exit
@@ -413,7 +413,7 @@ Set a breakpoint which breaks if branch is taken.
 usage: break-if-taken [-h] [--hw] LOCATION
 
 positional arguments:
-  LOCATION    the address to set breakpoint.
+  LOCATION    the address to set a breakpoint.
 
 options:
   -h, --help  show this help message and exit
@@ -440,7 +440,7 @@ options:
 
 ## `command-break`
 
-Set a breakpoint which executes user-defined command silently and continue, if hit.
+Set a breakpoint which executes user-defined command silently and continues, if hit.
 
 
 ### Syntax
@@ -450,7 +450,7 @@ usage: command-break [-h] [LOCATION] COMMAND
 
 positional arguments:
   LOCATION    the address to set a breakpoint. (default: current_arch.pc)
-  COMMAND     the command executed if breakpoint is hit.
+  COMMAND     the command executed when the breakpoint is hit.
 
 options:
   -h, --help  show this help message and exit
@@ -522,7 +522,7 @@ by allowing you to set multiple breakpoints on a single line.
 
 ## `regdump-break`
 
-Set a breakpoint which dumps registers silently and continue, if hit.
+Set a breakpoint which dumps registers silently and continues, if hit.
 
 
 ### Syntax
@@ -535,8 +535,8 @@ positional arguments:
 
 options:
   -h, --help       show this help message and exit
-  -t, --tag TAG    the tag if breakpoint is hit.
-  -r, --regs REGS  the register name dumped if breakpoint is hit.
+  -t, --tag TAG    the tag printed when the breakpoint is hit.
+  -r, --regs REGS  the register name dumped when the breakpoint is hit.
 ```
 
 ### Examples
@@ -1305,12 +1305,12 @@ usage: asm-list [-h] [-a ARCH] [-m MODE] [-e] [-b NBYTE] [-f INCLUDE] [-v EXCLUD
 
 options:
   -h, --help      show this help message and exit
-  -a ARCH         specify the architecture. (default: current_arch.arch)
-  -m MODE         specify the mode. (default: current_arch.mode)
+  -a ARCH         specify the architecture. (default: current_arch.arch, or X86)
+  -m MODE         specify the mode. (default: current_arch.mode, or 64)
   -e              use big-endian.
-  -b NBYTE        filter by the length of asm byte.
-  -f INCLUDE      filter by specified string.
-  -v EXCLUDE      filter by specified string.
+  -b NBYTE        filter by the instruction length in bytes.
+  -f INCLUDE      show only the lines with the specified string. (all of them must match)
+  -v EXCLUDE      hide the lines with the specified string.
   -n, --no-pager  do not use the pager.
 ```
 
@@ -1330,7 +1330,7 @@ asm-list -a X86 -m 16
 - 2E/36/3E/26/64/65 (CS/SS/DS/ES/FS/GS override prefix) are ignored
 - 2E/3E (branch hint prefix) are ignored
 - 66 (operand size prefix) is included
-- 67 (address size prefix) is ignored
+- 67 (address size prefix) is included only in the entries that have it (e.g., jecxz, loop)
 - 40-4F (REX prefix) are ignored
 - C4/C5 (VEX prefix) are ignored
 - 8F (XOP prefix) is ignored
@@ -1887,7 +1887,7 @@ usage: hijack-fd [-h] [--file | --socket] [-q] OLD_FD NEW_OUTPUT
 
 positional arguments:
   OLD_FD       file descriptor number to redirect.
-  NEW_OUTPUT   the location redirected data is stored.
+  NEW_OUTPUT   the location where redirected data is stored.
 
 options:
   -h, --help   show this help message and exit
@@ -1906,7 +1906,8 @@ hijack-fd 2 localhost:8000  # determined as the socket by the presence of `:`.
 ### Notes
 
 ```text
-`socketcall` is not supported; on i386 with Linux < 4.3 (or old qemu-user), the socket redirection fails with ENOSYS.
+`socketcall` is not supported; on i386, s390x and m68k with Linux < 4.3, SPARC32 with Linux < 4.4,
+or old qemu-user, the socket redirection fails with ENOSYS.
 IPv6 socket destinations accept `::1:PORT` and `[::1]:PORT`.
 ```
 
@@ -1928,13 +1929,14 @@ options:
   -a, --all             kill all threads except current thread.
   -e, --exclude EXCLUDE
                         the thread id not to kill.
-  -c, --commit          commit to kill.
+  -c, --commit          actually perform the kill.
 ```
 
 ### Examples
 
 ```gdb
-kill-threads 2 3   # kill threads that `Thread Id` is 2 or 3
+kill-threads 2 3            # show threads that `Thread Id` is 2 or 3 without killing them
+kill-threads 2 3 --commit   # kill threads that `Thread Id` is 2 or 3
 ```
 
 ### Notes
@@ -1972,7 +1974,7 @@ mmap 0 0x1000 _wx        # '_' means '-'
 
 ## `mprotect`
 
-Change a page permission (default: RWX).
+Change the permission of a memory mapping (default: rwx).
 
 
 ### Syntax
@@ -1986,7 +1988,7 @@ positional arguments:
 
 options:
   -h, --help       show this help message and exit
-  -s, --size SIZE  the size to change the permission (0x1000 align).
+  -s, --size SIZE  the size to change the permission (must be a multiple of the page size).
 ```
 
 ### Examples
@@ -2000,13 +2002,13 @@ mprotect 0x7ffff7e1b000 ___ -s 0x1000 # change only first 0x1000 bytes
 ### Notes
 
 ```text
-By default, the permissions will be changed for the entire map including the specified address.
-If a size is specified, the permissions will only be changed for the range of the specified address up to the size.
+By default, the permissions will be changed for the entire mapping containing the specified address.
+If a size is specified, the permissions will only be changed for SIZE bytes starting at the specified address.
 ```
 
 ## `munmap`
 
-Unmap a mapped memory.
+Unmap a memory mapping.
 
 
 ### Syntax
@@ -2016,7 +2018,7 @@ usage: munmap [-h] LOCATION [SIZE]
 
 positional arguments:
   LOCATION    the address to unmap.
-  SIZE        the size to unmap.
+  SIZE        the size to unmap (must be a multiple of the page size). (default: the entire map)
 
 options:
   -h, --help  show this help message and exit
@@ -2025,15 +2027,15 @@ options:
 ### Examples
 
 ```gdb
-munmap $sp                    # unmap whole stack area
+munmap 0x7ffff7ff8000         # unmap the entire map containing the address
 munmap 0x7ffffffde000 0x1000  # unmap specified area
 ```
 
 ### Notes
 
 ```text
-By default, the entire map containing the specified address is freed.
-If a size is specified, the area from the specified address to that size will be unmapped.
+By default, the entire map containing the specified address is unmapped.
+If a size is specified, the area of that size starting at the specified address will be unmapped.
 ```
 
 ## `syscall-search`
@@ -2170,14 +2172,15 @@ angr -f 0x400607 -a 0x400613 -s $rdi 30 -t ? -s $rdx 20 -t Az  # sym0:[0x00-0xff
 ### Notes
 
 ```text
-If there is a stack canary check, angr may fail to find the solution.
-This occurs when execution begins inside a function but terminates outside of it.
+If the symbolic memory overwrites the stack canary, angr may fail to find the solution.
+(The TLS of the process is given to angr, so the canary stored before the start matches.)
 To avoid it, you need to replace these instructions (e.g., `sub rdx, fs:28h; jnz loc_XXX`) with `nop`s.
 Please patch memory or make other appropriate modifications before running the `angr` command.
 
 The -H option is designed to handle this issue automatically.
 But it assumes that there is a `ret` after `call __stack_chk_fail@plt`.
 Note that it will fail if there is a `ret` before `call __stack_chk_fail@plt`.
+It also fails on i386 PIE, which calls it from `__stack_chk_fail_local` without a `ret` after it.
 ```
 
 ## `future-calls`
@@ -2189,18 +2192,19 @@ Display future function calls from the current function.
 ### Syntax
 
 ```text
-usage: future-calls [-h] [-d DEPTH] [-b NB_INSN] [-N NB_NODE] [-n] [--debug] [ADDRESS]
+usage: future-calls [-h] [-d DEPTH] [-b NB_INSN] [-N NB_NODE] [-a] [-n] [--debug] [ADDRESS]
 
 positional arguments:
   ADDRESS               the address to start from. (default: current_arch.pc)
 
 options:
   -h, --help            show this help message and exit
-  -d, --depth DEPTH     maximum call depth to descend into. (default: 3)
+  -d, --depth DEPTH     maximum call depth to descend into. (default: unlimited)
   -b, --nb-insn NB_INSN
                         maximum number of instructions to emulate. (default: 2048)
   -N, --nb-node NB_NODE
                         maximum number of call tree nodes to collect. (default: 256)
+  -a, --args            show the guessed arguments (up to 6) and return values.
   -n, --no-pager        do not use the pager.
   --debug               show the faulting instruction for Unicorn errors.
 ```
@@ -2212,6 +2216,7 @@ future-calls                         # display future calls from $pc
 future-calls -d 4                    # descend into callees up to depth 4
 future-calls -b 4096                 # emulate up to 4096 instructions
 future-calls -N 1024                 # collect up to 1024 tree nodes
+future-calls -a                      # show the guessed arguments and return values
 future-calls -n                      # do not use the pager
 future-calls --debug                 # show Unicorn fault details
 ```
@@ -2222,6 +2227,13 @@ future-calls --debug                 # show Unicorn fault details
 This command is a best-effort concrete preview based on Unicorn emulation.
 Only x86, x86-64, ARM32, and ARM64 are supported.
 A loop is cut only when the registers and written memory repeat; other loops run until --nb-insn.
+The left column is the address of each call or ret instruction.
+-a reads up to 6 arguments by the calling convention and the return register at each ret; both are guesses.
+A call tagged [not run: ...] or [failed: ...] is skipped by restoring the registers to those before the call,
+so its return value and memory writes are lost, and the path after it is a guess.
+Only mmap, munmap and brk are emulated among syscalls; a call that issues another syscall fails at it.
+unicorn does not support some instructions. (e.g., xsavec, xrstor, AVX-512, vldr, etc.)
+The AVX2 instructions used by the glibc string functions are emulated in gef.
 ```
 
 ## `unicorn-emulate`
@@ -2247,10 +2259,10 @@ options:
                         the number of instructions from `FROM_LOCATION`.
   -i, --only-insns      show only instructions (no registers, memories, etc).
   -v, --verbose         displays the register values for each executed instruction.
-  -S, --add-sse         initialization and display XMM registers (x64/x86 only).
+  -S, --add-sse         initialize and display XMM registers (x64/x86 only).
   -A, --avoid-avx-neon-opt-func
                         patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.
-  -E, --emulate-mmap    [FOR DEVELOPER] used internally in gef, please don't use it.
+  -E, --emulate-mmap    emulate mmap/munmap/brk on a best-effort basis (e.g., for main_arena expansion).
   -q, --quiet           quiet execution.
 ```
 
@@ -2270,7 +2282,8 @@ Memory is mapped on demand from the inferior, so Linux kernel emulation is suppo
 Kernel emulation is only supported on x86, x86-64, ARM32, and ARM64.
 Big endian is not supported.
 unicorn does not support emulating syscall. (use -E for a best-effort mmap/munmap/brk emulation)
-unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)
+unicorn does not support some instructions. (e.g., xsavec, xrstor, AVX-512, vldr, etc.)
+The AVX2 instructions used by the glibc string functions are emulated in gef.
 unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.
 see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt
 ```
@@ -2299,10 +2312,10 @@ options:
   -s, --skip-emulation, --save
                         do not run, just save the script.
   -v, --verbose         displays the register values for each executed instruction.
-  -S, --add-sse         initialization and display XMM registers (x64/x86 only).
+  -S, --add-sse         initialize and display XMM registers (x64/x86 only).
   -A, --avoid-avx-neon-opt-func
                         patch GOT to replace (e.g., __XXX_avx2 with XXX), as Unicorn does not support them.
-  -E, --emulate-mmap    [FOR DEVELOPER] used internally in gef, please don't use it.
+  -E, --emulate-mmap    emulate mmap/munmap/brk on a best-effort basis (e.g., for main_arena expansion).
   -q, --quiet           quiet execution.
 ```
 
@@ -2317,7 +2330,7 @@ unicorn-emulate-script -t 0x805678a4 -s    # from $pc to specified address with 
 ### Notes
 
 ```text
-unicorn does not support emulating syscall.
+unicorn does not support emulating syscall. (use -E for a best-effort mmap/munmap/brk emulation)
 unicorn does not support some instructions. (e.g., xsavec, xrstor, vpbroadcastb, vldr, etc.)
 unicorn does not emulate ARM kernel-provided-user-helpers like $pc=0xffff0fe0, 0xffff0fc0, etc.
 see: https://www.kernel.org/doc/Documentation/arm/kernel_user_helpers.txt
@@ -2415,7 +2428,7 @@ Invoke ropper to search rop gadgets.
 usage: ropper [-h] [ROPPER_OPTIONS ...]
 
 positional arguments:
-  ROPPER_OPTIONS  An array of arguments to pass as is to the ropper command. (default: None)
+  ROPPER_OPTIONS  An array of arguments to pass as is to the ropper command. (default: --file <debuggee>)
 
 options:
   -h, --help      show this help message and exit
@@ -2840,7 +2853,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -v, --verbose         print all elements. (default: outputs up to 100)
-  -i, --increase-limit  increase rounding limit from 128 to 4096 bytes.
+  -i, --increase-limit  truncate at the page size instead of 128 characters.
   -n, --no-pager        do not use the pager.
 ```
 
@@ -2886,7 +2899,7 @@ Guesses use default integer argument locations; function ABI and argument types 
 
 ## `envp`
 
-Display initial envp from __environ@ld, or modified envp managed by libc.
+Display the current envp from __environ, the envp arrays managed by libc, and the initial envp.
 
 
 ### Syntax
@@ -2900,7 +2913,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -v, --verbose         print all elements. (default: outputs up to 100)
-  -i, --increase-limit  increase rounding limit from 128 to 4096 bytes.
+  -i, --increase-limit  truncate at the page size instead of 128 characters.
   -n, --no-pager        do not use the pager.
 ```
 
@@ -2925,7 +2938,7 @@ options:
 
 ## `filename`
 
-Display current debugged filename.
+Display the filename of the program being debugged.
 
 
 ### Syntax
@@ -3416,7 +3429,7 @@ options:
 
 ## `capability`
 
-Display the capabilities of the debugging process.
+Display the capabilities of the debugged process.
 
 
 ### Syntax
@@ -3427,7 +3440,7 @@ usage: capability [-h] [-n] [-v]
 options:
   -h, --help      show this help message and exit
   -n, --no-pager  do not use the pager.
-  -v, --verbose   also display detailed bit information other than cap_eff.
+  -v, --verbose   also display detailed bit information.
 ```
 
 ## `checksec`
@@ -3657,16 +3670,16 @@ dt "struct malloc_state" $rsp  # shortcut for `p ((struct malloc_state*) $rsp)[0
 
 ```text
 This command is designed for several purposes.
-1. When displaying very large struct, you may want to go through a pager because the results will not fit on one screen.
-   However, using a pager, the color information disappears. This command calls the pager with preserving colors.
-2. When `ptype /ox TYPE`, interpreting member type recursively often result is too long and difficult to read.
-   This command keeps result compact by displaying only top-level members.
-3. When `p ((TYPE*) ADDRESS)[0]` for large struct, the gdb setting of `max-value-size` is too small to display.
+1. When displaying a very large struct, you may want to use a pager because the results will not fit on one screen.
+   However, using a pager, the color information disappears. This command calls the pager while preserving colors.
+2. When `ptype /ox TYPE`, expanding member types recursively often makes the result too long and difficult to read.
+   This command keeps the result compact by displaying only top-level members.
+3. When `p ((TYPE*) ADDRESS)[0]` for a large struct, the gdb setting of `max-value-size` is too small to display.
    This command adjusts it automatically.
-4. When debugging a binary written in the Golang, the offset information of the type is not displayed.
+4. When debugging a binary written in Go, the offset information of the type is not displayed.
    This command also displays the offset.
-5. When debugging a binary written in the Golang, the `p ((TYPE*) ADDRESS)[0]` command will be broken.
-   This is because the Golang helper script is automatically loaded and overwrites the behavior of `p` command.
+5. When debugging a binary written in Go, the `p ((TYPE*) ADDRESS)[0]` command fails with a syntax error.
+   This is because the expression parser of gdb for Go does not accept the C-style cast.
    This command creates the display results on the python side, so we can display it without any problems.
 ```
 
@@ -3714,7 +3727,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -b, --nb-insns-before NB_INSNS_BEFORE
-                        the number of previous lines when print syscall instruction.
+                        the number of previous instructions when printing syscall instruction.
   -s, --max-region-size MAX_REGION_SIZE
                         maximum search region size. (default: 0x10000000; 0: infinity)
   -n, --no-pager        do not use the pager.
@@ -3724,9 +3737,16 @@ options:
 
 ```gdb
 find-syscall libc                   # search syscall from libc .text
-find-syscall binary                 # 'binary' means the area executable itself (usermode only)
+find-syscall binary                 # 'binary' means the area of the executable itself
 find-syscall 0x400000-0x404000      # search syscall from specific range
 find-syscall 0x400000 0x4000        # another valid format
+```
+
+### Notes
+
+```text
+x86 searches `int 0x80`, `syscall` and `sysenter`, ARM32 searches both ARM and Thumb `svc #0`,
+and SH4 searches `trapa #0x10`-`#0x1f`.
 ```
 
 ## `scan-section`
@@ -3741,8 +3761,8 @@ Find memory addresses mapped across different regions.
 usage: scan-section [-h] [-s STRIDE] [HAYSTACK] [NEEDLE]
 
 positional arguments:
-  HAYSTACK             where to search for the needle.
-  NEEDLE               what to search for.
+  HAYSTACK             where to search for the needle. (default: any)
+  NEEDLE               what to search for. (default: any)
 
 options:
   -h, --help           show this help message and exit
@@ -3758,6 +3778,13 @@ scan-section stack heap                          # scan heap address from stack
 scan-section heap libc                           # scan libc address from heap
 scan-section 0x555555772000-0x555555774000 libc  # support address range
 scan-section any any
+```
+
+### Notes
+
+```text
+HAYSTACK and NEEDLE are `any`, `binary` (or `bin`), a region name (e.g., `heap`, `stack`, `libc`), or `START-END`.
+`START-END` is a range of hexadecimal addresses with 0x, excluding END.
 ```
 
 ## `search-cfi-gadgets`
@@ -3810,14 +3837,14 @@ options:
                         the interval to skip searching from the last found position within the same section.
   -l, --limit LIMIT     the limit of the search result.
   -s, --max-region-size MAX_REGION_SIZE
-                        maximum search region size. (default: 0x10000000; 0: infinity)
-  --phys                treat START_ADDR as a physical address (available in qemu-system).
+                        maximum search region size, also for --hex-regex ranges. (default: 0x10000000; 0: infinity)
+  --phys                treat START_ADDR as a physical address (available in qemu-system, vmware and kgdb).
   -k, --kernel-only     search from kernel area (available in qemu-system).
   -u, --user-only       search from user area (available in qemu-system).
-  -v, --verbose         shows the section currently being searched.
+  -v, --verbose         show the section currently being searched.
   -q, --quiet           suppress warnings.
   -Q, --quiet-region    suppress region information.
-  -S, --quiet-symbol    not shown even if symbol exists.
+  -S, --quiet-symbol    do not show symbols even if they exist.
 ```
 
 ### Examples
@@ -3830,7 +3857,7 @@ search-pattern --hex-regex "4[0-9]424344"  # hex regex search
 search-pattern 0x44434241                  # search for 0x44434241 (='ABCD') from whole memory
 search-pattern 0x555555554000 stack        # search for 0x555555554000 (6byte) from stack
 search-pattern 0x0000555555554000 stack    # search for 0x0000555555554000 (8byte) from stack
-search-pattern AAAA binary                 # 'binary' means the area executable itself (usermode only)
+search-pattern AAAA binary                 # 'binary' means the area of the executable itself (usermode only)
 search-pattern AAAA 0x400000-0x404000      # search for 'AAAA' from specific range
 search-pattern AAAA 0x400000 0x4000        # another valid format
 search-pattern AAAA heap --aligned 16      # search for 'AAAA' with 16-byte alignment
@@ -3968,7 +3995,7 @@ options:
                         the type of the value. (default: dword)
   --signed              treat the integer as signed for increased, decreased and display.
   -a, --aligned ALIGNED
-                        alignment unit. (default: the size of the type)
+                        alignment unit. (default: the ABI alignment of the type)
   -s, --max-region-size MAX_REGION_SIZE
                         maximum search region size. (default: 0x10000000; 0: infinity)
 ```
@@ -3980,6 +4007,7 @@ value-scan new 100              # search for the dword value 100
 value-scan new -t byte -1       # search for the byte value 0xff
 value-scan new -t float 1.5     # search for the float value 1.5
 value-scan new -a 1 0x1234      # search for the dword value 0x1234 at any alignment
+value-scan new -t word -- -0x10 # `--` is needed for a negative value other than decimal
 ```
 
 ### Notes
@@ -4013,6 +4041,7 @@ value-scan next changed      # keep only the candidates changed since the last s
 value-scan next unchanged    # keep only the candidates not changed since the last scan
 value-scan next increased    # keep only the candidates that increased since the last scan
 value-scan next decreased    # keep only the candidates that decreased since the last scan
+value-scan next -- -0x10     # `--` is needed for a negative value other than decimal
 ```
 
 ### Notes
@@ -6519,15 +6548,14 @@ Edit flags in a human friendly way.
 ### Syntax
 
 ```text
-usage: edit-flags [-h] [-v] [[FLAGNAME(+|-|~) ...] ...]
+usage: edit-flags [-h] [-v] [FLAGNAME(+|-|~) ...]
 
 positional arguments:
-  [FLAGNAME(+|-|~) ...]
-                        the flag name to edit.
+  FLAGNAME(+|-|~)  the flag name to edit.
 
 options:
-  -h, --help            show this help message and exit
-  -v, --verbose         show the bit information of the flag register.
+  -h, --help       show this help message and exit
+  -v, --verbose    show the bit information of the flag register.
 ```
 
 ### Examples
@@ -6608,13 +6636,13 @@ The base command to get information about the Glibc heap structure.
 ### Syntax
 
 ```text
-usage: heap [-h] {arena,arenas,bins,bins-simple,chunk,chunks,top,try-free,try-malloc,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,dump-image,tracer,parse,snapshot,snapshot-compare} ...
+usage: heap [-h] {arena,arenas,bins,bins-simple,chunk,chunks,top,try-free,try-malloc,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,dump-image,tracer,parse,snapshot,snapshot-compare,timeline} ...
 
 options:
   -h, --help            show this help message and exit
 
 command:
-  {arena,arenas,bins,bins-simple,chunk,chunks,top,try-free,try-malloc,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,dump-image,tracer,parse,snapshot,snapshot-compare}
+  {arena,arenas,bins,bins-simple,chunk,chunks,top,try-free,try-malloc,try-realloc,try-calloc,tcache-index-helper,find-fake-fast,extract-heap-addr,calc-protected-fd,visual-heap,dump-image,tracer,parse,snapshot,snapshot-compare,timeline}
 ```
 
 ### Notes
@@ -6625,8 +6653,9 @@ Supports up to glibc 2.43.
 - 2.19+: malloc_state.next_free is handled.
 - 2.23+: malloc_state.attached_threads is handled.
 - 2.24+: GEF treats malloc_par.max_total_mem as absent (always None).
+- 2.24+: MALLOC_ALIGNMENT changes for ppc32/mipsn32/riscv32 affect NFASTBINS and bin-size tables.
 - 2.26: tcache is introduced.
-- 2.26+: MALLOC_ALIGNMENT changes for x86_32/riscv32/ppc32 affect NFASTBINS and bin-size tables.
+- 2.26+: MALLOC_ALIGNMENT changes for x86_32 affect NFASTBINS and bin-size tables.
 - 2.27+: malloc_state layout handling changes (have_fastchunks/fastbins offsets).
 - 2.30: tcache_perthread_struct.counts element size changes 1->2 bytes.
 - 2.32: Safe-Linking (pointer mangling) for tcache/fastbins fd is supported.
@@ -6843,8 +6872,9 @@ heap bins-simple -a 1 -v
 
 ```text
 The meaning of the tcache expression:
-  e.g.; 0x80 [6] (1): 0x55555557e480
-    0x80: size; [6]: tcache index; (1): tcache_perthread_struct.count[i]
+  e.g.: 0x70 [5] (7/7): 0x55555557e480
+    0x70: size; [5]: tcache index;
+    (7/7): tcache_perthread_struct.counts[i] / TCACHE_FILL_COUNT (2.42+: TCACHE_FILL_COUNT - num_slots[i])
 ```
 
 ## `heap calc-protected-fd`
@@ -6940,7 +6970,8 @@ about the annotation:
   - "largebins[idx=98,sz=0x1000-0x1200][8/8]"
     - idx: 0-origin index that `i-th idx` means `bins[i*2 : (i+1)*2]`.
     - sz : the size range of the chunk including metadata.
-    - 8/ : a position in the free-list. largebins are FIFO, so the last chunk will be used first.
+    - 8/ : a position in the free-list. largebins are sorted in descending order of size,
+           and malloc takes the smallest chunk that fits (the second one if there are several of the size).
     -  /8: parsed free-list length including corrupted chunks.
 ```
 
@@ -6975,8 +7006,10 @@ options:
 [4mFreed chunks[0m are displayed alternately in [38;2;238;120;0mmuted red[0m and [38;2;255;243;82mmuted yellow[0m.
 In both cases, the color is determined by whether the chunk's position from the beginning
 is odd-numbered or even-numbered.
+[4mCorrupted chunks[0m are displayed in [31mred[0m.
 
-The `convert` command limits height to 32000px; output may shrink based on heap size.
+The image is made with 16000px height (the limit of ImageMagick 6 on Ubuntu 22.04 and older),
+and then resized to the terminal; small chunks may disappear.
 ```
 
 ## `heap extract-heap-addr`
@@ -7070,7 +7103,8 @@ about the annotation:
   - "largebins[idx=98,sz=0x1000-0x1200][8/8]"
     - idx: 0-origin index that `i-th idx` means `bins[i*2 : (i+1)*2]`.
     - sz : the size range of the chunk including metadata.
-    - 8/ : a position in the free-list. largebins are FIFO, so the last chunk will be used first.
+    - 8/ : a position in the free-list. largebins are sorted in descending order of size,
+           and malloc takes the smallest chunk that fits (the second one if there are several of the size).
     -  /8: parsed free-list length including corrupted chunks.
 ```
 
@@ -7563,7 +7597,7 @@ options:
   --malloc_state MALLOC_STATE
                         use specific address for malloc_state.
   -b, --nb-byte NB_BYTE
-                        hexdump N first byte(s) inside the chunk data.
+                        hexdump N first byte(s) from the chunk base.
   -o, --peek-offset PEEK_OFFSET
                         the offset to start dumping from when using --nb-byte.
   -s, --safe-linking-decode
@@ -7620,8 +7654,10 @@ options:
 [4mFreed chunks[0m are displayed alternately in [38;2;238;120;0mmuted red[0m and [38;2;255;243;82mmuted yellow[0m.
 In both cases, the color is determined by whether the chunk's position from the beginning
 is odd-numbered or even-numbered.
+[4mCorrupted chunks[0m are displayed in [31mred[0m.
 
-The `convert` command limits height to 32000px; output may shrink based on heap size.
+The image is made with 16000px height (the limit of ImageMagick 6 on Ubuntu 22.04 and older),
+and then resized to the terminal; small chunks may disappear.
 ```
 
 ## `uclibc-ng-heap-dump`
@@ -10190,6 +10226,7 @@ read-system-register-for-qemu-arm TTBR0
 
 ```text
 Attempting to read a non-existing register raises an undefined exception.
+So does a register that the current mode cannot access (e.g., PL1 registers when stopped in USR mode).
 Context-dependent EL0 timer aliases CNTHPS_*, CNTHV_* and CNTHVS_* are not accepted.
 ```
 
@@ -16048,7 +16085,7 @@ pattern search aaab
 
 ## `print-format`
 
-Print bytes format in high level languages.
+Print memory as hex or as data literals for Python, C, JavaScript, or assembly.
 
 - Alias: `pf`, `gethex`
 
@@ -16064,9 +16101,9 @@ options:
   -h, --help            show this help message and exit
   -f {py,c,js,asm,hex,hexn,hexs,hexsn}
                         the output format. (default: hex)
-  -b {8,16,32,64}       the size of bit. (default: 8)
-  -l LENGTH             the length of array. (default: 256)
-  -t TO_ADDR            specify the end address instead of the length.
+  -b {8,16,32,64}       the bit width of each element. (default: 8)
+  -l LENGTH             the number of elements. (default: 256)
+  -t TO_ADDR            the end address (exclusive) instead of the length.
 ```
 
 ### Examples
