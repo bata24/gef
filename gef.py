@@ -2460,7 +2460,7 @@ class Elf:
     EM_AARCH64               = 183 # ARM 64-bit architecture (AARCH64)
     #                          184 # Reserved for future ARM use
     EM_AVR32                 = 185 # Atmel Corporation 32-bit microprocessor family
-    EM_STM8                  = 186 # STMicroeletronics STM8 8-bit microcontroller
+    EM_STM8                  = 186 # STMicroelectronics STM8 8-bit microcontroller
     EM_TILE64                = 187 # Tilera TILE64 multicore architecture family
     EM_TILEPRO               = 188 # Tilera TILEPro multicore architecture family
     EM_MICROBLAZE            = 189 # Xilinx MicroBlaze 32-bit RISC soft processor core
@@ -2540,7 +2540,7 @@ class Elf:
     EM_PPC_UNOFFICIAL        = 0x9025 # Cygnus PowerPC (unofficial)
     EM_ALPHA_UNOFFICIAL      = 0x9026 # Digital Alpha (unofficial)
     EM_M32R_UNOFFICIAL       = 0x9041 # Cygnus M32R (unofficial)
-    EM_V850_UNOFFICIAL       = 0x9080 # Cygnus V859 (unofficial)
+    EM_V850_UNOFFICIAL       = 0x9080 # Cygnus V850 (unofficial)
     EM_S390_OLD              = 0xa390 # IBM S/390 (obsolete)
     EM_XTENSA_UNOFFICIAL     = 0xabc7 # Old Xtensa (unofficial)
     EM_XSTORMY_UNOFFICIAL    = 0xad45 # xstormy16 (unofficial)
@@ -2642,7 +2642,8 @@ class Elf:
         if self.e_shoff and (self.e_shnum == 0 or self.e_shstrndx == 0xffff or self.e_phnum == 0xffff):
             try:
                 shdr = Elf.Shdr(self, self.e_shoff, resolve_name=False)
-            except gdb.MemoryError:
+            except (gdb.MemoryError, struct.error):
+                # struct.error is for out of the file
                 shdr = None
             if shdr is not None:
                 if self.e_shnum == 0:
@@ -2655,8 +2656,13 @@ class Elf:
         # phdr
         self.phdrs = []
         for i in range(self.e_phnum):
-            phdr = Elf.Phdr(self, self.e_phoff + self.e_phentsize * i)
-            self.phdrs.append(phdr)
+            try:
+                phdr = Elf.Phdr(self, self.e_phoff + self.e_phentsize * i)
+                self.phdrs.append(phdr)
+            except struct.error:
+                # The program header table is out of the file (e.g., truncated), so drop only it.
+                self.phdrs = []
+                break
 
         # shdr
         self.shdrs = []
@@ -2669,10 +2675,34 @@ class Elf:
                 # Even if the ELF is loaded, the section header is not loaded. Therefore, it is ignored.
                 self.shdrs = []
                 break
-        else:
-            # multiple SHT_NULLs are treated as abnormal
-            if sum(x.sh_type == Elf.Shdr.SHT_NULL for x in self.shdrs) > 1:
+            except struct.error:
+                # The section header table is out of the file (e.g., a broken e_shoff against analysis).
+                # The kernel does not use it, so keep the ELF header and the program headers.
                 self.shdrs = []
+                break
+        else:
+            # multiple SHT_NULLs are treated as abnormal (in memory, where the section header table may not be loaded)
+            if self.addr is not None and sum(x.sh_type == Elf.Shdr.SHT_NULL for x in self.shdrs) > 1:
+                self.shdrs = []
+
+        # In memory, a file offset is read at addr + offset. If .shstrtab is in the bss part of a PT_LOAD
+        # (from p_vaddr + p_filesz to p_vaddr + p_memsz), ld.so has filled it with zeros (e.g., libkrb5support.so.0.1).
+        if self.addr is not None and 0 < self.e_shstrndx < len(self.shdrs):
+            strtab = self.shdrs[self.e_shstrndx]
+            start = self.addr + strtab.sh_offset
+            end = start + strtab.sh_size
+            for phdr in self.phdrs:
+                if phdr.p_type != Elf.Phdr.PT_LOAD:
+                    continue
+                bss_start = phdr.p_vaddr + phdr.p_filesz
+                bss_end = phdr.p_vaddr + phdr.p_memsz
+                if self.is_pie():
+                    bss_start += self.addr
+                    bss_end += self.addr
+                if start < bss_end and bss_start < end:
+                    for shdr in self.shdrs:
+                        shdr.sh_name = "<unknown>"
+                    break
 
         if self.fd is not None:
             self.fd.close()
@@ -3510,6 +3540,7 @@ class Elf:
         SHT_LLVM_OFFLOADING                = 0x6fff_4c0b
         SHT_LLVM_LTO                       = 0x6fff_4c0c
         SHT_ANDROID_RELR                   = 0x6fff_ff00
+        SHT_GNU_SFRAME                     = 0x6fff_fff4
         SHT_GNU_ATTRIBUTES                 = 0x6fff_fff5
         SHT_GNU_HASH                       = 0x6fff_fff6
         SHT_GNU_LIBLIST                    = 0x6fff_fff7
@@ -3681,6 +3712,10 @@ class Elf:
             if self.sh_name == 0 or elf.e_shstrndx == 0:
                 self.sh_name = ""
                 return
+            if elf.e_shstrndx >= elf.e_shnum:
+                # same as readelf
+                self.sh_name = "<no-strings>"
+                return
 
             # name
             stroff = elf.e_shoff + elf.e_shentsize * elf.e_shstrndx
@@ -3694,10 +3729,10 @@ class Elf:
             elf.seek(offset + self.sh_name)
             self.sh_name = ""
             while True:
-                c = ord(elf.read(1))
-                if c == 0:
+                c = elf.read(1)
+                if c in [b"", b"\x00"]: # b"" is EOF of the file
                     break
-                self.sh_name += chr(c)
+                self.sh_name += chr(ord(c))
             return
 
         def __repr__(self):
@@ -37396,6 +37431,23 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 info2["top"] + double_ptrsize - info2["heap_base"],
             )
 
+        # the widths of the columns, shared by the legend, the lines and the extra lines
+        if self.use_current:
+            addr_width = AddressUtil.get_format_address_width() # the same as str(Address)
+        else:
+            addr_width = hex_width
+        offset_width = max(8, len("{:+#x}".format(max_size)))
+        line_width = max(6, len("{:+d}".format(max_size // double_ptrsize)))
+
+        # legend
+        fwidth = hex_width * 2 + 7 + double_ptrsize
+        fmt = " {:{:d}s} {:{:d}s} {:{:d}s}  {:{:d}s} {:{:d}s}"
+        legend = [
+            "Address", addr_width, "Offset", offset_width, "Line", line_width,
+            self.file_path1, fwidth, self.file_path2, fwidth,
+        ]
+        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
+
         color_dict = {
             # same, is_size, is_underline, is_used
             (True, True, True, True): "underline magenta",
@@ -37421,8 +37473,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
         end_offset_list1 = {c["end_offset"] for c in info1["chunks"] if c["size"] != 0}
         end_offset_list2 = {c["end_offset"] for c in info2["chunks"] if c["size"] != 0}
         if self.args.extra:
-            prefix_blank = " " * (ptrsize * 2 + 20)
-            fwidth = (double_ptrsize + 2) * 2 + 7 + double_ptrsize
+            prefix_blank = " " * (addr_width + offset_width + line_width + 4)
             extra_dict1 = {c["start_offset"]: c["extra"] for c in info1["chunks"]}
             extra_dict2 = {c["start_offset"]: c["extra"] for c in info2["chunks"]}
 
@@ -37516,24 +37567,25 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     self.out.append(line.rstrip())
 
             # make line
-            if is_alive():
+            if self.use_current:
                 addr = ProcessMap.lookup(info1["heap_base"] + pos)
             else:
-                addr = "{:#0{:d}x}".format(info1["heap_base"] + pos, ptrsize * 2 + 2)
+                # the address of another process is not colored by the current memory map
+                addr = "{:#0{:d}x}".format(info1["heap_base"] + pos, addr_width)
             if is_line_same:
                 line_prefix = " "
             else:
                 line_prefix = "+"
-            line = "{:s}{!s}|{:+#08x}|{:+06d}: {:s} | {:s} | {:s} | {:s} |".format(
+            line = "{:s}{!s}|{:+#0{:d}x}|{:+0{:d}d}: {:s} | {:s} | {:s} | {:s} |".format(
                 line_prefix,
-                addr, pos, pos // double_ptrsize,
+                addr, pos, offset_width, pos // double_ptrsize, line_width,
                 hex_1_joined, ascii_1_joined,
                 hex_2_joined, ascii_2_joined,
             )
             self.out.append(line)
         return
 
-    def compare_snapshots(self, ret1, file_path1, ret2, file_path2):
+    def compare_snapshots(self, ret1, file_path1, ret2, file_path2, use_current):
         if ret1 is None or ret2 is None:
             return
         raw1, info1 = ret1
@@ -37553,8 +37605,14 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                     else:
                         ptrsize = None
                 endian = info.get("endian")
-                if endian is None and is_alive():
-                    endian = Endian.endian_str()
+                if endian is None and ptrsize in (4, 8):
+                    # A snapshot before 2026-11-03 has no endian, so take the one that reads the size of the first chunk.
+                    chunk = info["chunks"][0]
+                    field = raw[chunk["start_offset"] + ptrsize:chunk["start_offset"] + ptrsize * 2]
+                    for candidate in ["little", "big"]:
+                        if len(field) == ptrsize and (int.from_bytes(field, candidate) & ~0b111) == chunk["size"]:
+                            endian = candidate
+                            break
                 chunks = info["chunks"]
                 if (
                     ptrsize not in (4, 8) or endian not in ("little", "big")
@@ -37579,26 +37637,20 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             err("Snapshot architecture mismatch")
             return
         self.compare_ptrsize, self.compare_endian = formats[0]
-        if is_alive():
-            current_endian = Endian.endian_str()
-            if self.compare_ptrsize != current_arch.ptrsize or self.compare_endian != current_endian:
-                err("Snapshot architecture mismatch")
+        if use_current:
+            # only the current memory needs to match the process (two files are compared with each other)
+            if self.compare_ptrsize != current_arch.ptrsize or self.compare_endian != Endian.endian_str():
+                err("Snapshot architecture mismatch with the current process")
                 return
         if len(raw1) % self.compare_ptrsize or len(raw2) % self.compare_ptrsize:
             err("Invalid snapshot size")
             return
 
-        # legend
-        self.out = []
-        fwidth = (self.compare_ptrsize * 2 + 2) * 2 + 7 + (self.compare_ptrsize * 2)
-        fmt = " {:{:d}s} {:8s} {:6s}  {:{:d}s} {:{:d}s}"
-        legend = [
-            "Address", self.compare_ptrsize * 2 + 2, "Offset", "Line",
-            file_path1, fwidth, file_path2, fwidth,
-        ]
-        self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-
         # doit
+        self.out = []
+        self.use_current = use_current
+        self.file_path1 = file_path1
+        self.file_path2 = file_path2
         try:
             self.compare(memoryview(raw1), info1, memoryview(raw2), info2)
         except (KeyError, TypeError, ValueError):
@@ -37615,6 +37667,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
             ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path2)
             file_path1 = os.path.basename(self.args.file_path)
             file_path2 = os.path.basename(self.args.file_path2)
+            use_current = False
         else:
             if not is_alive():
                 warn("No debugging session active")
@@ -37638,6 +37691,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
 
             ret1 = GlibcHeapSnapshotCommand.dump_heap(arena)
             file_path1 = "Current memory"
+            use_current = True
 
             if args.file_path is None:
                 # the last snapshot of the same arena (not of the last arena of --all)
@@ -37651,7 +37705,7 @@ class GlibcHeapSnapshotCompareCommand(GenericCommand, BufferingOutput):
                 ret2 = GlibcHeapSnapshotCommand.read_snapshot(self.args.file_path)
                 file_path2 = os.path.basename(self.args.file_path)
 
-        self.compare_snapshots(ret1, file_path1, ret2, file_path2)
+        self.compare_snapshots(ret1, file_path1, ret2, file_path2, use_current)
         return
 
 
@@ -37672,7 +37726,8 @@ class RegistersCommand(GenericCommand):
 
     parser.add_argument("registers", metavar="REGISTERS", nargs="*",
                         type=normalize_register,
-                        help="An array of registers. (default: current_arch.all_registers)")
+                        help="an array of registers. (default: current_arch.all_registers, "
+                             "with $fs_base/$gs_base of x86 and $cs:$ip etc. of x86_16)")
     parser.add_argument("-s", "--simple", action="store_true", help="skip dereference.")
     _syntax_ = parser.format_help()
 
@@ -37682,7 +37737,11 @@ class RegistersCommand(GenericCommand):
     ]).format(_cmdline_)
 
     def get_all_registers(self):
-        if is_x86():
+        if is_x86_16():
+            # $cs:$ip etc. are shown by dump_seg_reg_x86_16
+            all_registers = current_arch.all_registers + current_arch.virtual_registers
+            all_registers += list(current_arch.seg_extended_registers)
+        elif is_x86():
             all_registers = current_arch.all_registers + current_arch.virtual_registers
         else:
             all_registers = current_arch.all_registers
@@ -37717,15 +37776,17 @@ class RegistersCommand(GenericCommand):
             color = changed_color
         return color
 
-    def dump_seg_reg_x86_16(self):
+    def dump_seg_reg_x86_16(self, target_regs):
         """Format and return x86 16-bit segment register values with color and dereferencing."""
         lines = []
         for regname, (seg, reg) in current_arch.seg_extended_registers.items():
+            if regname not in target_regs:
+                continue
             segval = get_register(seg) & 0xffff
             regval = get_register(reg) & 0xffff
             value = current_arch.real2phys(seg, reg)
 
-            # colorling
+            # coloring
             color = self.get_regname_color(regname, value)
 
             # reg name
@@ -37733,8 +37794,10 @@ class RegistersCommand(GenericCommand):
 
             # dereference values
             value_s = AddressUtil.format_address(value, memalign_size=2.5)
-            line += " {:04x}:{:04x}: {:s}  ->  ".format(segval, regval, value_s)
-            line += AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
+            line += " {:04x}:{:04x}: {:s}".format(segval, regval, value_s)
+            derefs = AddressUtil.recursive_dereference_to_string(value, skip_idx=1)
+            if derefs:
+                line += "  ->  {:s}".format(derefs)
 
             lines.append(line)
         return lines
@@ -37746,8 +37809,20 @@ class RegistersCommand(GenericCommand):
         special_line = ""
         flag_line = ""
 
+        # the registers of n32 and x86_16 are wider than the pointer
+        if is_x86_16():
+            reg_width = 4
+        elif is_mipsn32():
+            reg_width = 8
+        else:
+            reg_width = current_arch.ptrsize
+
         lines = []
         for regname in target_regs:
+            if is_x86_16() and regname in current_arch.seg_extended_registers:
+                # shown by dump_seg_reg_x86_16
+                continue
+
             try:
                 reg = gdb.parse_and_eval(regname)
             except gdb.error:
@@ -37759,28 +37834,27 @@ class RegistersCommand(GenericCommand):
 
             # str(reg) is slow, so skip if unneeded
             if regname in unavailable_regs:
-                # for qiling framework, fs_base/gs_base (x86), cpsr/fpsr/fpcr (Aarch64) are unavailable
+                # for qiling framework, fs_base/gs_base (x86), cpsr/fpsr/fpcr (AArch64) are unavailable
                 if str(reg) == "<unavailable>":
                     padreg = aliased_registers.get(regname, regname).ljust(widest, " ")
                     line = "{:s}: {:s}".format(
                         Color.colorify(padreg, Config.get("theme.registers_register_name")),
                         Color.colorify("<unavailable>", "yellow underline"),
                     )
+                    if self.args.simple:
+                        line += " "
                     lines.append(line)
                     continue
 
             # value
-            try:
-                if hasattr(reg, "bytes"):
-                    reg_bytes = reg.bytes
-                    reg_len = len(reg_bytes)
-                else:
-                    reg_bytes = None
-                    reg_len = current_arch.ptrsize
-            except gdb.error:
-                # In the qiling framework, it may fail just by doing hasattr (e.g., bndstatus)
-                continue
-            if reg_len in (1, 2, 4, 8):
+            # use the size of the type, since GDB 14+ raises gdb.error for Value.bytes of <not saved> and <unavailable>,
+            # and GDB < 14 has no Value.bytes
+            reg_len = reg.type.sizeof
+            is_float = reg.type.strip_typedefs().code == gdb.TYPE_CODE_FLT
+            if is_float:
+                # int() of gdb truncates the float value (e.g., -2.5 to -2)
+                value = None
+            elif reg_len in (1, 2, 4, 8):
                 try:
                     value = int(reg)
                 except (gdb.error, TypeError, ValueError):
@@ -37790,10 +37864,20 @@ class RegistersCommand(GenericCommand):
 
             if value is None:
                 padreg = aliased_registers.get(regname, regname).ljust(widest, " ")
-                if reg_bytes is None:
-                    raw_value = str(reg)
-                else:
-                    raw_value = "bytes: {:s}".format(bytes(reg_bytes).hex())
+                try:
+                    if is_float:
+                        raw_value = str(reg)
+                    else:
+                        raw_value = "bytes: {:s}".format(bytes(reg.bytes).hex())
+                except (AttributeError, gdb.error):
+                    try:
+                        raw_value = str(reg)
+                    except gdb.error:
+                        # In the qiling framework, it may fail just by reading (e.g., bndstatus)
+                        continue
+                if raw_value in ("<not saved>", "<unavailable>"):
+                    # e.g., the registers of the caller frame not saved by the callee
+                    raw_value = Color.colorify(raw_value, "yellow underline")
                 if self.args.simple:
                     raw_value += " "
                 lines.append("{:s}: {:s}".format(
@@ -37806,7 +37890,7 @@ class RegistersCommand(GenericCommand):
             else:
                 value = AddressUtil.normalize_address(value, memalign_size=reg_len)
 
-            # colorling
+            # coloring
             color = self.get_regname_color(regname, value)
 
             # special (e.g., segment) registers go on their own line
@@ -37830,7 +37914,11 @@ class RegistersCommand(GenericCommand):
             line = "{:s}: ".format(Color.colorify(padreg, color))
             if self.args.simple:
                 # not dereference
-                line += "{:s} ".format(ProcessMap.lookup(value).long_fmt())
+                if is_x86_16() or is_mipsn32():
+                    # Address.long_fmt truncates the value to the pointer size
+                    line += "{:s} ".format(AddressUtil.format_address(value, memalign_size=reg_width, long_fmt=True))
+                else:
+                    line += "{:s} ".format(ProcessMap.lookup(value).long_fmt())
             else:
                 # dereference values
                 if is_x86_16():
@@ -37849,7 +37937,7 @@ class RegistersCommand(GenericCommand):
             lines.append(line)
 
         if self.args.simple:
-            one_width = widest + 5 + current_arch.ptrsize * 2
+            one_width = widest + 5 + reg_width * 2
             nb = max(1, GefUtil.get_terminal_size()[1] // one_width)
             lines = ["".join(r) for r in slicer(lines, nb)]
 
@@ -37861,7 +37949,7 @@ class RegistersCommand(GenericCommand):
 
         if not self.args.simple:
             if is_x86_16():
-                lines += self.dump_seg_reg_x86_16()
+                lines += self.dump_seg_reg_x86_16(target_regs)
         return lines
 
     @Decorator.parse_args
@@ -37890,7 +37978,7 @@ class RopperCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("args", metavar="ROPPER_OPTIONS", nargs="*",
-                        help="An array of arguments to pass as is to the ropper command. (default: %(default)s)")
+                        help="An array of arguments to pass as is to the ropper command. (default: --file <debuggee>)")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -37903,76 +37991,21 @@ class RopperCommand(GenericCommand):
     _help_ = None
     _help_examples_ = None
 
-    def print_help(self):
-        self.usage()
+    def run_ropper(self, argv, capture=False, console=False):
+        """Run the loaded ropper module in a child process. If capture is True, return the output."""
+        import warnings
 
-        ropper_bin = GefUtil.which("ropper")
-        if self._help_ is None:
-            self._help_ = subprocess.check_output([ropper_bin, "--help"]).decode("utf-8")
-        if self._help_examples_ is None:
-            self._help_examples_ = subprocess.check_output([ropper_bin, "--help-examples"]).decode("utf-8")
-
-        help_text = titlify("gef --help")
-        help_text += self._help_
-        help_text += titlify("gef --help-examples")
-        help_text += self._help_examples_
-        gef_print(help_text, less=True)
-        return
-
-    # Need not @Decorator.parse_args because argparse can't stop interpreting options for ropper.
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
-    @ModuleLoader.load_ropper
-    def do_invoke(self, argv):
-        if "-h" in argv or "--help" in argv:
-            self.print_help()
-            return
-
-        filepath = None
-        for i, arg in enumerate(argv):
-            if arg in ("-f", "--file"):
-                if i + 1 >= len(argv):
-                    self.print_help()
-                    return
-                filepath = argv[i + 1]
-            elif arg.startswith("--file="):
-                filepath = arg.split("=", 1)[1]
-            elif arg.startswith("-f") and len(arg) > 2:
-                filepath = arg[2:]
-
-        remote_copy = None
-        if filepath is None:
-            filepath = Path.get_filepath()
-            if filepath is None and is_remote_debug():
-                remote_path = Path.get_remote_filepath()
-                if remote_path:
-                    fd, remote_copy = GefUtil.mkstemp(prefix="ropper-", suffix="-" + os.path.basename(remote_path))
-                    os.close(fd)
-                    try:
-                        gdb.execute("remote get {:s} {:s}".format(
-                            GefUtil.quote_gdb_argument(remote_path), GefUtil.quote_gdb_argument(remote_copy),
-                        ), to_string=True)
-                    except gdb.error as e:
-                        os.unlink(remote_copy)
-                        err("Could not retrieve remote binary: {!s}".format(e))
-                        return
-                    filepath = remote_copy
-            if filepath is None:
-                err("Missing info about file. Please set: `file /path/to/target_binary`")
-                return
-            argv.extend(["--file", filepath])
-
-        if not os.path.isfile(filepath):
-            if remote_copy:
-                os.unlink(remote_copy)
-            err("Invalid filepath")
-            return
+        if capture:
+            rfd, wfd = os.pipe()
 
         # ropper set up own autocompleter after which gdb/gef autocomplete don't work
         # due to fork/waitpid, child will be broken but parent will not change
-        gef_print(titlify(repr(filepath)))
         sys.stdout.flush()
         sys.stderr.flush()
-        pid = os.fork()
+        with warnings.catch_warnings():
+            # Python 3.12+ warns fork() of the multi-threaded gdb, but the child only runs ropper and exits
+            warnings.filterwarnings("ignore", message=r"This process .* is multi-threaded", category=DeprecationWarning)
+            pid = os.fork()
         if pid == 0:
             # Reorder GdbRemoveReadlineFinder in child processes so readline can be loaded.
             finder = None
@@ -37985,17 +38018,128 @@ class RopperCommand(GenericCommand):
                 sys.meta_path.append(finder)
             # doit
             try:
+                # The SIGINT handler of gdb restarts the blocking calls, then Ctrl-C kills only the workers of ropper and
+                # ropper waits for them forever. The handler of Python raises KeyboardInterrupt also in the workers.
+                signal.signal(signal.SIGINT, signal.default_int_handler)
+                if capture:
+                    # ropper writes to sys.stdout of the import time, which is gdb's stdout (fd 1), so connect it to the pipe
+                    os.close(rfd)
+                    os.dup2(wfd, 1)
+                sys.argv = ["ropper"] # argparse of ropper shows it as the program name
                 ropper = sys.modules["ropper"]
                 ropper.start(argv)
-            except (Exception, SystemExit):
+            except BaseException: # the child must not return to gdb, even by SystemExit or KeyboardInterrupt
                 pass
             sys.stdout.flush()
             sys.stderr.flush()
             os._exit(0)
-        else:
-            os.waitpid(pid, 0)
-        if remote_copy:
-            os.unlink(remote_copy)
+
+        output = None
+        if capture:
+            os.close(wfd)
+            with os.fdopen(rfd) as f:
+                output = f.read()
+
+        # gdb restarts os.waitpid on SIGINT, so poll it to get KeyboardInterrupt of Ctrl-C by time.sleep
+        while True:
+            try:
+                wpid, _ = os.waitpid(pid, os.WNOHANG)
+                if wpid != 0:
+                    break
+                time.sleep(0.1)
+            except KeyboardInterrupt:
+                if console:
+                    # the console of ropper handles Ctrl-C by itself
+                    continue
+                # ropper may ignore KeyboardInterrupt and keep running (e.g., while removing double gadgets)
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                except OSError:
+                    pass
+                raise
+        return output
+
+    def print_help(self):
+        self.usage()
+
+        # the ropper command may not be in PATH (e.g., venv-gef), so use the loaded module
+        if self._help_ is None:
+            self._help_ = self.run_ropper(["--help"], capture=True)
+        if self._help_examples_ is None:
+            self._help_examples_ = self.run_ropper(["--help-examples"], capture=True)
+
+        help_text = [
+            titlify("ropper --help"),
+            self._help_.rstrip(),
+            titlify("ropper --help-examples"),
+            self._help_examples_.rstrip(),
+        ]
+        gef_print("\n".join(help_text), less=True)
+        return
+
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for ropper.
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
+    @ModuleLoader.load_ropper
+    def do_invoke(self, argv):
+        if "-h" in argv or "--help" in argv:
+            self.print_help()
+            return
+
+        # Interpret the options by the parser of ropper, since it accepts abbreviations (`--fil`) and joined options (`-sf`).
+        # If it fails, pass them as is, and ropper reports the error.
+        Options = sys.modules["ropper"].Options
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                ropper_args = Options._createArgParser(object.__new__(Options)).parse_args(argv)
+        except (AttributeError, SystemExit):
+            ropper_args = None
+
+        files = []
+        need_file = ropper_args is not None
+        if ropper_args is not None:
+            if ropper_args.file:
+                files = ropper_args.file
+            # the options that work without a file (Options._analyseArguments of ropper)
+            for key in ["file", "version", "asm", "disasm", "clear_cache", "help_examples", "console"]:
+                if getattr(ropper_args, key, None):
+                    need_file = False
+
+        remote_copy = None
+        try:
+            if need_file:
+                filepath = Path.get_filepath()
+                if filepath is None and is_remote_debug():
+                    remote_path = Path.get_remote_filepath()
+                    if remote_path:
+                        fd, remote_copy = GefUtil.mkstemp(prefix="ropper-", suffix="-" + os.path.basename(remote_path))
+                        os.close(fd)
+                        try:
+                            gdb.execute("remote get {:s} {:s}".format(
+                                GefUtil.quote_gdb_argument(remote_path), GefUtil.quote_gdb_argument(remote_copy),
+                            ), to_string=True)
+                        except gdb.error as e:
+                            err("Could not retrieve remote binary: {!s}".format(e))
+                            return
+                        filepath = remote_copy
+                if filepath is None:
+                    err("Missing info about file. Please set: `file /path/to/target_binary`")
+                    return
+                argv.extend(["--file", filepath])
+                files = [filepath]
+
+            for filepath in files:
+                if not os.path.isfile(filepath):
+                    err("Invalid filepath: {!r}".format(filepath))
+                    return
+
+            if files:
+                gef_print(titlify(" ".join(repr(x) for x in files)))
+            self.run_ropper(argv, console=getattr(ropper_args, "console", False))
+        finally:
+            # also on KeyboardInterrupt of Ctrl-C
+            if remote_copy:
+                os.unlink(remote_copy)
         return
 
 
@@ -38141,7 +38285,7 @@ class RpCommand(GenericCommand, BufferingOutput):
             path = args.file
         elif args.kernel:
             if not is_qemu_system():
-                err("--kernel are supported under qemu-system only")
+                err("--kernel is supported under qemu-system only")
                 return
 
             info("Wait for memory scan")
@@ -38454,12 +38598,13 @@ class AsmListCommand(GenericCommand):
     _category_ = "01-e. Debugging Support - Assemble"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch)")
-    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode)")
+    parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch, or X86)")
+    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode, or 64)")
     parser.add_argument("-e", dest="big_endian", action="store_true", help="use big-endian.")
-    parser.add_argument("-b", dest="nbyte", type=int, help="filter by the length of asm byte.")
-    parser.add_argument("-f", dest="include", action="append", help="filter by specified string.")
-    parser.add_argument("-v", dest="exclude", action="append", help="filter by specified string.")
+    parser.add_argument("-b", dest="nbyte", type=int, help="filter by the instruction length in bytes.")
+    parser.add_argument("-f", dest="include", action="append",
+                        help="show only the lines with the specified string. (all of them must match)")
+    parser.add_argument("-v", dest="exclude", action="append", help="hide the lines with the specified string.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -38475,7 +38620,7 @@ class AsmListCommand(GenericCommand):
         "- 2E/36/3E/26/64/65 (CS/SS/DS/ES/FS/GS override prefix) are ignored",
         "- 2E/3E (branch hint prefix) are ignored",
         "- 66 (operand size prefix) is included",
-        "- 67 (address size prefix) is ignored",
+        "- 67 (address size prefix) is included only in the entries that have it (e.g., jecxz, loop)",
         "- 40-4F (REX prefix) are ignored",
         "- C4/C5 (VEX prefix) are ignored",
         "- 8F (XOP prefix) is ignored",
@@ -38490,13 +38635,21 @@ class AsmListCommand(GenericCommand):
         if (arch, mode) in self.cache:
             return self.cache[arch, mode]
 
+        capstone = sys.modules["capstone"]
+        if mode == capstone.CS_MODE_16:
+            bits = 16
+        elif mode == capstone.CS_MODE_32:
+            bits = 32
+        else:
+            bits = 64
+
         DISP64 = "1122334455667788"
         DISP32 = "11223344"
         DISP16 = "1122"
         DISP8 = "11"
 
         @Cache.cache_this_session
-        def get_typical_bytecodes_modrm(reg_value):
+        def get_typical_bytecodes_modrm(reg_value, addr16):
             mod_list = range(4)
             assert 0 <= reg_value <= 7
             reg_list = [reg_value]
@@ -38506,7 +38659,15 @@ class AsmListCommand(GenericCommand):
             bytecodes = []
             for mod, reg, rm in itertools.product(mod_list, reg_list, rm_list):
                 modrm = "{:02X}".format((mod << 6) | (reg << 3) | rm)
-                if mod == 0b00:
+                if addr16:
+                    # the 16-bit addressing has no SIB, and its displacement is 16-bit
+                    if mod == 0b01: # [REG + disp8]
+                        bytecode = modrm + DISP8
+                    elif mod == 0b10: # [REG + disp16]
+                        bytecode = modrm + DISP16
+                    else: # [REG] or REG (rm=110 of mod=00 is [disp16], but rm is 000 or 100 here)
+                        bytecode = modrm
+                elif mod == 0b00:
                     if rm == 0b101: # special case; [REG + disp32]
                         bytecode = modrm + DISP32
                     elif rm == 0b100: # use sib; [INDEX * SCALE + BASE]
@@ -38541,8 +38702,11 @@ class AsmListCommand(GenericCommand):
             return bytecodes
 
         def get_typical_bytecodes(opcodes):
+            tokens = opcodes.split()
+            # 67 switches the address size (16-bit <-> 32-bit, 64-bit -> 32-bit)
+            addr16 = (bits == 16 and "67" not in tokens) or (bits == 32 and "67" in tokens)
             bytecodes = []
-            for operand in opcodes.split():
+            for operand in tokens:
                 if operand in ["ib", "cb"]:
                     bytecode = [DISP8]
                 elif operand in ["iw", "cw"]:
@@ -38552,9 +38716,9 @@ class AsmListCommand(GenericCommand):
                 elif operand in ["iq"]:
                     bytecode = [DISP64]
                 elif operand in ["/0", "/1", "/2", "/3", "/4", "/5", "/6", "/7"]:
-                    bytecode = get_typical_bytecodes_modrm(int(operand[1]))
+                    bytecode = get_typical_bytecodes_modrm(int(operand[1]), addr16)
                 elif operand == "/r":
-                    bytecode = get_typical_bytecodes_modrm(0)
+                    bytecode = get_typical_bytecodes_modrm(0, addr16)
                 elif operand.endswith(("+r", "+i")):
                     b = int(operand.split("+")[0], 16)
                     bytecode = ["{:02X}".format(b + x) for x in range(8)]
@@ -38563,37 +38727,53 @@ class AsmListCommand(GenericCommand):
                 bytecodes.append(bytecode)
             return ["".join(b) for b in itertools.product(*bytecodes)]
 
+        def parse_x86_json(x86):
+            x86 = x86.split(b"// ${JSON:BEGIN}", 1)[1].split(b"// ${JSON:END}", 1)
+            if len(x86) != 2:
+                raise ValueError("Missing JSON end marker")
+            x86 = json.loads(x86[0])
+            if not isinstance(x86, dict) or not isinstance(x86.get("instructions"), list):
+                raise ValueError("Missing instruction list")
+            for insn in x86["instructions"]:
+                if not isinstance(insn, list) or len(insn) < 5:
+                    raise ValueError("Invalid instruction entry")
+                if not isinstance(insn[1], str):
+                    raise ValueError("Invalid operands")
+                if not isinstance(insn[3], str) or not insn[3].strip() or not isinstance(insn[4], str):
+                    raise ValueError("Invalid opcode or attributes")
+            return x86
+
         def load_x86_json():
             x86data_js = os.path.join(GEF_TEMP_DIR, "x86data.js")
             if os.path.exists(x86data_js) and os.path.getsize(x86data_js) > 0:
-                x86 = open(x86data_js, "rb").read()
-            else:
-                url = "https://raw.githubusercontent.com/bata24/gef/dev/asmdb/x86data.js"
-                x86 = http_get(url)
-                if x86 is None:
-                    err("Connection timed out: {:s}".format(url))
-                    return None
-                open(x86data_js, "wb").write(x86)
+                try:
+                    return parse_x86_json(open(x86data_js, "rb").read())
+                except (IndexError, ValueError, UnicodeDecodeError):
+                    # a broken cache (e.g., an HTML page of a captive portal, or a file cut by no space), so get it again
+                    os.unlink(x86data_js)
 
+            url = "https://raw.githubusercontent.com/bata24/gef/dev/asmdb/x86data.js"
+            x86 = http_get(url)
+            if x86 is None:
+                err("Connection timed out: {:s}".format(url))
+                return None
             try:
-                x86 = x86.split(b"// ${JSON:BEGIN}", 1)[1].split(b"// ${JSON:END}", 1)
-                if len(x86) != 2:
-                    raise ValueError("Missing JSON end marker")
-                x86 = json.loads(x86[0])
-                if not isinstance(x86, dict) or not isinstance(x86.get("instructions"), list):
-                    raise ValueError("Missing instruction list")
-                for insn in x86["instructions"]:
-                    if not isinstance(insn, list) or len(insn) < 5:
-                        raise ValueError("Invalid instruction entry")
-                    if not isinstance(insn[3], str) or not insn[3].strip() or not isinstance(insn[4], str):
-                        raise ValueError("Invalid opcode or attributes")
-                return x86
+                parsed = parse_x86_json(x86)
             except (IndexError, ValueError, UnicodeDecodeError) as e:
                 err("Invalid instruction data: {!s}".format(e))
                 return None
 
+            # cache it after the validation, through a temporary file, since another gdb may read it
+            try:
+                fd, tmp_path = GefUtil.mkstemp(prefix="x86data-")
+                with os.fdopen(fd, "wb") as f:
+                    f.write(x86)
+                os.replace(tmp_path, x86data_js)
+            except OSError as e:
+                warn("Failed to cache instruction data: {!s}".format(e))
+            return parsed
+
         # load capstone
-        capstone = sys.modules["capstone"]
         try:
             cs = capstone.Cs(arch, mode)
         except capstone.CsError:
@@ -38622,12 +38802,40 @@ class AsmListCommand(GenericCommand):
         #x86_insns.append(["xbts", "", "", "0F A6", "Undocumented"]) # removed now
         #x86_insns.append(["ibts", "", "", "0F A7", "Undocumented"]) # removed now
 
+        # The bytes made from the pattern of an entry may be another instruction that has its own exact entry
+        # (e.g., 0F 01 /7 of invlpg makes 0F 01 F8 of swapgs), so the exact entries go first to claim them.
+        exact_insns = []
+        pattern_insns = []
+        for insn in x86_insns:
+            for token in insn[3].split():
+                if token in ["/r", "/0", "/1", "/2", "/3", "/4", "/5", "/6", "/7"] or token.endswith(("+r", "+i")):
+                    pattern_insns.append(insn)
+                    break
+            else:
+                exact_insns.append(insn)
+        x86_insns = exact_insns + pattern_insns
+
         # parse it
         valid_patterns = []
         seen_patterns = set()
         for insn in x86_insns:
             opcodes = insn[3]
             attr = insn[4].split()
+
+            # x86data is for the 32-bit mode, but the operand size of the 16-bit mode is 16-bit without 66
+            if bits == 16:
+                tokens = opcodes.split()
+                if "66" in tokens:
+                    swap = {"iw": "id", "cw": "cd"}
+                else:
+                    swap = {"id": "iw", "cd": "cw"}
+                opcodes = " ".join(swap.get(x, x) for x in tokens)
+
+            # X86 is only for the 16/32-bit mode, X64 is only for the 64-bit mode
+            if "X86" in attr and bits == 64:
+                continue
+            if "X64" in attr and bits != 64:
+                continue
 
             # filter ignore prefix pattern
             if "REX.W" in opcodes.split():
@@ -38642,6 +38850,10 @@ class AsmListCommand(GenericCommand):
             # e.g., "FF /2" -> ["FF10", "FF5011", ...]
             try:
                 bytecodes = get_typical_bytecodes(opcodes)
+                # moffs is only in the operands, and its size is the address size (e.g., A1 of `mov eax, moff32`)
+                if "moff" in insn[1]:
+                    disp = {16: DISP16, 32: DISP32, 64: DISP64}[bits]
+                    bytecodes = [b + disp for b in bytecodes]
                 bytecodes = [(hex_code, bytes.fromhex(hex_code)) for hex_code in bytecodes]
             except ValueError:
                 err("Invalid opcode data: {:s}".format(opcodes))
@@ -38653,10 +38865,14 @@ class AsmListCommand(GenericCommand):
                 if hex_code in seen_patterns:
                     continue
                 # disasm
-                asm = next(cs.disasm(code, 0), None)
-                if asm is None:
+                asms = list(cs.disasm(code, 0))
+                # the instruction must use up the code (e.g., `mov cr` ignores mod, and ud1 of capstone has no ModRM)
+                if not asms or sum(x.size for x in asms) != len(code):
                     continue
-                opstr = asm.mnemonic + " " + asm.op_str
+                # capstone splits 9B of fsave etc. as `wait`
+                if len(asms) > 1 and not opcodes.startswith("9B"):
+                    continue
+                opstr = "; ".join(asm.mnemonic + " " + asm.op_str for asm in asms)
                 # add
                 valid_patterns.append([hex_code, opstr, opcodes, attr])
                 seen_patterns.add(hex_code)
@@ -38667,66 +38883,34 @@ class AsmListCommand(GenericCommand):
     @Decorator.parse_args
     @ModuleLoader.load_capstone
     def do_invoke(self, args):
-        if (args.arch, args.mode) == (None, None):
-            if is_alive():
-                if current_arch is None:
-                    err("Unsupported architecture")
-                    return
-                if current_arch.arch != "X86":
-                    err("Unsupported other than x86/x64")
-                    return
-                big_endian = args.big_endian or Endian.is_big_endian()
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch=current_arch.arch, mode=current_arch.mode, endian=big_endian,
-                )
-                arch_mode_s = ":".join([current_arch.arch, current_arch.mode])
-                if big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-            else:
-                # if not alive, defaults to x86-64
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch="X86", mode="64", endian=args.big_endian,
-                )
-                arch_mode_s = "X86:64"
-                if args.big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-        elif not args.arch:
-            err("An architecture (-a) must be provided")
-            return
-        elif not args.mode:
-            err("A mode (-m) must be provided")
-            return
-        elif args.arch in ["SPARC", "S390X", "M68K"] and args.big_endian is False:
-            # capstone gives no error so check here
-            err("A big endian flag (-e) must be provided")
-            return
+        # the omitted one of -a and -m comes from current_arch (it is set by `file` even if not alive), or X86:64
+        if args.arch is not None:
+            arch_s = args.arch
+        elif current_arch is not None:
+            arch_s = current_arch.arch
         else:
-            try:
-                arch, mode = UnicornKeystoneCapstone.get_capstone_arch(
-                    arch=args.arch, mode=args.mode, endian=args.big_endian,
-                )
-                arch_mode_s = ":".join([args.arch, args.mode])
-                if args.big_endian:
-                    endian_s = "big"
-                else:
-                    endian_s = "little"
-            except AttributeError:
-                self.usage()
-                return
+            arch_s = "X86"
+        if args.mode is not None:
+            mode_s = args.mode
+        elif current_arch is not None and current_arch.arch == arch_s:
+            mode_s = current_arch.mode
+        else:
+            mode_s = "64"
+
+        if arch_s != "X86":
+            err("Only x86/x64 is supported")
+            return
+        if args.big_endian:
+            err("X86 is not big endian")
+            return
+        try:
+            arch, mode = UnicornKeystoneCapstone.get_capstone_arch(arch=arch_s, mode=mode_s, endian=False)
+        except AttributeError:
+            self.usage()
+            return
 
         # list bytecode pattern
-        if arch_mode_s.startswith("X86:"):
-            if endian_s == "big":
-                err("X86 is not big endian")
-                return
-            patterns = self.listup_x86(arch, mode)
-        else:
-            err("Unsupported other than x86/x64")
-            return
+        patterns = self.listup_x86(arch, mode)
 
         if patterns is None:
             err("Failed to list entries")
@@ -38949,7 +39133,7 @@ class ElfInfoCommand(GenericCommand):
         Elf.EM_88K                   : "Motorola m88k family",
         Elf.EM_IAMCU                 : "Intel MCU",
         Elf.EM_860                   : "Intel 80860",
-        Elf.EM_MIPS                  : "MIPS R3000 big-endian",
+        Elf.EM_MIPS                  : "MIPS R3000",
         Elf.EM_S370                  : "IBM System/370 Processor",
         Elf.EM_MIPS_RS3_LE           : "MIPS RS3000 Little-endian",
         Elf.EM_PARISC                : "Hewlett-Packard PA-RISC",
@@ -39086,7 +39270,7 @@ class ElfInfoCommand(GenericCommand):
         Elf.EM_AARCH64               : "ARM 64-bit architecture (AARCH64)",
         184                          : "Reserved for future ARM use",
         Elf.EM_AVR32                 : "Atmel Corporation 32-bit microprocessor family",
-        Elf.EM_STM8                  : "STMicroeletronics STM8 8-bit microcontroller",
+        Elf.EM_STM8                  : "STMicroelectronics STM8 8-bit microcontroller",
         Elf.EM_TILE64                : "Tilera TILE64 multicore architecture family",
         Elf.EM_TILEPRO               : "Tilera TILEPro multicore architecture family",
         Elf.EM_MICROBLAZE            : "Xilinx MicroBlaze 32-bit RISC soft processor core",
@@ -39165,7 +39349,7 @@ class ElfInfoCommand(GenericCommand):
         Elf.EM_PPC_UNOFFICIAL        : "Cygnus PowerPC (unofficial)",
         Elf.EM_ALPHA_UNOFFICIAL      : "Digital Alpha (unofficial)",
         Elf.EM_M32R_UNOFFICIAL       : "Cygnus M32R (unofficial)",
-        Elf.EM_V850_UNOFFICIAL       : "Cygnus V859 (unofficial)",
+        Elf.EM_V850_UNOFFICIAL       : "Cygnus V850 (unofficial)",
         Elf.EM_S390_OLD              : "IBM S/390 (obsolete)",
         Elf.EM_XTENSA_UNOFFICIAL     : "Old Xtensa (unofficial)",
         Elf.EM_XSTORMY_UNOFFICIAL    : "xstormy16 (unofficial)",
@@ -39197,7 +39381,7 @@ class ElfInfoCommand(GenericCommand):
         Elf.Phdr.PT_GNU_STACK     : "GNU_STACK",
         Elf.Phdr.PT_GNU_RELRO     : "GNU_RELRO",
         Elf.Phdr.PT_GNU_PROPERTY  : "GNU_PROPERTY",
-        Elf.Phdr.PT_GNU_SFRAME    : "SFRAME",
+        Elf.Phdr.PT_GNU_SFRAME    : "GNU_SFRAME",
         Elf.Phdr.PT_SUNWBSS       : "SUNWBSS",
         Elf.Phdr.PT_SUNWSTACK     : "SUNWSTACK",
     }
@@ -39249,6 +39433,7 @@ class ElfInfoCommand(GenericCommand):
         Elf.Shdr.SHT_LLVM_OFFLOADING          : "LLVM_OFFLOADING",
         Elf.Shdr.SHT_LLVM_LTO                 : "LLVM_LTO",
         Elf.Shdr.SHT_ANDROID_RELR             : "ANDROID_RELR",
+        Elf.Shdr.SHT_GNU_SFRAME               : "GNU_SFRAME",
         Elf.Shdr.SHT_GNU_ATTRIBUTES           : "GNU_ATTRIBUTES",
         Elf.Shdr.SHT_GNU_HASH                 : "GNU_HASH",
         Elf.Shdr.SHT_GNU_LIBLIST              : "GNU_LIBLIST",
@@ -39306,8 +39491,15 @@ class ElfInfoCommand(GenericCommand):
         return
 
     def phdr_info(self, elf):
+        if elf.e_phnum == 0:
+            # e.g., a relocatable object
+            self.out.append("There are no program headers in this file.")
+            return
         if not elf.phdrs:
-            self.out.append("Not loaded")
+            if elf.addr is None:
+                self.out.append("Could not read (out of the file)")
+            else:
+                self.out.append("Not loaded")
             return
         name_width = max([len(self.ptype.get(p.p_type, "UNKNOWN")) for p in elf.phdrs])
 
@@ -39331,8 +39523,15 @@ class ElfInfoCommand(GenericCommand):
         return
 
     def shdr_info(self, elf):
+        if elf.e_shnum == 0:
+            # e.g., sstrip, UPX and core
+            self.out.append("There are no sections in this file.")
+            return
         if not elf.shdrs:
-            self.out.append("Not loaded")
+            if elf.addr is None:
+                self.out.append("Could not read (out of the file or broken)")
+            else:
+                self.out.append("Not loaded")
             return
 
         name_width = max([len(s.sh_name) for s in elf.shdrs])
@@ -39383,6 +39582,8 @@ class ElfInfoCommand(GenericCommand):
                     self.out.append("Skip because too large ({:#x} > 0x1000)".format(s.sh_size))
                 elif elf.filename is None:
                     self.out.append("Skip because it is parsed from memory")
+                elif s.sh_offset + s.sh_size > os.path.getsize(elf.filename):
+                    self.out.append("Skip because it is out of the file ({:#x} > EOF)".format(s.sh_offset + s.sh_size))
                 else:
                     with open(elf.filename, "rb") as fd:
                         fd.seek(s.sh_offset, 0)
@@ -46100,7 +46301,8 @@ class ContextRegistersCommand(GenericCommand):
 
         for reg in current_arch.all_registers:
             try:
-                ContextRegistersCommand.old_registers[reg] = get_register(reg)
+                # registers compares the full width (e.g., 64-bit of n32), so do not truncate it to the pointer size
+                ContextRegistersCommand.old_registers[reg] = get_register(reg, full_width=True)
             except Exception:
                 ContextRegistersCommand.old_registers[reg] = 0
 
@@ -46276,7 +46478,11 @@ class ContextRegistersCommand(GenericCommand):
 
     @Cache.cache_this_session
     def get_target_registers(self):
-        if is_x86():
+        if is_x86_16():
+            # $cs:$ip etc. are shown by RegistersCommand.dump_seg_reg_x86_16
+            all_registers = current_arch.all_registers + current_arch.virtual_registers
+            all_registers += list(current_arch.seg_extended_registers)
+        elif is_x86():
             all_registers = current_arch.all_registers + current_arch.virtual_registers
         else:
             all_registers = current_arch.all_registers
@@ -198866,6 +199072,7 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
             ret2 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path2)
             file_path1 = os.path.basename(args.file_path)
             file_path2 = os.path.basename(args.file_path2)
+            use_current = False
         else:
             if not is_alive():
                 warn("No debugging session active")
@@ -198891,6 +199098,7 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
             for line in self.out:
                 gef_print(line)
             file_path1 = "Current memory"
+            use_current = True
 
             if args.file_path is None:
                 if not hasattr(UclibcNgSnapshotCommand, "last_dumped_filepath"):
@@ -198902,7 +199110,7 @@ class UclibcNgSnapshotCompareCommand(UclibcNgSnapshotCommand, GlibcHeapSnapshotC
                 ret2 = GlibcHeapSnapshotCommand.read_snapshot(args.file_path)
                 file_path2 = os.path.basename(args.file_path)
 
-        self.compare_snapshots(ret1, file_path1, ret2, file_path2)
+        self.compare_snapshots(ret1, file_path1, ret2, file_path2, use_current)
         return
 
 
