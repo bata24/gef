@@ -1134,7 +1134,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
         - ARMv8 PAC, ARMv8 MTE
         - RPATH, RUNPATH
         - Clang CFI/SafeStack
-        - System-ASLR, GDB ASLR setting
+        - System ASLR, GDB ASLR setting
     - It supports parsing remote binary (if download feature is available).
     - ![](images/checksec.png)
 - `aslr`: shows or changes GDB's ASLR setting.

@@ -2862,11 +2862,17 @@ class Elf:
             proc = subprocess.Popen(
                 [objdump_command, "-d", self.filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             )
+            decoded = False
             for _ in range(0x10000):
-                if kw in proc.stdout.readline():
+                line = proc.stdout.readline()
+                if kw in line:
                     proc.kill()
                     return True
+                if re.match(rb"\s*[0-9a-f]+:\s+(?:[0-9a-f]{2,8}\s+)+([a-z][a-z0-9]*)\b", line):
+                    decoded = True
             proc.kill()
+            if not decoded:
+                return None # e.g., objdump cannot disassemble the architecture
             return False
         return None # it means unknown
 
@@ -2877,7 +2883,13 @@ class Elf:
         phdr = self.get_phdr(Elf.Phdr.PT_GNU_STACK)
         if phdr:
             return not bool(phdr.p_flags & Elf.Phdr.PF_X)
-        return False
+
+        # Without PT_GNU_STACK, the kernel decides it by elf_read_implies_exec() and VM_STACK_DEFAULT_FLAGS.
+        if self.e_class == Elf.ELF_64_BITS and self.e_machine in (Elf.EM_AARCH64, Elf.EM_PPC64):
+            return True # the stack of a 64-bit task is not executable
+        if self.e_class == Elf.ELF_32_BITS and self.e_machine in (Elf.EM_386, Elf.EM_ARM, Elf.EM_PPC):
+            return False # READ_IMPLIES_EXEC makes all readable memory executable
+        return None # e.g., x86_64 is READ_IMPLIES_EXEC before Linux 5.8, and MIPS depends on RIXI
 
     def is_relro(self):
         # both partial and full have PT_GNU_RELRO
@@ -3186,15 +3198,21 @@ class Elf:
         proc = subprocess.Popen(
             [objdump_command, "-d", self.filename], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
+        decoded = False
         for _ in range(0x10000):
             line = proc.stdout.readline().strip()
             if not line:
                 continue
             insn = re.match(rb"\s*[0-9a-f]+:\s+(?:[0-9a-f]{2,8}\s+)+([a-z][a-z0-9]*)\b", line)
-            if insn and insn.group(1) in pac_ops:
+            if not insn:
+                continue
+            decoded = True
+            if insn.group(1) in pac_ops:
                 proc.kill()
                 return True
         proc.kill()
+        if not decoded:
+            return None # e.g., objdump cannot disassemble AArch64
         return False
 
     def checksec(self):
@@ -3202,13 +3220,16 @@ class Elf:
         Canary, NX, PIE, RELRO, Fortify, Static, Symbol, Debuginfo, CET,
         AArch64 features, RPATH/RUNPATH, Clang CFI/SafeStack, W^X, and text relocations."""
 
-        def exists_sym(dynstr, strtab, keywords, prefix=False):
+        def exists_sym(dynstr, strtab, keywords, prefix=False, regex=False):
             for table in [dynstr, strtab]:
                 if not table:
                     continue
                 for kw in keywords:
                     if prefix:
                         if any(sym.startswith(kw) for sym in table):
+                            return True
+                    elif regex:
+                        if any(re.fullmatch(kw, sym) for sym in table):
                             return True
                     elif kw in table:
                         return True
@@ -3233,11 +3254,21 @@ class Elf:
                     if self.is_pie() and self.vaddr_to_offset(strtab_addr) is not None:
                         strtab_addr += self.addr
                     dynstr = read_memory(strtab_addr, strtab_size, safe=True)
-        if dynstr:
+        # the empty .dynstr of static-pie has no names
+        if dynstr and dynstr.strip(b"\0"):
             dynstr = dynstr.split(b"\0")
+        else:
+            dynstr = None
         strtab = self.read_shdr(".strtab")
         if strtab:
             strtab = strtab.split(b"\0")
+
+        # The static glibc defines and calls __stack_chk_fail and __*_chk by itself (e.g., Ubuntu builds it with
+        # the stack protector), so these symbols do not tell whether the user code uses them.
+        static_glibc = False
+        if self.is_static():
+            rodata = self.read_shdr(".rodata") or b""
+            static_glibc = b"GLIBC_TUNABLES\0" in rodata # glibc 2.26~
 
         sec = {}
 
@@ -3261,6 +3292,8 @@ class Elf:
                 b"__intel_security_cookie", # for intel compiler
             ]
             sec["Canary"] = exists_sym(dynstr, strtab, keywords)
+        if static_glibc and sec["Canary"]:
+            sec["Canary"] = None # it means unknown
 
         # NX
         sec["NX"] = self.is_nx()
@@ -3301,11 +3334,81 @@ class Elf:
             b"__obstack_vprintf_chk",
             b"__syslog_chk",
             b"__vsyslog_chk",
+            # others that glibc 2.43 exports
+            b"__confstr_chk",
+            b"__explicit_bzero_chk",
+            b"__fdelt_chk",
+            b"__fgets_chk",
+            b"__fgets_unlocked_chk",
+            b"__fgetws_chk",
+            b"__fgetws_unlocked_chk",
+            b"__fread_chk",
+            b"__fread_unlocked_chk",
+            b"__getcwd_chk",
+            b"__getdomainname_chk",
+            b"__getgroups_chk",
+            b"__gethostname_chk",
+            b"__getlogin_r_chk",
+            b"__gets_chk",
+            b"__getwd_chk",
+            b"__inet_ntop_chk",
+            b"__inet_pton_chk",
+            b"__longjmp_chk",
+            b"__mbsnrtowcs_chk",
+            b"__mbsrtowcs_chk",
+            b"__mbstowcs_chk",
+            b"__memset_explicit_chk",
+            b"__mq_open_2",
+            b"__open64_2",
+            b"__open_2",
+            b"__openat64_2",
+            b"__openat_2",
+            b"__poll_chk",
+            b"__ppoll_chk",
+            b"__pread64_chk",
+            b"__pread_chk",
+            b"__ptsname_r_chk",
+            b"__read_chk",
+            b"__readlink_chk",
+            b"__readlinkat_chk",
+            b"__realpath_chk",
+            b"__recv_chk",
+            b"__recvfrom_chk",
+            b"__stpcpy_chk",
+            b"__stpncpy_chk",
+            b"__strcat_chk",
+            b"__strcpy_chk",
+            b"__strlcat_chk",
+            b"__strlcpy_chk",
+            b"__strncat_chk",
+            b"__strncpy_chk",
+            b"__ttyname_r_chk",
+            b"__wcpcpy_chk",
+            b"__wcpncpy_chk",
+            b"__wcrtomb_chk",
+            b"__wcscat_chk",
+            b"__wcscpy_chk",
+            b"__wcslcat_chk",
+            b"__wcslcpy_chk",
+            b"__wcsncat_chk",
+            b"__wcsncpy_chk",
+            b"__wcsnrtombs_chk",
+            b"__wcsrtombs_chk",
+            b"__wcstombs_chk",
+            b"__wctomb_chk",
+            b"__wmemcpy_chk",
+            b"__wmemmove_chk",
+            b"__wmempcpy_chk",
+            b"__wmemset_chk",
         ]
+        # the libc may have more (e.g., __strlen_chk and __FD_SET_chk of bionic)
+        fortify_pattern = rb"__\w+_chk|__\w*open\w*_2"
         if self.is_static() and self.is_stripped() and dynstr is None and strtab is None:
             sec["Fortify"] = None # it means unknown
         else:
-            sec["Fortify"] = exists_sym(dynstr, strtab, fortify_keywords)
+            sec["Fortify"] = exists_sym(dynstr, strtab, [fortify_pattern], regex=True)
+        if static_glibc and sec["Fortify"]:
+            sec["Fortify"] = None # it means unknown
 
         # Count only observable dynamic imports; this is not source-level coverage.
         imported_symbols = self.get_imported_symbols()
@@ -3313,9 +3416,9 @@ class Elf:
             sec["Fortified Imports"] = None
             sec["Unfortified Candidates"] = None
         else:
-            fortify_pairs = {keyword: keyword[2:-4] for keyword in fortify_keywords}
-            sec["Fortified Imports"] = len(imported_symbols & set(fortify_pairs))
-            sec["Unfortified Candidates"] = len(imported_symbols & set(fortify_pairs.values()))
+            unfortified = {re.sub(rb"^__|_(?:chk|2)$", b"", keyword) for keyword in fortify_keywords}
+            sec["Fortified Imports"] = len([sym for sym in imported_symbols if re.fullmatch(fortify_pattern, sym)])
+            sec["Unfortified Candidates"] = len(imported_symbols & unfortified)
 
         # CET flags via Ehdr
         if self.e_machine in (Elf.EM_X86_64, Elf.EM_386):
@@ -3337,8 +3440,9 @@ class Elf:
             sec["AArch64 BTI PLT"] = self.get_dynamic_value(0x7000_0001) is not None
             sec["AArch64 PAC PLT"] = self.get_dynamic_value(0x7000_0003) is not None
             sec["AArch64 MTE mode"] = self.get_dynamic_value(0x7000_0009)
-            sec["AArch64 MTE heap"] = self.get_dynamic_value(0x7000_000b) is not None
-            sec["AArch64 MTE stack"] = self.get_dynamic_value(0x7000_000c) is not None
+            # lld emits DT_AARCH64_MEMTAG_HEAP and DT_AARCH64_MEMTAG_STACK with 0 or 1
+            sec["AArch64 MTE heap"] = bool(self.get_dynamic_value(0x7000_000b))
+            sec["AArch64 MTE stack"] = bool(self.get_dynamic_value(0x7000_000c))
             sec["AArch64 MTE globals"] = self.get_dynamic_value(0x7000_000d) is not None
 
         # RPATH
@@ -7765,17 +7869,10 @@ class Checksec:
         # https://lore.kernel.org/lkml/1531342544.15351.37.camel@intel.com/
         sp = current_arch.sp
         with ContextManager.temporary_memory(sp, length=current_arch.ptrsize * 3):
-            res = gdb.execute("call-syscall arch_prctl 0x3001 {:#x}".format(sp), to_string=True) # ARCH_CET_STATUS
-            try:
-                output_line = res.splitlines()[-1]
-                ret = int(output_line.split()[2], 0)
-            except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
+            ret = Checksec.call_syscall("arch_prctl", [0x3001, sp]) # ARCH_CET_STATUS
+            if ret != 0:
                 return None
             sp_value = read_int_from_memory(sp)
-
-        # check ret
-        if ret != 0:
-            return None
         return sp_value
 
     @staticmethod
@@ -7784,16 +7881,10 @@ class Checksec:
         # https://www.kernel.org/doc/html/next/arch/x86/shstk.html
         sp = current_arch.sp
         with ContextManager.temporary_memory(sp, length=current_arch.ptrsize):
-            res = gdb.execute("call-syscall arch_prctl 0x5005 {:#x}".format(sp), to_string=True) # ARCH_SHSTK_STATUS
-            try:
-                output_line = res.splitlines()[-1]
-                ret = int(output_line.split()[2], 0)
-            except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
+            ret = Checksec.call_syscall("arch_prctl", [0x5005, sp]) # ARCH_SHSTK_STATUS
+            if ret != 0:
                 return None
             sp_value = read_int_from_memory(sp)
-
-        if ret != 0:
-            return None
         return sp_value
 
     @staticmethod
@@ -7811,7 +7902,7 @@ class Checksec:
             return None
         if is_remote_debug():
             remote_status = "/proc/{:d}/status".format(pid)
-            data = Path.read_remote_file(remote_status, as_byte=True) # qemu-user is failed here, it is ok
+            data = Path.read_remote_file(remote_status, as_byte=True)
             if not data:
                 return None
         else:
@@ -7838,13 +7929,7 @@ class Checksec:
         HWCAP2_MTE = 1 << 18
         if auxv and "AT_HWCAP2" in auxv and (auxv["AT_HWCAP2"] & HWCAP2_MTE) == 0:
             return None # Unsupported
-        res = gdb.execute("call-syscall prctl 0x38 0 0 0 0", to_string=True) # PR_GET_TAGGED_ADDR_CTRL
-        try:
-            output_line = res.splitlines()[-1]
-            ret = int(output_line.split()[2], 0)
-        except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
-            return None
-        return u2i(ret)
+        return Checksec.call_syscall("prctl", [0x38, 0, 0, 0, 0]) # PR_GET_TAGGED_ADDR_CTRL
 
     @staticmethod
     def get_pac_status():
@@ -7853,13 +7938,7 @@ class Checksec:
         HWCAP_PACG = 1 << 31
         if auxv and "AT_HWCAP" in auxv and (auxv["AT_HWCAP"] & (HWCAP_PACA | HWCAP_PACG)) == 0:
             return None # Unsupported
-        res = gdb.execute("call-syscall prctl 0x3d 0 0 0 0", to_string=True) # PR_PAC_GET_ENABLED_KEYS
-        try:
-            output_line = res.splitlines()[-1]
-            ret = int(output_line.split()[2], 0)
-        except (IndexError, ValueError): # call-syscall failed (e.g., $pc is not executable)
-            return None
-        return u2i(ret)
+        return Checksec.call_syscall("prctl", [0x3d, 0, 0, 0, 0]) # PR_PAC_GET_ENABLED_KEYS
 
     @staticmethod
     @Cache.cache_until_next
@@ -7867,17 +7946,30 @@ class Checksec:
         """Return the arm64 Guarded Control Stack status flags."""
         sp = current_arch.sp
         with ContextManager.temporary_memory(sp, length=current_arch.ptrsize):
-            try:
-                res = gdb.execute("call-syscall prctl 74 {:#x} 0 0 0".format(sp), to_string=True) # PR_GET_SHADOW_STACK_STATUS
-                output_line = res.splitlines()[-1]
-                ret = int(output_line.split()[2], 0)
-                status = read_int_from_memory(sp)
-            except (gdb.error, gdb.MemoryError, IndexError, ValueError):
+            ret = Checksec.call_syscall("prctl", [74, sp, 0, 0, 0]) # PR_GET_SHADOW_STACK_STATUS
+            if ret != 0:
                 return None
-
-        if ret != 0:
-            return None
+            status = read_int_from_memory(sp)
         return status
+
+    @staticmethod
+    def call_syscall(name, args):
+        """Return the signed result of the syscall (-errno on failure), or None if it could not be executed."""
+        syscall_table = Syscall.get_syscall_table()
+        if syscall_table is None or name not in syscall_table.name_table:
+            return None
+        entry = syscall_table.name_table[name]
+        # not via call-syscall, whose output is hard to parse and whose stop lines leak to a non-terminal
+        try:
+            ret = ExecSyscall(entry.nr, args).exec_code(check_complete=True)
+        except (gdb.error, gdb.MemoryError):
+            return None
+        if ret is None: # e.g., $pc is not executable
+            return None
+        errno = ExecSyscall.get_errno(ret)
+        if errno is not None:
+            return -errno
+        return u2i(ret["reg"][entry.ret_regs[0]], current_arch.ptrsize * 8)
 
 
 class Endian:
@@ -38961,8 +39053,27 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
         "{0:s} ./a.out",
     ]).format(_cmdline_)
 
-    def get_processes(self):
-        output = GefUtil.gef_execute_external([GefUtil.which("ps"), "auxww"], as_list=True)
+    def get_processes(self, remote):
+        processes = []
+        if remote:
+            # It is a table of `pid user command cores` via qXfer:osdata.
+            try:
+                output = gdb.execute("info os processes", to_string=True).splitlines()
+            except gdb.error:
+                output = []
+            for line in output[1:]:
+                fields = line.split()
+                if len(fields) >= 4:
+                    processes.append({"pid": fields[0], "user": fields[1], "command": " ".join(fields[2:-1])})
+            if processes:
+                return processes
+            warn("Could not get the processes of the remote, so the local ones are shown")
+
+        # procps replaces non-ASCII characters with `?` in the C locale
+        env = os.environ.copy()
+        env["LC_ALL"] = "C.UTF-8"
+        output = subprocess.check_output([GefUtil.which("ps"), "auxww"], stderr=subprocess.STDOUT, env=env)
+        output = output.decode("utf-8", "backslashreplace").splitlines()
         names = [x.lower().replace("%", "") for x in output[0].split()]
 
         for line in output[1:]:
@@ -38974,8 +39085,8 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
                     t[name] = " ".join(fields[i:])
                 else:
                     t[name] = fields[i]
-            yield t
-        return
+            processes.append(t)
+        return processes
 
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
@@ -38984,7 +39095,10 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
             if args.attach <= 0:
                 err("Invalid PID")
                 return
-            gdb.execute("attach {:d}".format(args.attach))
+            try:
+                gdb.execute("attach {:d}".format(args.attach))
+            except gdb.error as e:
+                err("{}".format(e))
             return
 
         try:
@@ -38993,8 +39107,18 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
             err("Invalid regex: {!s}".format(e))
             return
 
+        # `attach` passes the PID to the remote (e.g., vAttach of gdbserver --multi even before any process),
+        # so list the processes there.
+        connection = getattr(gdb.selected_inferior(), "connection", None) # GDB 11+
+        remote = is_remote_debug() or (connection is not None and connection.type == "extended-remote")
+        try:
+            processes = self.get_processes(remote)
+        except (FileNotFoundError, subprocess.CalledProcessError) as e:
+            err("{}".format(e))
+            return
+
         self.out = []
-        for process in self.get_processes():
+        for process in processes:
             command = process["command"]
             process["user"] = process["user"].ljust(8)
 
@@ -39003,12 +39127,17 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
 
             if not args.verbose:
                 if command.startswith("[") and command.endswith("]"): # kernel thread
+                    if remote:
+                        continue # the local procfs is of another process
                     try:
                         with open("/proc/{:s}/cmdline".format(process["pid"]), "rb") as fd:
                             if not fd.read(1):
                                 continue
                     except OSError:
                         pass
+                # an interactive shell from a terminal or su
+                if command == "bash":
+                    continue
 
                 skip_list = [
                     # common
@@ -39018,6 +39147,8 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
                     "gdb-multiarch",
                     "-bash",
                     "sshd:",
+                    "sshd-session:", # OpenSSH 9.8~
+                    "sshd-auth:", # OpenSSH 10.0~
                     "ssh-agent ",
                     # VMware tools
                     "vmhgfs-fuse",
@@ -39031,18 +39162,24 @@ class ProcessSearchCommand(GenericCommand, BufferingOutput):
                     "gdm-session-worker",
                     "cupsd ",
                     "cups-browsed ",
-                    # common path
-                    ("/bin/", "/usr/bin/"),
-                    ("/sbin/", "/usr/sbin/"),
-                    ("/lib/", "/usr/lib/"),
-                    "/usr/libexec/",
-                    "/snap/",
-                    "/var/lib/pcp/pmdas",
                 ]
+                # The kernel replaces argv[0] of a shebang script with the interpreter, and binfmt_misc prepends
+                # the emulator (e.g., /usr/bin/qemu-aarch64), so a pattern also searches the commands under them.
+                if not args.pattern:
+                    skip_list.extend([
+                        # common path
+                        ("/bin/", "/usr/bin/"),
+                        ("/sbin/", "/usr/sbin/"),
+                        ("/lib/", "/usr/lib/"),
+                        "/usr/libexec/",
+                        "/snap/",
+                        "/var/lib/pcp/pmdas",
+                    ])
                 if any(command.startswith(x) for x in skip_list):
                     continue
 
-            line = [process[i] for i in ("pid", "user", "cpu", "mem", "tty", "command")]
+            # busybox ps has no %CPU, %MEM and TTY, nor does `info os processes`
+            line = [process.get(i, "") for i in ("pid", "user", "cpu", "mem", "tty", "command")]
             self.out.append("\t".join(line))
 
         self.print_output()
@@ -39654,7 +39791,7 @@ class ElfInfoCommand(GenericCommand):
 
 @register_command
 class ChecksecCommand(GenericCommand):
-    """Check the security properties of the current executable or passed as argument."""
+    """Check the security properties of the current executable or the one passed as an argument."""
 
     _cmdline_ = "checksec"
     _category_ = "02-f. Process Information - Security"
@@ -39685,11 +39822,17 @@ class ChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("CET SHSTK feature flag (via Ehdr)", Color.colorify("Not found", "bold red")))
 
         # gdb mode check
-        if not runtime or not is_x86():
+        # X86_USER_SHADOW_STACK depends on X86_64, and ARCH_SHSTK_* is handled only by the 64-bit arch_prctl
+        if not runtime or not is_x86_64():
             return
         if not is_alive():
             return
         if is_rr() or is_core_file():
+            return
+        if is_qemu_user():
+            # qemu-user implements neither ARCH_SHSTK_STATUS nor the procfs of the guest
+            msg = Color.colorify("Unsupported", "bold red") + " (qemu-user does not emulate the shadow stack)"
+            gef_print("{:<40s}: {:s}".format("CET SHSTK status", msg))
             return
 
         # Intel CET SHSTK status via arch_prctl
@@ -39698,7 +39841,7 @@ class ChecksecCommand(GenericCommand):
             r = Checksec.get_cet_status_old_interface()
             if r is None:
                 msg = Color.colorify("Disabled", "bold red") + " (kernel does not support; Intel SDE has no `-cet` option)"
-                gef_print("{:<40s}: {:s}".format("CET IBT status (via old arch_prctl IF)", msg))
+                gef_print("{:<40s}: {:s}".format("CET SHSTK status (via old arch_prctl IF)", msg))
             else:
                 if r & 0b10:
                     msg = Color.colorify("Enabled", "bold green") + " (kernel supports; Intel SDE has `-cet` option)"
@@ -39741,7 +39884,7 @@ class ChecksecCommand(GenericCommand):
             if r["shstk lock"]:
                 gef_print("{:<40s}: {:s}".format("CET SHSTK Lock status (via procfs)", Color.colorify("Enabled", "bold green")))
             else:
-                msg = Color.colorify("Disabled", "bold red") + " (kernel supports but no locked)"
+                msg = Color.colorify("Disabled", "bold red") + " (kernel supports but not locked)"
                 gef_print("{:<40s}: {:s}".format("CET SHSTK Lock status (via procfs)", msg))
         return
 
@@ -39812,7 +39955,11 @@ class ChecksecCommand(GenericCommand):
             msg = Color.colorify("Disabled", "bold red") + " (kernel does not support PAC)"
             gef_print("{:<40s}: {:s}".format("PAC", msg))
         elif r < 0:
-            msg = Color.grayify("Unknown") + " (kernel supports PAC but does not support PR_PAC_GET_ENABLED_KEYS prctl option)"
+            if is_qemu_user():
+                reason = "qemu-user does not support"
+            else:
+                reason = "kernel supports PAC but does not support"
+            msg = Color.grayify("Unknown") + " ({:s} PR_PAC_GET_ENABLED_KEYS prctl option)".format(reason)
             gef_print("{:<40s}: {:s}".format("PAC", msg))
         elif r == 0:
             msg = Color.colorify("Disabled", "bold red") + " (kernel supports PAC but no keys are enabled)"
@@ -39849,23 +39996,26 @@ class ChecksecCommand(GenericCommand):
             msg = Color.colorify("Disabled", "bold red") + " (kernel does not support MTE)"
             gef_print("{:<40s}: {:s}".format("MTE", msg))
         elif r < 0:
-            msg = Color.grayify("Unknown") + " (kernel supports MTE but does not support PR_SET_TAGGED_ADDR_CTRL)"
-            gef_print("{:<40s}: {:s}".format("MTE", msg))
-        elif (r & 0b1) == 0:
-            msg = Color.colorify("Disabled", "bold red") + " (kernel supports MTE but disabled)"
-            gef_print("{:<40s}: {:s}".format("MTE", msg))
-        elif (r & 0b1) == 1 and (r & 0b110) == 0:
-            msg = Color.colorify("Disabled", "bold red") + " (MTE is enabled, but fault is ignored)"
+            msg = Color.grayify("Unknown") + " (kernel supports MTE but does not support PR_GET_TAGGED_ADDR_CTRL)"
             gef_print("{:<40s}: {:s}".format("MTE", msg))
         else:
-            keys = []
-            if r & 0b010:
-                keys.append("PR_MTE_TCF_SYNC")
-            if r & 0b100:
-                keys.append("PR_MTE_TCF_ASYNC")
-            keys = ", ".join(keys)
-            msg = Color.colorify("Enabled", "bold green") + " (MTE is enabled as: {:s})".format(keys)
-            gef_print("{:<40s}: {:s}".format("MTE", msg))
+            # PR_MTE_TCF_* decides the tag check, and PR_TAGGED_ADDR_ENABLE (bit 0) is only the tagged address ABI
+            if r & 0b1:
+                abi = "tagged address ABI: enabled"
+            else:
+                abi = "tagged address ABI: disabled"
+            if (r & 0b110) == 0:
+                msg = Color.colorify("Disabled", "bold red") + " (tag check faults are ignored, {:s})".format(abi)
+                gef_print("{:<40s}: {:s}".format("MTE", msg))
+            else:
+                keys = []
+                if r & 0b010:
+                    keys.append("PR_MTE_TCF_SYNC")
+                if r & 0b100:
+                    keys.append("PR_MTE_TCF_ASYNC")
+                keys = ", ".join(keys)
+                msg = Color.colorify("Enabled", "bold green") + " (MTE is enabled as: {:s}, {:s})".format(keys, abi)
+                gef_print("{:<40s}: {:s}".format("MTE", msg))
         return
 
     def check_AARCH64_ELF(self, sec):
@@ -39942,6 +40092,9 @@ class ChecksecCommand(GenericCommand):
     def check_runtime_wx(self):
         if not is_alive():
             return
+        if is_pin():
+            # the maps also have the RWX regions of Pin itself (e.g., the code cache)
+            return
 
         sections = [
             section for section in (ProcessMap.get_process_maps() or [])
@@ -39966,7 +40119,7 @@ class ChecksecCommand(GenericCommand):
     def check_system_ASLR(self):
         if is_remote_debug() or is_core_file():
             msg = Color.grayify("Unknown")
-            gef_print("{:<40s}: {:s} (remote process or core file)".format("System-ASLR", msg))
+            gef_print("{:<40s}: {:s} (remote process or core file)".format("System ASLR", msg))
         else:
             try:
                 system_aslr = int(open("/proc/sys/kernel/randomize_va_space").read())
@@ -39981,7 +40134,7 @@ class ChecksecCommand(GenericCommand):
                     gef_print("{:<40s}: {:s} (randomize_va_space: 2)".format("System ASLR", msg))
             except (FileNotFoundError, OSError):
                 msg = Color.grayify("Unknown")
-                gef_print("{:<40s}: {:s} (randomize_va_space: error)".format("System-ASLR", msg))
+                gef_print("{:<40s}: {:s} (randomize_va_space: error)".format("System ASLR", msg))
         return
 
     def check_gdb_ASLR(self):
@@ -40012,7 +40165,7 @@ class ChecksecCommand(GenericCommand):
 
     def print_security_properties(self, filename, runtime=True):
         elf = Elf.get_elf(filename)
-        if elf is None or not elf.is_valid():
+        if elf is None or not elf.is_valid() or elf.e_class not in (Elf.ELF_32_BITS, Elf.ELF_64_BITS):
             err("checksec is failed")
             return
 
@@ -40034,7 +40187,13 @@ class ChecksecCommand(GenericCommand):
         gef_print("{:<40s}: {:s}".format("Canary", msg))
 
         # NX
-        gef_print("{:<40s}: {:s}".format("NX", self.get_colored_msg(sec["NX"])))
+        msg = self.get_colored_msg(sec["NX"])
+        if sec["NX"] is None and runtime and is_alive():
+            # PT_GNU_STACK is not found, so show what the kernel decided
+            stack = [x for x in ProcessMap.get_process_maps() or [] if x.path == "[stack]"]
+            if stack:
+                msg += " ([stack]: {!s})".format(stack[0].permission)
+        gef_print("{:<40s}: {:s}".format("NX", msg))
 
         # PIE
         if sec["Shared object"]:
@@ -40336,7 +40495,7 @@ class KernelChecksecCommand(GenericCommand):
             state = Color.colorify("Privileged or group only", "bold yellow")
             group_addr = self.get_sysctl_addr("kernel.io_uring_group", "sysctl_io_uring_group")
             if group_addr is not None:
-                group = read_int32_from_memory(group_addr, safe=True)
+                group = read_int32_from_memory(group_addr, safe=True, signed=True) # -1 by default
             else:
                 group = None
             additional = "kernel.io_uring_disabled=1"
@@ -40417,7 +40576,7 @@ class KernelChecksecCommand(GenericCommand):
         if cr4 is not None and (cr4 >> 23) & 1:
             MSR_IA32_S_CET = None
             if is_kvm_enabled():
-                additional = "for more precisely, use `msr MSR_IA32_S_CET` without `-enable-kvm`"
+                additional = "for more precise results, use `msr MSR_IA32_S_CET` without `-enable-kvm`"
             else:
                 additional = "MSR_IA32_S_CET: Not available"
                 # rdmsr is executed only where `msr` can do it
@@ -40459,14 +40618,47 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s}".format("PXN (ID_MMFR0 bit 2)", Color.colorify("Enabled", "bold green")))
         elif ID_MMFR0_S is not None and (ID_MMFR0_S >> 2) & 1:
             gef_print("{:<40s}: {:s}".format("PXN (ID_MMFR0 bit 2)", Color.colorify("Enabled", "bold green")))
-        elif is_kgdb() and ID_MMFR0 is None and ID_MMFR0_S is None:
-            additional = "ID_MMFR0: Not available in KGDB mode"
+        elif ID_MMFR0 is None and ID_MMFR0_S is None:
+            if is_kgdb():
+                additional = "ID_MMFR0: Not available in KGDB mode"
+            else:
+                additional = "ID_MMFR0: Not available"
             gef_print("{:<40s}: {:s} ({:s})".format("PXN (ID_MMFR0 bit 2)", Color.grayify("Unknown"), additional))
         else:
             gef_print("{:<40s}: {:s}".format("PXN (ID_MMFR0 bit 2)", Color.colorify("Disabled", "bold red")))
 
         # PAN
-        gef_print("{:<40s}: {:s} (all ARMv7 is unsupported)".format("PAN", Color.colorify("Disabled", "bold red")))
+        # ARMv7 has no PAN, but Linux 4.3~ emulates it with the domain of the user memory (CONFIG_CPU_SW_DOMAIN_PAN),
+        # and 7.x also with TTBCR.EPD0 on LPAE (CONFIG_CPU_TTBR0_PAN under CONFIG_ARM_PAN).
+        cfg = "PAN (software emulation)"
+        if self.print_kconfig_state(cfg, names=["CONFIG_CPU_SW_DOMAIN_PAN", "CONFIG_CPU_TTBR0_PAN"]):
+            return
+        if not is_in_kernel():
+            additional = "the registers are of the user mode"
+            gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
+            return
+        # Linux uses the banked registers of the security state it runs in
+        for suffix in ("", "_S"):
+            TTBCR = get_register("$TTBCR" + suffix)
+            DACR = get_register("$DACR" + suffix)
+            if TTBCR is not None and TTBCR >> 31: # LPAE
+                if (TTBCR >> 7) & 1:
+                    state = Color.colorify("Enabled", "bold green")
+                else:
+                    state = Color.colorify("Disabled", "bold red")
+                additional = "TTBCR.EPD0: {:d}".format((TTBCR >> 7) & 1)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, state, additional))
+                return
+            if DACR is not None and DACR & 0b11: # DOMAIN_KERNEL (0) is used
+                if (DACR >> 2) & 0b11 == 0: # DOMAIN_USER (1) is DOMAIN_NOACCESS
+                    state = Color.colorify("Enabled", "bold green")
+                else:
+                    state = Color.colorify("Disabled", "bold red")
+                additional = "DACR: {:#x}".format(DACR)
+                gef_print("{:<40s}: {:s} ({:s})".format(cfg, state, additional))
+                return
+        additional = "DACR: Not available"
+        gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         return
 
     def arm64_specific(self):
@@ -40474,11 +40666,14 @@ class KernelChecksecCommand(GenericCommand):
             return
 
         # PXN
-        gef_print("{:<40s}: {:s} (all ARMv8~ is supported)".format("PXN", Color.colorify("Enabled", "bold green")))
+        gef_print("{:<40s}: {:s} (always supported on ARMv8+)".format("PXN", Color.colorify("Enabled", "bold green")))
 
         # PAN
         ID_AA64MMFR1_EL1 = get_register("$ID_AA64MMFR1_EL1", use_mbed_exec=True)
-        if ID_AA64MMFR1_EL1 is not None and ((ID_AA64MMFR1_EL1 >> 20) & 0b1111) != 0b0000:
+        if ID_AA64MMFR1_EL1 is None:
+            additional = "ID_AA64MMFR1_EL1: Not available"
+            gef_print("{:<40s}: {:s} ({:s})".format("PAN (ID_AA64MMFR1_EL1 bit 23-20)", Color.grayify("Unknown"), additional))
+        elif ((ID_AA64MMFR1_EL1 >> 20) & 0b1111) != 0b0000:
             gef_print("{:<40s}: {:s}".format("PAN (ID_AA64MMFR1_EL1 bit 23-20)", Color.colorify("Enabled", "bold green")))
         else:
             gef_print("{:<40s}: {:s}".format("PAN (ID_AA64MMFR1_EL1 bit 23-20)", Color.colorify("Disabled", "bold red")))
@@ -40519,7 +40714,9 @@ class KernelChecksecCommand(GenericCommand):
                 "kaslr_early_init", "__pi_kaslr_early_init", "kaslr_init", # ARM64 4.6~
             ]
             if is_riscv():
-                kaslr_only_symbols.extend(("__pi_get_kaslr_seed", "__pi_set_nokaslr_from_cmdline"))
+                # the handler of early_param("nokaslr"). arch/riscv/kernel/pi (e.g., __pi_get_kaslr_seed) is
+                # always built with CONFIG_64BIT.
+                kaslr_only_symbols.append("print_nokaslr")
             elif is_loongarch64():
                 # the handler of early_param("nokaslr")
                 kaslr_only_symbols.append("nokaslr")
@@ -40534,9 +40731,11 @@ class KernelChecksecCommand(GenericCommand):
                 if others:
                     build_str += " ({:s}: Found, but not specific)".format(", ".join(others[:3]))
                 # x86 3.14~4.7 has no such symbols in vmlinux, so leave it to the runtime check.
+                # Neither does x86 4.8~5.1 without CONFIG_RANDOMIZE_MEMORY (always on x86_32), since only arch/x86/mm/kaslr.c
+                # calls kaslr_get_random_long() of lib-$(CONFIG_RANDOMIZE_BASE) until poking_init() of 5.2 does.
                 # So does s390x, whose decompressor randomizes the base, and MIPS, which inlines all of it into
                 # relocate_kernel() of CONFIG_RELOCATABLE.
-                if is_x86() and "3.14" <= kversion < "4.8":
+                if is_x86() and "3.14" <= kversion < "5.2":
                     build = None
                 elif is_s390x():
                     build = None
@@ -40558,22 +40757,27 @@ class KernelChecksecCommand(GenericCommand):
                 if v is not None:
                     randomized, definite = bool(v), True
                     runtime_str = "__kaslr_is_enabled: {:d}".format(v)
-            elif is_s390x() and Ksym.get_addr("__kaslr_enabled") is not None:
-                # set by the decompressor. Older kernels (e.g., v6.1) have only __kaslr_offset.
-                v = read_int32_from_memory(Ksym.get_addr("__kaslr_enabled"), safe=True)
-                if v is not None:
-                    randomized, definite = bool(v), True
-                    runtime_str = "__kaslr_enabled: {:d}".format(v)
             elif is_s390x() and Ksym.get_addr("__kaslr_offset") is not None:
+                # set by the decompressor only if it randomized the base (6.x). __kaslr_enabled stays 1 even if it could not
+                # (e.g., the CPU of QEMU has no PRNG).
                 v = read_int_from_memory(Ksym.get_addr("__kaslr_offset"), safe=True)
                 if v is not None:
                     randomized, definite = v != 0, True
                     runtime_str = "__kaslr_offset: {:#x}".format(v)
+            elif is_s390x() and Ksym.get_addr("__kaslr_enabled") is not None:
+                # 7.x has __kaslr_offset in vm_layout, which is set even if the base is not randomized.
+                # So only 0 is conclusive, since __kaslr_enabled is the request.
+                v = read_int32_from_memory(Ksym.get_addr("__kaslr_enabled"), safe=True)
+                if v is not None:
+                    randomized, definite = bool(v), v == 0
+                    runtime_str = "__kaslr_enabled: {:d}".format(v)
             elif is_x86():
                 text = Ksym.get_addr("_text") or Kernel.layout().text_base
                 if text is not None:
                     link = self.get_x86_link_address()
                     randomized = text != link
+                    # the base different from the link address is conclusive, but the same one may be by chance
+                    definite = randomized
                     if randomized:
                         relation = "!="
                     else:
@@ -40595,7 +40799,7 @@ class KernelChecksecCommand(GenericCommand):
             else:
                 state = Color.colorify("Disabled (maybe)", "bold red")
         elif randomized is True:
-            if build:
+            if build and definite:
                 state = Color.colorify("Enabled", "bold green")
             else:
                 state = Color.colorify("Enabled (maybe)", "bold green")
@@ -40739,6 +40943,10 @@ class KernelChecksecCommand(GenericCommand):
             elif is_kgdb():
                 # A whole pagewalk reads too much memory over KGDB.
                 runtime_str = "pagewalk is skipped in KGDB mode"
+            elif is_x86_32():
+                # PTI sets NX to the user memory of the kernel page table only under a top-level entry with _PAGE_USER,
+                # but the PDPTE of PAE has neither _PAGE_USER nor NX.
+                runtime_str = "USER memory is executable in kernel context regardless of PTI on x86_32"
             elif is_in_kernel():
                 maps = AddrMap.get_maps(command="pagewalk --quiet --no-pager --simple --disable-color")
                 if not maps:
@@ -40770,7 +40978,10 @@ class KernelChecksecCommand(GenericCommand):
                 r = re.findall(r"^0x[0-9a-f]+-0x[0-9a-f]+\s+.*\[(EL0/.*)\]$", ret, re.M)
                 if r:
                     text_flags = r[-1].split()
-            if use_ng_mappings is not None:
+            # kaslr_requires_kpti() sets arm64_use_ng_mappings (and nG) with a KASLR seed even if kpti=0 disables KPTI
+            if kcmdline and "kpti=0" in kcmdline.cmdline:
+                state, runtime_str = "Disabled", "kpti=0 is in cmdline"
+            elif use_ng_mappings is not None:
                 if use_ng_mappings:
                     state = "Enabled"
                 else:
@@ -40781,8 +40992,6 @@ class KernelChecksecCommand(GenericCommand):
                     state, runtime_str = "Disabled", "kernel text is mapped as GLOBAL"
                 else:
                     state, runtime_str = "Enabled", "kernel text is mapped as non-GLOBAL (nG)"
-            elif kcmdline and "kpti=0" in kcmdline.cmdline:
-                state, runtime_str = "Disabled", "kpti=0 is in cmdline"
             elif kcmdline and "mitigations=off" in kcmdline.cmdline and "nokaslr" in kcmdline.cmdline:
                 state, runtime_str = "Disabled", "mitigations=off and nokaslr are in cmdline"
             elif kcmdline and "mitigations=off" in kcmdline.cmdline and "nokaslr" not in kcmdline.cmdline:
@@ -40916,18 +41125,20 @@ class KernelChecksecCommand(GenericCommand):
 
         kslub = Kernel.slub()
         kslub.warmup_page2virt()
-        offset = None
+        if not kslub.initialize():
+            # e.g., slab_caches is not found, or the page size of MIPS, PPC and LoongArch is unknown
+            gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
+            return
+        offset = kslub.kmem_cache_offset_random
         freelists = []
-        if kslub.initialize():
-            offset = kslub.kmem_cache_offset_random
-            # the freelists that `slub-dump` shows without options
-            names = ["kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]]
-            caches = kslub.walk_caches(
-                names, list(range(kslub.ncpus)), partial=False, node="7.0" <= Kernel.version(), cpu_sheaves=False
-            )
-            for cache in caches[1:]:
-                for page, freelist_fastpath in KernelSlub.get_cache_pages(cache):
-                    freelists += [freelist_fastpath, page.get("freelist", [])]
+        # the freelists that `slub-dump` shows without options
+        names = ["kmalloc-{:d}".format(n) for n in [8, 16, 32, 64, 96, 128, 192, 256, 512]]
+        caches = kslub.walk_caches(
+            names, list(range(kslub.ncpus)), partial=False, node="7.0" <= Kernel.version(), cpu_sheaves=False
+        )
+        for cache in caches[1:]:
+            for page, freelist_fastpath in KernelSlub.get_cache_pages(cache):
+                freelists += [freelist_fastpath, page.get("freelist", [])]
         # Destruction of up to one SLUB freelist is allowed.
         if sum(any(isinstance(x, str) for x in freelist) for freelist in freelists) >= 2:
             gef_print("{:<40s}: {:s}".format(cfg, Color.grayify("Unknown")))
@@ -41080,7 +41291,7 @@ class KernelChecksecCommand(GenericCommand):
                 return
 
             if selinux_enforcing_addr is None:
-                additional = "selinux_init: Found, seliux_enforcing: Not detected"
+                additional = "selinux_init: Found, selinux_enforcing: Not detected"
                 gef_print("{:<40s}: {:s} ({:s})".format(cfg, "Supported", additional))
                 return
 
@@ -41141,20 +41352,23 @@ class KernelChecksecCommand(GenericCommand):
         CONFIG_SECURITY_SELINUX_DISABLE = selinux_disable is not None
         enforcing_setup = Ksym.get_addr("enforcing_setup")
         CONFIG_SECURITY_SELINUX_DEVELOP = enforcing_setup is not None
+        # selinux_state.disabled is unconditional in 4.17~5.5, under CONFIG_SECURITY_SELINUX_DISABLE in 5.6~6.3,
+        # and removed in 6.4 along with selinux_disable()
+        has_disabled = kversion < "5.6" or CONFIG_SECURITY_SELINUX_DISABLE
 
         # selinux_state.disabled
-        if CONFIG_SECURITY_SELINUX_DISABLE:
+        if has_disabled:
             selinux_disabled = read_int8_from_memory(selinux_state)
-            additional = "selinux_init: Found, selinux_state.disable: {:d}".format(selinux_disabled)
+            additional = "selinux_init: Found, selinux_state.disabled: {:d}".format(selinux_disabled)
         else:
             selinux_disabled = None
-            additional = "selinux_init: Found, selinux_state.disable: Not found"
+            additional = "selinux_init: Found, selinux_state.disabled: Not found"
 
         # selinux_state.enforcing
-        if CONFIG_SECURITY_SELINUX_DEVELOP and CONFIG_SECURITY_SELINUX_DISABLE:
+        if CONFIG_SECURITY_SELINUX_DEVELOP and has_disabled:
             selinux_enforcing = read_int8_from_memory(selinux_state + 1)
             additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
-        elif CONFIG_SECURITY_SELINUX_DEVELOP and not CONFIG_SECURITY_SELINUX_DISABLE:
+        elif CONFIG_SECURITY_SELINUX_DEVELOP and not has_disabled:
             selinux_enforcing = read_int8_from_memory(selinux_state)
             additional += ", selinux_state.enforcing: {:d}".format(selinux_enforcing)
         else:
@@ -41483,12 +41697,16 @@ class KernelChecksecCommand(GenericCommand):
             additional = "lockdown_lsm_init: Found, kernel_locked_down: 0 (none)"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Disabled", "bold red"), additional))
         else:
-            if val == 1:
-                additional = "lockdown_lsm_init: Found, kernel_locked_down: 1 (integrity)"
-            elif val == 2:
-                additional = "lockdown_lsm_init: Found, kernel_locked_down: 2 (confidentiality)"
-            else:
-                additional = "lockdown_lsm_init: Found, kernel_locked_down: {:d}".format(val)
+            # It is LOCKDOWN_INTEGRITY_MAX or LOCKDOWN_CONFIDENTIALITY_MAX, whose values vary even among the stable
+            # versions (e.g., 16/23 in 5.4.58 and 17/25 in 5.4.290). So use the name of the level in lockdown_reasons[].
+            additional = "lockdown_lsm_init: Found, kernel_locked_down: {:d}".format(val)
+            lockdown_reasons = Ksym.get_addr("lockdown_reasons")
+            if lockdown_reasons is not None:
+                reason = read_int_from_memory(lockdown_reasons + current_arch.ptrsize * val, safe=True)
+                if reason:
+                    level = read_cstring_from_memory(reason, safe=True)
+                    if level in ("integrity", "confidentiality"):
+                        additional += " ({:s})".format(level)
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Enabled", "bold green"), additional))
         return
 
@@ -41523,7 +41741,7 @@ class KernelChecksecCommand(GenericCommand):
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Unsupported", "bold red"), "CONFIG_MODULES=n"))
             return
         if modules is None:
-            additional = "kmod is failed"
+            additional = "kmod failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
             return
 
@@ -42152,7 +42370,7 @@ class KernelChecksecCommand(GenericCommand):
 
         ktask = Kernel.task()
         if not ktask.initialize():
-            additional = "ktask was failed"
+            additional = "ktask failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         elif ktask.offset_kcanary is not None:
             additional = "offsetof(task_struct, stack_canary): {:#x}".format(ktask.offset_kcanary)
@@ -42225,7 +42443,7 @@ class KernelChecksecCommand(GenericCommand):
             if loaded is False:
                 additional += ", runtime: fuse module: Not loaded"
             else:
-                additional += ", runtime: fuse module: Unknown (kmod is failed)"
+                additional += ", runtime: fuse module: Unknown (kmod failed)"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.colorify("Module", "bold red"), additional))
         elif not self.is_modules_supported():
             additional += ", CONFIG_MODULES=n"
@@ -42234,7 +42452,7 @@ class KernelChecksecCommand(GenericCommand):
             additional += ", fuse module: Not loaded (CONFIG_FUSE_FS=n, or =m and not loaded)"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         else:
-            additional += ", kmod is failed"
+            additional += ", kmod failed"
             gef_print("{:<40s}: {:s} ({:s})".format(cfg, Color.grayify("Unknown"), additional))
         return
 
@@ -42406,7 +42624,7 @@ class KernelChecksecCommand(GenericCommand):
         self.run_checks(self.x86_specific, self.arm32_specific, self.arm64_specific)
 
         if Ksym.get_addr("_stext") is None:
-            err("ksymaddr-remote is failed")
+            err("ksymaddr-remote failed")
             return
 
         gef_print(titlify("Memory settings"))
@@ -87095,7 +87313,7 @@ class KernelVersion:
     @staticmethod
     def get_override():
         inferior = gdb.selected_inferior()
-        return KernelVersion.overrides.get((inferior, inferior.connection_num))
+        return KernelVersion.overrides.get((inferior, getattr(inferior, "connection_num", None))) # GDB 11+
 
     @staticmethod
     def clear_override(inferior=None, connection_num=None):
@@ -102862,7 +103080,7 @@ class KernelVersionCommand(GenericCommand):
                     numbers.append(0)
             major, minor, patch = numbers
             inferior = gdb.selected_inferior()
-            KernelVersion.overrides[inferior, inferior.connection_num] = KernelVersion(
+            KernelVersion.overrides[inferior, getattr(inferior, "connection_num", None)] = KernelVersion( # GDB 11+
                 address, version_string, major, minor, patch)
             Cache.reset_gef_caches(all=True)
 
