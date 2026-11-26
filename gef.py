@@ -4103,7 +4103,12 @@ class GlibcHeap:
         def MALLOC_ALIGNMENT():
             if is_64bit():
                 return 0x10
-            elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+            elif (is_ppc32() or is_mipsn32() or is_riscv32()) and get_libc_version() >= (2, 24):
+                # 2.24+ uses max(2 * SIZE_SZ, __alignof__(long double)) unconditionally (BZ #6527),
+                # and the long double of these arches is aligned to 16 bytes.
+                return 0x10
+            elif is_x86_32() and get_libc_version() >= (2, 26):
+                # sysdeps/i386/malloc-alignment.h
                 return 0x10
             else:
                 return 0x8
@@ -4476,9 +4481,9 @@ class GlibcHeap:
 
             if get_libc_version() >= (2, 43):
                 self.num_fastbins = 0
-            elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
-                # MALLOC_ALIGNMENT is changed from libc 2.26.
-                # for x86_32, MALLOC_ALIGNMENT = 16, so NFASTBINS = 11.
+            elif current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
+                # NFASTBINS depends on MALLOC_ALIGNMENT (e.g., it is changed from libc 2.26 for x86_32).
+                # for 32-bit with MALLOC_ALIGNMENT = 16, NFASTBINS = 11.
                 self.num_fastbins = 11
             else:
                 self.num_fastbins = 10
@@ -5055,10 +5060,11 @@ class GlibcHeap:
         @property
         def sizeof(self):
             # arena aligned_size
-            if current_arch.ptrsize == 4:
-                aligned_size = (self.__size + 7) & ~0b111
-            else:
-                aligned_size = (self.__size + 15) & ~0b1111
+            # _int_new_arena aligns the user data of the first chunk after the arena to MALLOC_ALIGNMENT.
+            # e.g., i386 2.26 has 24 bytes heap_info and 1112 bytes malloc_state, so the first chunk is at +1144 (not +1136).
+            SIZE_SZ = current_arch.ptrsize
+            MALLOC_ALIGNMENT = GlibcHeap.HeapInfo.MALLOC_ALIGNMENT()
+            aligned_size = align(self.__addr + self.__size + SIZE_SZ * 2, MALLOC_ALIGNMENT) - SIZE_SZ * 2 - self.__addr
             return aligned_size
 
         @property
@@ -6173,7 +6179,7 @@ class GlibcHeap:
                 table["tcache"][73] = {"size_min": 0x80000, "size_max": 0x100000}
                 table["tcache"][74] = {"size_min": 0x100000, "size_max": 0x200000}
                 table["tcache"][75] = {"size_min": 0x200000, "size_max": 0x400000}
-            elif is_x86_32() or is_riscv32() or is_ppc32():
+            elif MALLOC_ALIGNMENT == 0x10: # x86_32, ppc32, mipsn32, riscv32
                 table["tcache"][64] = {"size_min": 0x410, "size_max": 0x800}
                 table["tcache"][65] = {"size_min": 0x800, "size_max": 0x1000}
                 table["tcache"][66] = {"size_min": 0x1000, "size_max": 0x2000}
@@ -6205,8 +6211,8 @@ class GlibcHeap:
             for i in range(10):
                 size = MIN_SIZE + i * 0x10
                 table["fastbins"][i] = {"size": size}
-        elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
-            # MALLOC_ALIGNMENT is changed from libc 2.26.
+        elif MALLOC_ALIGNMENT == 0x10:
+            # MALLOC_ALIGNMENT is changed from libc 2.26 for x86_32 (2.24 for ppc32, mipsn32 and riscv32).
             # for x86_32, fastbin exists every 8 bytes, but only used every 16 bytes.
             table["fastbins"][0] = {"size": 0x10}
             table["fastbins"][2] = {"size": 0x20}
@@ -6224,7 +6230,7 @@ class GlibcHeap:
 
         # smallbins
         for i in range(1, 63):
-            if is_64bit() or ((is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26)):
+            if MALLOC_ALIGNMENT == 0x10:
                 size = MIN_SIZE + (i - 1) * 0x10
             else:
                 size = MIN_SIZE + (i - 1) * 0x8
@@ -6266,7 +6272,7 @@ class GlibcHeap:
             table["large_bins"][94] = {"size_min": 0xbc0, "size_max": 0xc00}
             table["large_bins"][95] = {"size_min": 0xc00, "size_max": 0xc40}
             table["large_bins"][96] = {"size_min": 0xc40, "size_max": 0xe00}
-        elif (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+        elif MALLOC_ALIGNMENT == 0x10:
             table["large_bins"][63] = {"size_min": 0x3f0, "size_max": 0x400}
             table["large_bins"][64] = {"size_min": 0x400, "size_max": 0x440}
             table["large_bins"][65] = {"size_min": 0x440, "size_max": 0x480}
@@ -7441,7 +7447,13 @@ class Disasm:
             read_size += 1
 
         skip = kwargs.get("skip", 0)
-        arch_inst_length = instruction_length or 1
+        if instruction_length:
+            arch_inst_length = instruction_length
+        elif arch in (capstone.CS_ARCH_X86, getattr(capstone, "CS_ARCH_XTENSA", None)):
+            arch_inst_length = 1
+        else:
+            # Thumb, RISC-V (C extension), s390x, m68k, etc. place instructions on 2-byte boundaries
+            arch_inst_length = 2
         used_bytes = 0
         code_remain = kwargs.get("code", b"")
         if isinstance(code_remain, str):
@@ -17206,6 +17218,14 @@ class UnicornKeystoneCapstone:
         if arch == "ARM64":
             if sys.modules["capstone"].cs_version()[0] == 6:
                 arch = "AARCH64"
+        elif arch == "ARM":
+            if mode == "THUMB" and is_arm32_cortex_m():
+                # the special registers of mrs/msr (e.g., primask) are decoded only for M-profile
+                mode = ("THUMB", "MCLASS")
+            elif get_arch().startswith(("armv8", "armv9")):
+                # gdb names the arch from the ELF attributes. It is needed for crc32b, `dmb ishld`, etc.
+                # It is not used for older arches, since swp etc. are not decoded with it.
+                mode = (mode, "V8")
         elif (arch, mode) == ("RISCV", "32"):
             mode = ("RISCV32", "RISCVC")
         elif (arch, mode) == ("RISCV", "64"):
@@ -31477,14 +31497,15 @@ class AngrCommand(GenericCommand):
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
-        "If there is a stack canary check, angr may fail to find the solution.",
-        "This occurs when execution begins inside a function but terminates outside of it.",
+        "If the symbolic memory overwrites the stack canary, angr may fail to find the solution.",
+        "(The TLS of the process is given to angr, so the canary stored before the start matches.)",
         "To avoid it, you need to replace these instructions (e.g., `sub rdx, fs:28h; jnz loc_XXX`) with `nop`s.",
         "Please patch memory or make other appropriate modifications before running the `angr` command.",
         "",
         "The -H option is designed to handle this issue automatically.",
         "But it assumes that there is a `ret` after `call __stack_chk_fail@plt`.",
         "Note that it will fail if there is a `ret` before `call __stack_chk_fail@plt`.",
+        "It also fails on i386 PIE, which calls it from `__stack_chk_fail_local` without a `ret` after it.",
     ])
 
     def get_valid_plt(self):
@@ -31506,7 +31527,8 @@ class AngrCommand(GenericCommand):
         dloc = tempfile.mkdtemp(dir=GEF_TEMP_DIR, prefix="angr-{:s}-".format(dt))
         for sect in vmmap:
             if sect.permission & Permission.READ:
-                code = read_memory(sect.page_start, sect.size)
+                # some pages may not be readable (e.g., beyond the EOF of a mapped file), so they are zero-filled
+                code = GefUtil.read_memory_padded(sect.page_start, sect.size)
                 loc = os.path.join(dloc, "{:s}-{:#x}.raw".format(filename, sect.page_start))
                 with open(loc, "wb") as fdw:
                     fdw.write(bytes(code))
@@ -31516,9 +31538,12 @@ class AngrCommand(GenericCommand):
     def make_angr_script(self, dt):
         """Generate an angr analysis script with memory, register, and symbolic constraints setup."""
         # initialize
-        content = "#!{:s}\n".format(GefUtil.which("python3"))
+        content = "#!{:s}\n".format(GefUtil.which_python())
         content += "import angr\n"
-        content += "import claripy\n"
+        content += "try:\n"
+        content += "    import claripy\n"
+        content += "except ImportError:\n"
+        content += "    from angr import claripy # angr 10.x~\n"
         content += "import time\n"
         content += "\n"
         content += "start_time_real = time.perf_counter()\n"
@@ -31554,8 +31579,8 @@ class AngrCommand(GenericCommand):
         content += "def set_register(reg, addr):\n"
         content += "    try:\n"
         content += "        setattr(state.regs, reg, addr)\n"
-        content += "    except:\n"
-        content += "        pass\n" # e.g., ARM32 cpsr
+        content += "    except Exception:\n"
+        content += "        print('Could not set the register: ' + reg)\n" # e.g., ARM64 fpsr
         content += "\n"
         if hasattr(current_arch, "general_registers"):
             target_registers = current_arch.general_registers
@@ -31565,11 +31590,28 @@ class AngrCommand(GenericCommand):
             reg_value = get_register(reg)
             if reg_value is None:
                 continue
+            regname = reg.replace("$", "")
             if is_arm32():
                 if reg == "$pc":
                     if current_arch.is_thumb():
                         reg_value |= 1
-            content += "set_register({!r}, {:#x})\n".format(reg.replace("$", ""), reg_value)
+            if is_arm32() or is_arm64():
+                if reg == "$cpsr":
+                    # angr has no cpsr, and sets the condition flags (NZCV) by `flags`
+                    regname = "flags"
+            content += "set_register({!r}, {:#x})\n".format(regname, reg_value)
+
+        # angr uses the TLS of cle unless it is given (e.g., the stack canary of x86 is in TLS)
+        tls = current_arch.get_tls()
+        if tls is not None:
+            if is_x86_64():
+                content += "set_register('fs', {:#x})\n".format(tls)
+            elif is_x86_32():
+                content += "proj.simos.setup_gdt(state, proj.simos.generate_gdt(0, {:#x}))\n".format(tls)
+            elif is_arm64():
+                content += "set_register('tpidr_el0', {:#x})\n".format(tls)
+            elif is_arm32():
+                content += "set_register('tpidruro', {:#x})\n".format(tls)
         content += "\n"
 
         # hook plt
@@ -31619,8 +31661,15 @@ class AngrCommand(GenericCommand):
 
         # search
         content += "# search\n"
-        content += "FIND_ADDR = [{:s}]\n".format(",".join([hex(x) for x in self.args.find]))
-        content += "AVOID_ADDR = [{:s}]\n".format(",".join([hex(x) for x in self.args.avoid]))
+        if is_arm32():
+            # angr handles the address of a Thumb block with the LSB set, but gdb gives it without the LSB
+            find_addrs = [x & ~1 for x in self.args.find] + [x | 1 for x in self.args.find]
+            avoid_addrs = [x & ~1 for x in self.args.avoid] + [x | 1 for x in self.args.avoid]
+        else:
+            find_addrs = self.args.find
+            avoid_addrs = self.args.avoid
+        content += "FIND_ADDR = [{:s}]\n".format(",".join([hex(x) for x in find_addrs]))
+        content += "AVOID_ADDR = [{:s}]\n".format(",".join([hex(x) for x in avoid_addrs]))
         content += "simgr = proj.factory.simulation_manager(state)\n"
         content += "simgr.explore(find=FIND_ADDR, avoid=AVOID_ADDR)\n"
         content += "\n"
@@ -31628,7 +31677,7 @@ class AngrCommand(GenericCommand):
         content += "    found_state = simgr.found[0]\n"
         for i in range(len(self.args.sym)):
             content += "    solution = found_state.solver.eval(sym_mem{:d}, cast_to=bytes)\n".format(i)
-            content += '    print("\\033[1msym{:d}\\033[0m:")\n'.format(i)
+            content += "    print({!r})\n".format(Color.boldify("sym{:d}".format(i)) + ":")
             content += '    print("  raw:", repr(solution))\n'
             content += '    print("  hex:", solution.hex())\n'
         content += "else:\n"
@@ -31661,9 +31710,9 @@ class AngrCommand(GenericCommand):
         if self.args.skip_execution:
             return
 
-        # run it
+        # run it (by the Python whose packages are loaded, since angr may be only in the dedicated environment)
         try:
-            res = GefUtil.gef_execute_external([GefUtil.which("python3"), tmp_filename], as_list=True)
+            res = GefUtil.gef_execute_external([GefUtil.which_python(), tmp_filename], as_list=True)
             gef_print("\n".join(res))
         except subprocess.CalledProcessError as e:
             gef_print(e.output.decode("utf-8").rstrip())
@@ -31671,13 +31720,19 @@ class AngrCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    # the maps of a core file have only the file mappings (no stack and heap), so angr finds no solution
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     @ModuleLoader.load_angr
     def do_invoke(self, args):
         if not args.find or not args.sym:
             self.usage()
             return
+
+        for _, size in args.sym:
+            if size <= 0:
+                err("SIZE must be positive")
+                return
 
         if args.type:
             if len(args.type) != len(args.sym):
@@ -31715,6 +31770,12 @@ class StubBreakpoint(gdb.Breakpoint):
         return
 
     def stop(self):
+        # Another stub at the same address may have already returned, and `return` here returns from the caller.
+        # The addresses are unknown for a symbol before gdb 13, but do_invoke does not stub the same symbol twice.
+        addresses = GefUtil.get_breakpoint_addresses(self)
+        if addresses and get_register("$pc") not in addresses:
+            return False
+
         m = "Ignoring call to '{:s}' ".format(self.func)
         if self.retval is None:
             gdb.execute("return")
@@ -31740,7 +31801,7 @@ class StubCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-r", "--retval", type=AddressUtil.parse_address, default=0,
                         help="the return value from stub. (default: %(default)s)")
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+    parser.add_argument("location", metavar="LOCATION",
                         help="address/symbol to stub out.")
     _syntax_ = parser.format_help()
 
@@ -31755,7 +31816,28 @@ class StubCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
-        loc = "*{:#x}".format(args.location)
+        # A symbol is passed as is, so gdb places the breakpoint after the prologue.
+        # Then it also stops the calls to the local entry of PPC64 ELFv2, which skip the TOC setup.
+        try:
+            loc = AddressUtil.breakpoint_spec(args.location)
+        except (gdb.error, ValueError):
+            err("Invalid address")
+            return
+
+        # A second stub at the same address would `return` again from the caller, so update the existing one.
+        if loc.startswith("*"):
+            address = int(loc[1:], 16)
+        else:
+            address = None
+        for bp in gdb.breakpoints():
+            if not isinstance(bp, StubBreakpoint):
+                continue
+            if bp.func != loc and address not in GefUtil.get_breakpoint_addresses(bp):
+                continue
+            bp.retval = args.retval
+            info("The return value of '{:s}' is updated to {:#x}".format(bp.func, bp.retval))
+            return
+
         StubBreakpoint(loc, args.retval)
         return
 
@@ -31770,7 +31852,7 @@ class CapstoneDisassembleCommand(GenericCommand):
     _aliases_ = ["cs-dis", "pdisas", "nearpc"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
+    parser.add_argument("location", metavar="LOCATION", nargs="?",
                         help="the address to disassemble. (default: current_arch.pc)")
     parser.add_argument("-l", "--length", type=AddressUtil.parse_address,
                         help="the length to disassemble. (default: capstone_disassemble.nb_lines_code_default)")
@@ -31798,7 +31880,7 @@ class CapstoneDisassembleCommand(GenericCommand):
 
     def __init__(self):
         super().__init__(complete=gdb.COMPLETE_LOCATION)
-        self.add_setting("nb_lines_code_default", 50, "Number of instruction if no length is specified.")
+        self.add_setting("nb_lines_code_default", 50, "Number of instructions if no length is specified.")
         return
 
     @Decorator.parse_args
@@ -31806,6 +31888,12 @@ class CapstoneDisassembleCommand(GenericCommand):
     @ModuleLoader.load_capstone
     @Decorator.require_arch_set
     def do_invoke(self, args):
+        # LOCATION is optional, so argparse takes the first KEY=VALUE as LOCATION when it is omitted.
+        # LOCATION is parsed here, since gdb evaluates such a string as an assignment (e.g., `code=4142`).
+        if args.location is not None and "=" in args.location:
+            args.args.insert(0, args.location)
+            args.location = None
+
         kwargs = {}
         for arg in args.args:
             if "=" in arg:
@@ -31843,15 +31931,26 @@ class CapstoneDisassembleCommand(GenericCommand):
             return
 
         length = args.length or Config.get("capstone_disassemble.nb_lines_code_default")
+        pc = current_arch.pc
+        if is_arm32() or is_arm32_cortex_m():
+            pc &= ~1 # Thumb sets the LSB of current_arch.pc
         if args.location is None:
-            location = current_arch.pc
+            location = pc
         else:
-            location = args.location
+            try:
+                location = AddressUtil.parse_address(args.location)
+            except (gdb.error, ValueError):
+                err("Invalid address")
+                return
+
+        # the repeated runs continue from the end of the previous one, which already showed nb_prev lines
+        if self.repeat_count:
+            kwargs.pop("nb_prev", None)
 
         try:
             skip = length * self.repeat_count
             for insn in Disasm.capstone_disassemble(location, length, skip=skip, **kwargs):
-                if insn.address == current_arch.pc:
+                if insn.address == pc:
                     msg = " -> {:s}".format(insn.colored_text(10, highlight=True))
                 else:
                     # other lines are not executed now, so the current registers do not tell the branch target
@@ -31902,8 +32001,9 @@ class GlibcHeapCommand(GenericCommand):
         "- 2.19+: malloc_state.next_free is handled.",
         "- 2.23+: malloc_state.attached_threads is handled.",
         "- 2.24+: GEF treats malloc_par.max_total_mem as absent (always None).",
+        "- 2.24+: MALLOC_ALIGNMENT changes for ppc32/mipsn32/riscv32 affect NFASTBINS and bin-size tables.",
         "- 2.26: tcache is introduced.",
-        "- 2.26+: MALLOC_ALIGNMENT changes for x86_32/riscv32/ppc32 affect NFASTBINS and bin-size tables.",
+        "- 2.26+: MALLOC_ALIGNMENT changes for x86_32 affect NFASTBINS and bin-size tables.",
         "- 2.27+: malloc_state layout handling changes (have_fastchunks/fastbins offsets).",
         "- 2.30: tcache_perthread_struct.counts element size changes 1->2 bytes.",
         "- 2.32: Safe-Linking (pointer mangling) for tcache/fastbins fd is supported.",
@@ -31964,7 +32064,12 @@ class GlibcHeapTopCommand(GenericCommand):
         top = arena.top
         info("arena.top: {:#x}".format(top))
         top += current_arch.ptrsize * 2
-        gef_print(GlibcHeap.GlibcChunk(arena, top).psprint())
+        # get_arena does not read the top chunk, so it may be invalid (e.g., a corrupted arena.top)
+        try:
+            gef_print(GlibcHeap.GlibcChunk(arena, top).psprint())
+        except gdb.MemoryError:
+            err("Invalid address")
+            return
         return
 
 
@@ -32403,7 +32508,7 @@ class GlibcHeapChunksCommand(GenericCommand, BufferingOutput):
             dump_start = arena.heap_base
             # specific pattern
             if arena.is_main_arena:
-                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
                     dump_start += 8
         else:
             dump_start = args.location
@@ -32569,7 +32674,7 @@ class GlibcHeapParseCommand(GenericCommand, BufferingOutput):
         dump_start = arena.heap_base
         # specific pattern
         if arena.is_main_arena:
-            if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+            if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
                 dump_start += 8
 
         self.out = []
@@ -34428,7 +34533,7 @@ class GlibcHeapVisualHeapCommand(GenericCommand, BufferingOutput):
             dump_start = arena.heap_base
             # specific pattern
             if arena.is_main_arena:
-                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
                     dump_start += 8
         else:
             dump_start = args.location
@@ -34664,7 +34769,7 @@ class GlibcHeapDumpImageCommand(GenericCommand):
             dump_start = arena.heap_base
             # specific pattern
             if arena.is_main_arena:
-                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
                     dump_start += 8
         else:
             dump_start = args.location
@@ -34729,7 +34834,7 @@ class GlibcHeapSnapshotCommand(GenericCommand):
             heap_base = arena.heap_base
             dump_start = heap_base
             if arena.is_main_arena:
-                if (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+                if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
                     dump_start += 8
 
             info = {
@@ -35964,7 +36069,7 @@ class GlibcHeapTimelineCommand(GenericCommand):
             if mapping is None or mapping.section is None:
                 raise OSError("Heap mapping is unavailable")
             start = base
-            if current_arch.ptrsize == 4 and (is_x86_32() or is_riscv32() or is_ppc32()) and get_libc_version() >= (2, 26):
+            if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
                 start += current_arch.ptrsize * 2
             return [{"base": base, "start": start, "end": mapping.section.page_end, "top": top}]
         mapping = ProcessMap.lookup(top)
@@ -67765,7 +67870,7 @@ class HeapBaseCommand(GenericCommand):
         if tcache_perthread_struct is None:
             return None
 
-        if is_x86_32() or is_riscv32() or is_ppc32():
+        if current_arch.ptrsize == 4 and GlibcHeap.HeapInfo.MALLOC_ALIGNMENT() == 0x10:
             chunk_offset = 0x10
         else:
             chunk_offset = current_arch.ptrsize * 2
@@ -238959,6 +239064,14 @@ class GefUtil:
         raise FileNotFoundError("Missing file `{:s}`".format(program))
 
     @staticmethod
+    def which_python():
+        """Locate the Python whose packages Gef.fix_venv loads (the dedicated environment of the installers first)."""
+        pythonbin = os.path.join(os.path.dirname(GEF_FILEPATH), "venv-gef", "bin", "python")
+        if os.path.isfile(pythonbin):
+            return pythonbin
+        return GefUtil.which("python3")
+
+    @staticmethod
     def show_commands(arg=""):
         """Return command history output, escaping undecodable bytes."""
         command = "show commands"
@@ -239457,12 +239570,10 @@ class Gef:
     @staticmethod
     def fix_venv():
         """Load extra packages from the dedicated environment or the active Python."""
-        pythonbin = os.path.join(os.path.dirname(GEF_FILEPATH), "venv-gef", "bin", "python")
-        if not os.path.isfile(pythonbin):
-            try:
-                pythonbin = GefUtil.which("python3")
-            except FileNotFoundError:
-                return
+        try:
+            pythonbin = GefUtil.which_python()
+        except FileNotFoundError:
+            return
 
         cmds = [
             pythonbin, "-c", "import os,sys;print(sys.version_info[:2]);"
