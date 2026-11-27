@@ -1304,7 +1304,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 - `smart-memory-dump`: dumps all regions of the memory to each file.
     - ![](images/smart-memory-dump.png)
 - `load-file`: loads the file into memory.
-- `load-file-mmap`: loads the file into memory that allocated by `mmap`.
+- `load-file-mmap`: loads the file into memory that is allocated by `mmap`.
 
 </details>
 

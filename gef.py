@@ -12694,6 +12694,14 @@ class XTENSA(Architecture):
                 insn = get_insn()
                 if insn is not None and insn.mnemonic != "entry":
                     reg = self.function_parameters_infunc[i]
+            else:
+                # callN passes them in a(N+2)-a(N+7), which the callee sees as a2-a7
+                insn = get_insn()
+                if insn is not None and self.is_call(insn):
+                    regnum = int(re.sub(r"\D", "", insn.mnemonic)) + 2 + i
+                    # a16 and above are invisible to the caller of call12
+                    if regnum <= 15:
+                        reg = "$a{:d}".format(regnum)
             val = get_register(reg)
             key = reg
             return key, val
@@ -17178,6 +17186,7 @@ class EventHandler:
     __gef_check_disabled_bp__ = False # the flag to remove unnecessary breakpoints
     continue_hooks_enabled = False
     kpti_transition_active = False
+    last_stop_thread = None # `info program` of gdb 13 and older does not tell the thread
     qemu_pipe_pids = {}
 
     @staticmethod
@@ -17320,6 +17329,7 @@ class EventHandler:
         ContinueForQemuUserCommand.stop_monitor()
         Cache.reset_gef_caches()
         thread = getattr(event, "inferior_thread", None) or gdb.selected_thread()
+        EventHandler.last_stop_thread = thread
         if isinstance(event, gdb.SignalEvent):
             ExecAsm.queued_signals[thread] = event.stop_signal
         else:
@@ -17453,6 +17463,8 @@ class EventHandler:
         PatchCommand.invalidate_history(getattr(_event, "inferior", None))
         KernelVersion.clear_override(inferior=getattr(_event, "inferior", None))
         GefUtil.clear_user_bases(inferior=getattr(_event, "inferior", None))
+        # do not show the messages of the exited process at the first stop of the next one
+        ContextExtraCommand.empty_extra_messages(_event)
         EventHandler.kpti_transition_active = False
         ExecAsm.queued_signals = {thread: sig for thread, sig in ExecAsm.queued_signals.items() if thread.is_valid()}
         for context in list(ExecAsm.stop_reasons):
@@ -46742,7 +46754,12 @@ class ContextCommand(GenericCommand):
             warn("No debugging session active")
             return
 
-        if gdb.selected_thread().is_running():
+        try:
+            selected_thread = gdb.selected_thread()
+        except SystemError:
+            # the selected thread has terminated (e.g., `call (void)pthread_exit(0)`)
+            selected_thread = None
+        if selected_thread is not None and selected_thread.is_running():
             # If the thread is running, do nothing (just to be safe)
             return
 
@@ -48245,7 +48262,7 @@ class ContextArgumentsCommand(GenericCommand):
     def __init__(self):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context args` to")
-        self.add_setting("nb_guessed_arguments", 6, "Number to display when guessing functions arguments")
+        self.add_setting("nb_guessed_arguments", 6, "Number of arguments to display when guessing function arguments")
         return
 
     @staticmethod
@@ -48254,7 +48271,7 @@ class ContextArgumentsCommand(GenericCommand):
         if is_qemu_system() or is_vmware() or is_kgdb():
             return None
 
-        # GOT Cannot be detected if no file is specified
+        # GOT cannot be detected if the file does not exist
         addr_obj = ProcessMap.lookup(addr)
         if not addr_obj:
             return None
@@ -48266,7 +48283,7 @@ class ContextArgumentsCommand(GenericCommand):
         if not os.path.exists(filepath):
             return None
 
-        # something is wrong
+        # the symbol of addr (e.g., puts@plt)
         ret = Symbol.lookup_gdb(addr)
         if not ret:
             return None
@@ -48275,7 +48292,11 @@ class ContextArgumentsCommand(GenericCommand):
         func_name = ret[0]
         if not func_name.endswith("@plt"):
             return None
-        func_name = func_name[:-4]
+
+        # `got --exact` compares the mangled name (e.g., _ZN2ns4funcEii), but `info symbol` demangles it
+        with ContextManager.gdb_parameter("print demangle", "off"):
+            ret = gdb.execute("info symbol {:#x}".format(addr), to_string=True)
+        func_name = ret.split()[0][:-4]
 
         # use `got` command to obtain function address
         try:
@@ -48298,6 +48319,9 @@ class ContextArgumentsCommand(GenericCommand):
         addr = ContextCodeCommand.get_branch_addr(insn)
         if addr is None:
             return None
+        # the function pointer of Thumb has the LSB
+        if is_arm32() or is_arm32_cortex_m():
+            addr &= ~1
 
         # check if addr is PLT or not
         ret = ContextArgumentsCommand.get_got_value(addr)
@@ -48309,30 +48333,46 @@ class ContextArgumentsCommand(GenericCommand):
 
         # addr -> block
         block = gdb.block_for_pc(addr)
-        if block and not block.function:
+        # the innermost block may be a lexical block or an inlined function at the entry, so use the outermost one
+        while block and block.superblock and not block.superblock.is_static:
+            block = block.superblock
+        if block is None:
+            return None
+        if not block.function:
+            return None
+
+        # e.g., `call 1f` + `1: pop ebx` of i386 PIC code calls the middle of the caller
+        # PPC64 (ELFv2) calls the local entry of a function in the same module
+        entry = int(block.function.value().address)
+        if addr not in (entry, Kernel.get_local_entry(entry)):
+            return None
+
+        # the clones of GCC (e.g., sub.constprop.0 and get.isra.0) have the parameters of the original function
+        ret = Symbol.lookup_gdb(addr)
+        if ret and re.search(r"\.(?:constprop|isra|part)\b", ret[0]):
+            return None
+
+        # Go uses its own ABI (e.g., rax, rbx and rcx of amd64), and has the results (e.g., ~r0) as parameters
+        if block.function.symtab.filename.endswith(".go"):
             return None
         return block
 
-    def print_arguments_from_symbol_x86(self, block, redirect):
-        suffix_words = ("_avx2", "_avx", "_avx512", "_sse", "_sse2", "_ssse3", "_sse4_1", "_sse42")
-        inner_words = ("_avx2_", "_avx_", "_avx512_", "_sse2_")
+    @staticmethod
+    def get_delay_slot_note(key, delay_slot_insn):
+        # the delay slot runs before the callee, so the register used there may not have the argument yet
+        if key is None:
+            return ""
+        if delay_slot_insn is None:
+            return ""
+        if key.lstrip("$") not in re.findall(r"\w+", " ".join(delay_slot_insn.operands)):
+            return ""
+        text = "{:s} {:s}".format(delay_slot_insn.mnemonic, ", ".join(delay_slot_insn.operands))
+        return " " + Color.colorify("(before the delay slot: {:s})".format(text), "bold yellow")
 
-        if block.function.name.endswith(suffix_words):
-            match = True
-        elif any(x in block.function.name for x in inner_words):
-            match = True
-        else:
-            match = False
-
-        if match:
-            function_name = "{:#x} <{:s}>".format(block.start, block.function.name)
-            self.print_guessed_arguments(function_name, redirect)
-            return True
-
-        return False
-
-    def print_arguments_from_symbol(self, block, redirect):
+    def print_arguments_from_symbol(self, block, redirect, delay_slot_insn):
         """If symbols were found, parse them and print the argument adequately."""
+        # block.start is the lowest address, which may be the cold part split by GCC
+        function_name = "{:#x} <{:s}>".format(int(block.function.value().address), block.function.name)
 
         # setup iterator
         args_info = [x for x in block if x.is_argument]
@@ -48344,13 +48384,13 @@ class ContextArgumentsCommand(GenericCommand):
 
             # special case
             if len(args_info) == 0:
-                # Some string processing functions are implemented in assembly for speed.
+                # Some functions are implemented in assembly (e.g., the string processing functions for speed).
                 # Since there is no type information for these arguments, the number of arguments is always 0.
-                # Here, if a function name matches the blacklist, type information is not used and
+                # Here, if the function is in an assembly source, type information is not used and
                 # print_guessed_arguments is forcibly called to display context_args.nb_guessed_arguments arguments.
-                if is_x86():
-                    if self.print_arguments_from_symbol_x86(block, redirect):
-                        return
+                if block.function.symtab.filename.endswith((".S", ".s")):
+                    self.print_guessed_arguments(function_name, redirect, delay_slot_insn)
+                    return
         else:
             # old implementation.
             # we can get type names, but not variable names
@@ -48384,9 +48424,15 @@ class ContextArgumentsCommand(GenericCommand):
             # value
             value = "<unavailable: unsupported argument ABI>"
             if can_read:
-                raw_value = current_arch.get_ith_parameter(i, in_func=False)[1]
+                try:
+                    key, raw_value = current_arch.get_ith_parameter(i, in_func=False)
+                except gdb.MemoryError:
+                    # e.g., the arguments on the stack beyond its end
+                    key, raw_value = None, None
+                    value = "<unavailable: cannot access memory>"
                 if raw_value is not None:
                     value = AddressUtil.recursive_dereference_to_string(raw_value)
+                    value += self.get_delay_slot_note(key, delay_slot_insn)
 
             # name
             name = f.name or "var_{:d}".format(i)
@@ -48401,14 +48447,14 @@ class ContextArgumentsCommand(GenericCommand):
 
         # output
         ContextCommand.context_title(title, redirect)
-        gef_print("{:#x} <{:s}> (".format(block.start, block.function.name), redirect=redirect)
+        gef_print("{:s} (".format(function_name), redirect=redirect)
         for a in args:
             gef_print("   {:s},".format(a), redirect=redirect)
         gef_print(")", redirect=redirect)
         return
 
-    def print_guessed_arguments(self, function_name, redirect):
-        """When no symbol, print six arguments."""
+    def print_guessed_arguments(self, function_name, redirect, delay_slot_insn):
+        """When no symbol or no type information, print context_args.nb_guessed_arguments arguments."""
         arg_key_color = Config.get("theme.registers_register_name")
         nb_argument = Config.get("context_args.nb_guessed_arguments")
 
@@ -48420,6 +48466,7 @@ class ContextArgumentsCommand(GenericCommand):
                 value = AddressUtil.recursive_dereference_to_string(value)
             except Exception:
                 break
+            value += self.get_delay_slot_note(key, delay_slot_insn)
             args.append("{:s} = {:s}".format(Color.colorify(key, arg_key_color), value))
 
         # output
@@ -48452,11 +48499,35 @@ class ContextArgumentsCommand(GenericCommand):
         if not current_arch.is_call(insn):
             return
 
+        # i386 calls __kernel_vsyscall (AT_SYSINFO) for syscalls (e.g., `call DWORD PTR gs:0x10`)
+        if is_x86_32():
+            auxv = Auxv.get_auxiliary_values()
+            if auxv and "AT_SYSINFO" in auxv and ContextCodeCommand.get_branch_addr(insn) == auxv["AT_SYSINFO"]:
+                ContextCommand.context_title("arguments", redirect)
+                ContextCommand.execute_command("syscall-args", redirect)
+                return
+
+        # the delay slot runs before the callee, and may set the arguments
+        delay_slot = current_arch.has_delay_slot
+        if is_arc32() or is_arc64():
+            delay_slot = insn.mnemonic.endswith(".d") or insn.mnemonic.endswith(".d.nt")
+        elif is_mips():
+            if insn.mnemonic.endswith("c"):
+                # the compact branches of R6 (e.g., `balc` and `jialc`) have no delay slot
+                delay_slot = False
+        elif is_microblaze():
+            # only the branches with `d` (e.g., `brlid` and `bralid`) have the delay slot
+            delay_slot = insn.mnemonic.endswith("d")
+        if delay_slot:
+            delay_slot_insn = get_insn_next()
+        else:
+            delay_slot_insn = None
+
         # call case (from symbol)
         block = self.get_call_destination_function_block(insn)
         if block:
-            # okay, it has symbols and not in blacklist
-            self.print_arguments_from_symbol(block, redirect)
+            # okay, it has symbols with the parameters of the callee
+            self.print_arguments_from_symbol(block, redirect, delay_slot_insn)
             return
 
         # call case (guessing)
@@ -48470,7 +48541,7 @@ class ContextArgumentsCommand(GenericCommand):
             if not function_name:
                 # e.g., `bctrl` of PPC
                 function_name = insn.mnemonic
-        self.print_guessed_arguments(function_name, redirect)
+        self.print_guessed_arguments(function_name, redirect, delay_slot_insn)
         return
 
     @Decorator.parse_args
@@ -48656,7 +48727,7 @@ class ContextSourceCommand(GenericCommand):
 
 @register_command
 class ContextMemoryWatchCommand(GenericCommand):
-    """Context internal command to display watching memory."""
+    """Context internal command to display the watched memory."""
 
     _cmdline_ = "context-mem-watch"
     _category_ = "01-a. Debugging Support - Context"
@@ -48712,7 +48783,7 @@ class ContextTraceCommand(GenericCommand):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context trace` to")
         self.add_setting("nb_lines", 10, "Number of lines in the backtrace pane")
-        self.add_setting("nb_lines_before", 2, "Number of lines in the backtrace pane before selected frame")
+        self.add_setting("nb_lines_before", 2, "Number of lines in the backtrace pane before the selected frame")
         return
 
     def context_trace(self, redirect):
@@ -48752,19 +48823,38 @@ class ContextTraceCommand(GenericCommand):
 
         try:
             while current_frame and nb_lines:
-                current_frame.select()
                 if not current_frame.is_valid():
                     break
 
                 # address and symbol
                 pc = current_frame.pc()
                 if is_x86_16():
+                    # real2phys reads $cs of the selected frame. Do not select it otherwise,
+                    # since gdb switches `set language auto` to the language of the frame.
+                    current_frame.select()
                     pc = current_arch.real2phys("$cs", pc)
-                location = Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
+                # A caller frame has the return address, which is out of the function after a call of a noreturn function.
+                # So use the address in the call like get_frame_address_in_block of gdb, except under a signal frame.
+                lookup_pc = pc
+                newer_frame = current_frame.newer()
+                while newer_frame and newer_frame.type() == gdb.INLINE_FRAME:
+                    newer_frame = newer_frame.newer()
+                if newer_frame and newer_frame.type() not in (gdb.SIGTRAMP_FRAME, gdb.DUMMY_FRAME):
+                    lookup_pc = pc - 1
+                if lookup_pc == pc:
+                    location = Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
+                else:
+                    ret = Symbol.lookup(lookup_pc)
+                    if ret is None:
+                        symbol = "<NO_SYMBOL>"
+                    else:
+                        name, offset = ret
+                        symbol = "<{:s}+{:#x}>".format(Instruction.smartify_text(name), offset + 1)
+                    location = "{!s} {:s}".format(ProcessMap.lookup(pc), symbol)
 
                 # frame name
                 """
-                Frame names (=current_frmae.name()) and symbols (=Symbol.format(current_frame.pc()))
+                Frame names (=current_frame.name()) and symbols (=Symbol.format(current_frame.pc()))
                 usually match, but sometimes they don't. This is an example.
 
                 gef> bt
@@ -48775,23 +48865,27 @@ class ContextTraceCommand(GenericCommand):
                 #4  ___pthread_cond_timedwait64
 
                 gef> context trace
-                [#0] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
-                [#1] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
-                [#2] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
-                [#3] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
-                [#4] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
+                [*#0] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
+                [ #1] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
+                [ #2] 0x7f0635e9119d <__futex_abstimed_wait_cancelable64+0xed>
+                [ #3] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
+                [ #4] 0x7f0635e93f1b <pthread_cond_timedwait+0x23b>
 
                 This likely occurs when each symbol exists but is inlined into a single function by optimization.
                 Therefore, the frame name is also displayed if it differs.
                 """
                 try:
-                    ret = Symbol.lookup_gdb(pc)
-                    if ret is None:
+                    ret = Symbol.lookup_gdb(lookup_pc)
+                    current_frame_name = current_frame.name()
+                    if ret is None or current_frame_name is None:
                         frame_name = None
-                    elif ret[0] == current_frame.name():
+                    elif ret[0] == current_frame_name:
+                        frame_name = None
+                    elif re.match(r"(?:.* )?{:s}\(".format(re.escape(current_frame_name)), ret[0]):
+                        # C++ frame names have no parameters (e.g., ns::f of `ns::f(int)`, ns::g<int> of `int ns::g<int>(int)`)
                         frame_name = None
                     else:
-                        frame_name = Instruction.smartify_text(current_frame.name())
+                        frame_name = Instruction.smartify_text(current_frame_name)
                 except (ValueError, gdb.error):
                     frame_name = None
 
@@ -48889,9 +48983,13 @@ class ContextThreadsCommand(GenericCommand):
             return
         if nb_lines > 0:
             # bring selected thread to the top
-            selected_thread = gdb.selected_thread()
+            try:
+                selected_thread = gdb.selected_thread()
+            except SystemError:
+                # the selected thread has terminated (e.g., `call (void)pthread_exit(0)`)
+                selected_thread = None
             for i, t in enumerate(threads):
-                if t.num == selected_thread.num:
+                if selected_thread is not None and t.num == selected_thread.num:
                     threads = [threads[i]] + threads[:i] + threads[i + 1:]
                     break
             # cut off
@@ -48937,6 +49035,10 @@ class ContextThreadsCommand(GenericCommand):
                     line += Color.colorify("exited", "bold yellow")
                 elif thread.is_stopped():
                     line += Color.colorify("stopped", "bold red")
+                    # the terminated thread cannot be selected again after switching to another
+                    if selected_thread is None:
+                        lines.append([thread.num, line])
+                        continue
                     # switch test
                     try:
                         thread.switch()
@@ -48946,12 +49048,17 @@ class ContextThreadsCommand(GenericCommand):
                         continue
                     # get pc
                     try:
-                        frame = gdb.selected_frame()
+                        # switching to the selected thread keeps the frame selected by `up`
+                        frame = gdb.newest_frame()
+                        frame.select()
                         pc = frame.pc()
                     except gdb.error:
-                        # gdb.selected_frame() may error for unknown reasons (often during kernel startup).
+                        # gdb.newest_frame() may error for unknown reasons (often during kernel startup).
                         # if failed, print thread information without frame (but with $pc).
                         pc = get_register("$pc")
+                    if is_x86_16():
+                        # the pc of the frame is IP without CS
+                        pc = current_arch.pc
                     # make reason
                     line += " at " + Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
                     stop = GefUtil.get_stop_reason()
@@ -48981,7 +49088,7 @@ class ContextThreadsCommand(GenericCommand):
 
 @register_command
 class ContextExtraCommand(GenericCommand):
-    """Context internal command to display extra information or execute command."""
+    """Context internal command to display extra information or execute user commands."""
 
     _cmdline_ = "context-extra"
     _category_ = "01-a. Debugging Support - Context"
@@ -49000,7 +49107,7 @@ class ContextExtraCommand(GenericCommand):
 
     @staticmethod
     def push_context_message(level, message):
-        """Push the message to be displayed the next time the context is invoked."""
+        """Push the message to be displayed each time the context is invoked until the inferior resumes or exits."""
         if level not in ("error", "warn", "ok", "info"):
             err("Invalid level '{}', discarding message".format(level))
             return
@@ -49028,10 +49135,15 @@ class ContextExtraCommand(GenericCommand):
             elif level == "info":
                 info(text, redirect=redirect)
 
+        _, tty_columns = GefUtil.get_terminal_size(redirect=redirect)
+        line_color = Config.get("theme.context_title_line")
+        msg_color = Config.get("theme.context_title_message")
         for command in self.context_extra_commands:
-            gef_print(titlify(command), redirect=redirect)
+            gef_print(titlify(command, color=line_color, msg_color=msg_color, cols=tty_columns), redirect=redirect)
             try:
-                ContextCommand.execute_command(command, redirect)
+                # the pager runs at each stop, and in the terminal of gdb even with redirect
+                with ContextManager.config("gef.always_no_pager", True):
+                    ContextCommand.execute_command(command, redirect)
             except Exception as e:
                 ContextCommand.report_error(e, redirect)
         return
@@ -49553,7 +49665,7 @@ class LoadFileCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the memory address to load.")
+                        help="the memory address to load into.")
     parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to load.")
     parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", type=AddressUtil.parse_address, default=0,
                         help="the offset of the file to load.")
@@ -49594,15 +49706,23 @@ class LoadFileCommand(GenericCommand):
         if not os.path.isfile(args.file_path):
             err("Could not find {:s}".format(args.file_path))
             return None
+        # check before load-file-mmap maps the memory
+        if not os.access(args.file_path, os.R_OK):
+            err("Could not read {:s}".format(args.file_path))
+            return None
         if args.file_offset < 0:
             err("Invalid FILE_OFFSET")
+            return None
+        file_size = os.path.getsize(args.file_path)
+        if args.file_offset >= file_size:
+            err("FILE_OFFSET is out of the file (size: {:#x})".format(file_size))
             return None
         if args.load_size is not None and args.load_size < 0:
             err("Invalid LOAD_SIZE")
             return None
         if args.load_size is not None:
             return args.load_size
-        return max(0, os.path.getsize(args.file_path) - args.file_offset)
+        return file_size - args.file_offset
 
     @staticmethod
     def load_file(args, data_size):
@@ -49627,22 +49747,22 @@ class LoadFileCommand(GenericCommand):
                         ))
                         return
                     written += len(data)
-        except (OSError, gdb.error) as exception:
-            err("Load failed at {:#x}: {!s}".format(args.location + written, exception))
+        except OSError as exception:
+            err("Failed to read {:s}: {!s}".format(args.file_path, exception))
         info("Loaded {:d} of {:d} bytes at {:#x}".format(written, data_size, args.location))
         return
 
 
 @register_command
 class LoadFileMmapCommand(GenericCommand):
-    """Load the file into memory that allocated by `mmap`."""
+    """Load the file into memory that is allocated by `mmap`."""
 
     _cmdline_ = "load-file-mmap"
     _category_ = "03-f. Memory - Dump/Load"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="the memory address to load.")
+                        help="the memory address to load into.")
     parser.add_argument("file_path", metavar="FILE_PATH", help="the filepath to load.")
     parser.add_argument("file_offset", metavar="FILE_OFFSET", nargs="?", type=AddressUtil.parse_address, default=0,
                         help="the offset of the file to load.")
@@ -49670,7 +49790,7 @@ class LoadFileMmapCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "rr", "wine", "core"))
     @Decorator.exclude_specific_arch(arch=("CRIS", "x86_16", "ARM32M"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
@@ -49679,6 +49799,12 @@ class LoadFileMmapCommand(GenericCommand):
             return
         if data_size == 0:
             err("Unsupported zero size mapping")
+            return
+
+        # mmap needs AT_PAGESZ to map at LOCATION, and its message suggests omitting LOCATION, which this command cannot
+        auxval = Auxv.get_auxiliary_values()
+        if not auxval or "AT_PAGESZ" not in auxval:
+            err("Could not get the page size from auxv")
             return
 
         # +-mmap_start--+               ^             ^
@@ -49699,15 +49825,24 @@ class LoadFileMmapCommand(GenericCommand):
         mmap_end = align_to_pagesize(data_end)
         mmap_size = mmap_end - mmap_start
 
+        # mmap takes 0 as no LOCATION, and maps without MAP_FIXED at the address chosen by the kernel
+        if mmap_start == 0:
+            err("Invalid LOCATION")
+            return
+
         # mmap
         res = gdb.execute("mmap {:#x} {:#x}".format(mmap_start, mmap_size), to_string=True)
         if "[!]" in res:
+            # show the reason (e.g., the existing mapping that overlaps)
+            for line in res.splitlines():
+                if "[!]" in line:
+                    gef_print(line)
             err("Failed to mmap")
             return
 
         output_lines = Color.remove_color(res).splitlines()
         if output_lines:
-            match = re.fullmatch(r"\S+ = (0x[0-9a-fA-F]+)(?: \(.*\))?", output_lines[-1])
+            match = re.fullmatch(r"\S+ = (0x[0-9a-fA-F]+)(?: \((.*)\))?", output_lines[-1])
         else:
             match = None
         if match is None:
@@ -49715,13 +49850,11 @@ class LoadFileMmapCommand(GenericCommand):
             return
         ret = int(match.group(1), 16)
 
+        # call-syscall tells the errno of each arch (e.g., MIPS returns the positive errno and sets $a3)
+        if match.group(2):
+            err("Failed to mmap at {:#x} ({:s})".format(mmap_start, match.group(2)))
+            return
         ret = AddressUtil.normalize_address(ret)
-        signed_ret = u2i(ret, current_arch.ptrsize * 8)
-        if -4095 <= signed_ret < 0:
-            einfo = ErrnoCommand.get_errno_dict().get(-signed_ret)
-            if einfo:
-                err("Failed to mmap at {:#x} ({:s}: {:s})".format(mmap_start, einfo[0], einfo[1]))
-                return
         if ret != mmap_start:
             err("Failed to mmap at {:#x} (returned {:#x})".format(mmap_start, ret))
             return
@@ -86285,7 +86418,7 @@ class Kernel:
 
     @staticmethod
     def get_local_entry(addr):
-        """Return the address where the callers in the kernel enter the function at `addr`.
+        """Return the address where the callers in the same module (e.g., the kernel) enter the function at `addr`.
         PPC64 (ELFv2) calls the local entry, which follows `addis r2,r12,hi` and `addi r2,r2,lo` of the global entry."""
         if is_ppc64():
             code = read_memory(addr, 8, safe=True)
@@ -239659,7 +239792,11 @@ class ContextManager:
         """Preserve the selected thread and frame, yielding the original thread.
         Allow missing frames and ignore restoration errors if the saved context is no longer valid.
         """
-        thread = gdb.selected_thread()
+        try:
+            thread = gdb.selected_thread()
+        except SystemError:
+            # the selected thread has terminated (e.g., `call (void)pthread_exit(0)`)
+            thread = None
         try:
             frame = gdb.selected_frame()
         except (gdb.error, RuntimeError):
@@ -240218,7 +240355,15 @@ class GefUtil:
             try:
                 signame = signal.Signals(int(gdb.parse_and_eval("$_siginfo.si_signo"))).name
             except (gdb.error, ValueError):
-                pass
+                # the kernel writes NT_SIGINFO only for the first thread (write_note_info of fs/binfmt_elf.c),
+                # and `info program` tells that the program is not being run
+                return {
+                    "reason": "STOPPED",
+                    "selected_thread": False,
+                    "stepped": False,
+                    "breakpoints": [],
+                    "signal": None,
+                }
             else:
                 return {
                     "reason": signame,
@@ -240234,6 +240379,9 @@ class GefUtil:
         else:
             pc = re.search(r"^Program stopped at (0x[0-9a-f]+)\.", res, re.M)
             is_selected = bool(pc) and int(pc.group(1), 16) == get_register("$pc")
+            # the other threads can be at the same pc (e.g., all sleeping in a syscall wrapper)
+            if is_selected and not gdb.parameter("non-stop") and EventHandler.last_stop_thread is not None:
+                is_selected = gdb.selected_thread() == EventHandler.last_stop_thread
         breakpoints = re.findall(r"^It stopped at (?:breakpoint (\d+)|a breakpoint that has since been deleted)\.", res, re.M)
         signal_match = re.search(r"^It stopped with signal (\w+),", res, re.M)
         stepped = "It stopped after being stepped." in res
