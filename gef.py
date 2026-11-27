@@ -6126,6 +6126,37 @@ class GlibcHeap:
             arena = arena.get_next()
         return arenas
 
+    @staticmethod
+    def resolve_function(name):
+        """Resolve a function of the allocator (e.g., malloc), except the minimal one of ld.so."""
+        func_address = Symbol.resolve_address(name)
+
+        # The ld.so of glibc 2.31 and earlier also exports the minimal malloc/free/calloc/realloc as weak symbols,
+        # and gdb resolves the name to them first. They do almost nothing (e.g., free just returns), so use another one.
+        auxv = Auxv.get_auxiliary_values()
+        if func_address is None or not auxv or not auxv.get("AT_BASE"):
+            return func_address
+        x = ProcessMap.lookup(auxv["AT_BASE"]) # gdb.solib_name() returns None for the ELF header
+        if not x or not x.section:
+            return func_address
+        loader = x.section.path
+        x = ProcessMap.lookup(func_address)
+        if not x or not x.section or x.section.path != loader:
+            return func_address
+        # the loader of musl is libc itself
+        if GefUtil.get_libc() == "musl":
+            return func_address
+        res = gdb.execute("info functions ^{:s}$".format(name), to_string=True)
+        for line in res.splitlines():
+            m = re.fullmatch(r"(0x[0-9a-f]+)\s+{:s}".format(re.escape(name)), line.strip())
+            if not m:
+                continue
+            address = int(m.group(1), 16)
+            x = ProcessMap.lookup(address)
+            if x and x.section and x.section.path != loader:
+                return address
+        return None
+
     class GlibcChunk:
         """Glibc chunk class."""
 
@@ -34293,30 +34324,7 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                     return caller_address
 
         # real address (not PLT)
-        caller_address = Symbol.resolve_address(name)
-
-        # The ld.so of glibc 2.31 and earlier also exports the minimal malloc/free/calloc/realloc as weak symbols,
-        # and gdb resolves the name to them first. They do almost nothing (e.g., free just returns), so use another one.
-        auxv = Auxv.get_auxiliary_values()
-        if caller_address is None or not auxv or not auxv.get("AT_BASE"):
-            return caller_address
-        x = ProcessMap.lookup(auxv["AT_BASE"]) # gdb.solib_name() returns None for the ELF header
-        if not x or not x.section:
-            return caller_address
-        loader = x.section.path
-        x = ProcessMap.lookup(caller_address)
-        if not x or not x.section or x.section.path != loader:
-            return caller_address
-        res = gdb.execute("info functions ^{:s}$".format(name), to_string=True)
-        for line in res.splitlines():
-            m = re.fullmatch(r"(0x[0-9a-f]+)\s+{:s}".format(re.escape(name)), line.strip())
-            if not m:
-                continue
-            address = int(m.group(1), 16)
-            x = ProcessMap.lookup(address)
-            if x and x.section and x.section.path != loader:
-                return address
-        return None
+        return GlibcHeap.resolve_function(name)
 
     def make_patch_info(self, caller_address, arg1, arg2):
         """Prior to running unicorn-emulate, generate a patch to be applied."""
@@ -58303,7 +58311,7 @@ class TraceMallocBreakpoint(gdb.Breakpoint):
             return False
 
         # set bp to return address
-        if self.name in ["malloc", "valloc"]:
+        if self.name in ["malloc", "valloc", "pvalloc"]:
             _, size = current_arch.get_ith_parameter(0)
             nmemb = 1
             memptr = None
@@ -58313,7 +58321,7 @@ class TraceMallocBreakpoint(gdb.Breakpoint):
             _, size = current_arch.get_ith_parameter(1)
             memptr = None
             alignment = None
-        elif self.name in ["aligned_alloc", "memalign"]:
+        elif self.name in ["aligned_alloc", "memalign", "aligned_alloc/memalign"]:
             _, alignment = current_arch.get_ith_parameter(0)
             _, size = current_arch.get_ith_parameter(1)
             nmemb = 1
@@ -58363,7 +58371,6 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
         def get_offset_str(v):
             if v == 0:
                 return ""
-            arenas = GlibcHeap.get_all_arenas()
             for arena in arenas:
                 if arena.heap_base is None:
                     return ""
@@ -58384,7 +58391,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
             return text1
 
         def get_function_and_args():
-            if self.name in ["malloc", "valloc"]:
+            if self.name in ["malloc", "valloc", "pvalloc"]:
                 text2 = "{:s}({:#x})".format(
                     self.name, self.size,
                 )
@@ -58392,7 +58399,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
                 text2 = "{:s}({:#x}, {:#x})".format(
                     self.name, self.nmemb, self.size,
                 )
-            elif self.name in ["aligned_alloc", "memalign"]:
+            elif self.name in ["aligned_alloc", "memalign", "aligned_alloc/memalign"]:
                 text2 = "{:s}({:#x}, {:#x})".format(
                     self.name, self.alignment, self.size,
                 )
@@ -58404,12 +58411,13 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
 
         def get_caller():
             try:
-                caller = get_insn_prev().address
+                caller = GlibcHeapTracerCommand.get_call_address(current_arch.pc)
                 return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
 
         # dump
+        arenas = GlibcHeapTracerCommand.get_arenas()
         line = "{:s} - {:s} = {:s} @ {:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
             get_result(),
@@ -58459,11 +58467,13 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
 
         # get returned address
         if self.name == "posix_memalign":
-            if AddressUtil.parse_address(current_arch.return_register) & 0xffffffff:
-                return False
-            allocated = read_int_from_memory(self.memptr)
+            # it returns an error number without storing on failure, so show it as NULL like a failed malloc
+            if GlibcHeapTracerCommand.get_return_value() & 0xffffffff:
+                allocated = 0
+            else:
+                allocated = read_int_from_memory(self.memptr)
         else:
-            allocated = AddressUtil.parse_address(current_arch.return_register)
+            allocated = GlibcHeapTracerCommand.get_return_value()
         allocated = ProcessMap.lookup(allocated)
 
         # show information
@@ -58566,7 +58576,6 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         def get_offset_str(v):
             if v == 0:
                 return ""
-            arenas = GlibcHeap.get_all_arenas()
             for arena in arenas:
                 if arena.heap_base is None:
                     return ""
@@ -58620,12 +58629,13 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
 
         def get_caller():
             try:
-                caller = get_insn_prev().address
+                caller = GlibcHeapTracerCommand.get_call_address(current_arch.pc)
                 return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
 
         # dump
+        arenas = GlibcHeapTracerCommand.get_arenas()
         line = "{:s} - {:s} = {:s} @ {:s} // {:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
             get_result(),
@@ -58678,10 +58688,12 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
             if idx is not None:
                 self.state["freed"].pop(idx)
         elif self.old_loc.value != new_loc.value:
-            # pop from allocated list if it was in it
+            # move from allocated list to freed list if it was in it, since realloc frees the old chunk
             idx = self.search_allocated_index(self.old_loc)
             if idx is not None:
-                self.state["allocated"].pop(idx)
+                item = self.state["allocated"].pop(idx)
+                item = (self.state["action_index"], item[1], item[2])
+                self.state["freed"].append(item)
             # pop from freed list if it was in it
             idx = self.search_freed_index(new_loc)
             if idx is not None:
@@ -58710,7 +58722,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         self.state["action_index"] += 1
 
         # get returned address
-        new_loc = AddressUtil.parse_address(current_arch.return_register)
+        new_loc = GlibcHeapTracerCommand.get_return_value()
         new_loc = ProcessMap.lookup(new_loc)
 
         # show information
@@ -58779,7 +58791,6 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         def get_offset_str(v):
             if v == 0:
                 return ""
-            arenas = GlibcHeap.get_all_arenas()
             for arena in arenas:
                 if arena.heap_base is None:
                     return ""
@@ -58809,13 +58820,13 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
 
         def get_caller():
             try:
-                caller = gdb.selected_frame().older().pc()
-                caller = get_insn_prev(caller).address
+                caller = GlibcHeapTracerCommand.get_call_address(gdb.selected_frame().older().pc())
                 return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
 
         # dump
+        arenas = GlibcHeapTracerCommand.get_arenas()
         line = "{:s} - {:s} = {:s} @ {:s}".format(
             Color.colorify("Heap-Analysis", "bold yellow"),
             get_result(),
@@ -58888,6 +58899,13 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         if to_free.value == 0:
             return False
 
+        # glibc 2.26-2.42 frees the tcache (allocated by _int_malloc, not by malloc) and its entries (freed already)
+        # by tcache_thread_shutdown at the thread exit, so do not check what libc frees by itself
+        if self.search_allocated_index(to_free) is None:
+            libc = gdb.solib_name(self.loc.value)
+            if libc is not None and libc == gdb.solib_name(gdb.selected_frame().older().pc()):
+                return False
+
         # check double free
         ret = self.check_double_free(to_free)
         if ret:
@@ -58898,10 +58916,12 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         if ret:
             return True # break
 
-        TraceFreeRetBreakpoint(to_free)
-
         # update list
         self.update_list(to_free)
+
+        # FinishBreakpoint cannot be set on a dummy frame (e.g., `call (void)free(p)` from gdb)
+        if gdb.newest_frame().older().type() != gdb.DUMMY_FRAME:
+            TraceFreeRetBreakpoint(to_free)
 
         return False
 
@@ -58981,6 +59001,38 @@ class GlibcHeapTracerCommand(GenericCommand):
             state["breakpoints"].remove(bp)
         return
 
+    @staticmethod
+    def get_arenas():
+        # other libcs (e.g., musl) and glibc of an unknown version have no arena, and get_arena shows errors for them
+        if get_libc_version(silent=True) is None:
+            return []
+        try:
+            GlibcHeap.search_for_main_arena()
+        except OSError:
+            return []
+        return GlibcHeap.get_all_arenas()
+
+    @staticmethod
+    def get_call_address(ret_addr):
+        insn = get_insn_prev(ret_addr)
+        # the arches with the delay slot (e.g., MIPS, SPARC and HPPA) return after it,
+        # except for a call without it (e.g., `balc` of MIPS R6)
+        if current_arch.has_delay_slot and not current_arch.is_call(insn):
+            prev_insn = get_insn_prev(insn.address)
+            if prev_insn is not None and current_arch.is_call(prev_insn):
+                insn = prev_insn
+        return insn.address
+
+    @staticmethod
+    def get_return_value():
+        # the windowed ABI of Xtensa returns in a(N+2) of the caller of callN (e.g., a10 for call8)
+        if is_xtensa():
+            insn = get_insn_prev()
+            if insn is not None and current_arch.is_call(insn):
+                regnum = int(re.sub(r"\D", "", insn.mnemonic)) + 2
+                return AddressUtil.parse_address("$a{:d}".format(regnum))
+        return AddressUtil.parse_address(current_arch.return_register)
+
     def dump_tracked_allocations(self):
         state = self.get_state()
         if state["allocated"]:
@@ -58998,47 +59050,74 @@ class GlibcHeapTracerCommand(GenericCommand):
             ok("No freed chunk tracked")
         return
 
-    def setup(self):
+    def set_breakpoints(self, verbose):
 
         def setup_breakpoints(bp_class, name):
-            try:
-                address = AddressUtil.parse_address(name)
-                address = ProcessMap.lookup(address)
-            except gdb.error:
-                warn("breakpoint setup failed: {:s}".format(name))
+            if verbose:
+                ok("Tracking {:s}()".format(name))
+            address = GlibcHeap.resolve_function(name)
+            if address is None:
+                if verbose:
+                    warn("breakpoint setup failed: {:s}".format(name))
                 return
+            # the callers in the same module enter after the TOC/GP setup (e.g., PPC64 ELFv2 and Alpha)
+            address = ProcessMap.lookup(Kernel.get_local_entry(address))
+            # aligned_alloc of glibc 2.37 and earlier is an alias of memalign, so trace them by 1 breakpoint
+            for bp in state["breakpoints"]:
+                if isinstance(bp, bp_class) and bp.loc.value == address.value:
+                    bp.name += "/" + name
+                    return
             bp_class(name, address, self.output_filename)
             return
 
+        # a new objfile may change the resolved functions (e.g., libc loaded after `starti`), so set them again
+        state = self.get_state()
+        for bp in state["breakpoints"][:]:
+            if not isinstance(bp, (TraceMallocBreakpoint, TraceReallocBreakpoint, TraceFreeBreakpoint)):
+                continue
+            if bp.is_valid():
+                bp.delete()
+            state["breakpoints"].remove(bp)
+
+        setup_breakpoints(TraceMallocBreakpoint, "malloc")
+
+        setup_breakpoints(TraceFreeBreakpoint, "free")
+
+        setup_breakpoints(TraceReallocBreakpoint, "realloc")
+        setup_breakpoints(TraceReallocBreakpoint, "reallocarray")
+
+        setup_breakpoints(TraceMallocBreakpoint, "calloc")
+
+        setup_breakpoints(TraceMallocBreakpoint, "aligned_alloc")
+        setup_breakpoints(TraceMallocBreakpoint, "memalign")
+        setup_breakpoints(TraceMallocBreakpoint, "posix_memalign")
+        setup_breakpoints(TraceMallocBreakpoint, "valloc")
+        setup_breakpoints(TraceMallocBreakpoint, "pvalloc")
+
+        return
+
+    def setup(self):
         self.clean(None)
         if not GlibcHeapTracerCommand.heap_states:
             EventHooking.gef_on_exit_hook(self.clean)
+            gdb.events.new_objfile.connect(self.on_new_objfile)
         inferior = gdb.selected_inferior()
         GlibcHeapTracerCommand.heap_states[inferior] = self.get_state(inferior)
+        self.set_breakpoints(verbose=True)
+        return
 
-        ok("Tracking malloc()")
-        setup_breakpoints(TraceMallocBreakpoint, "malloc")
-
-        ok("Tracking free()")
-        setup_breakpoints(TraceFreeBreakpoint, "free")
-
-        ok("Tracking realloc()")
-        setup_breakpoints(TraceReallocBreakpoint, "realloc")
-        ok("Tracking reallocarray()")
-        setup_breakpoints(TraceReallocBreakpoint, "reallocarray")
-
-        ok("Tracking calloc()")
-        setup_breakpoints(TraceMallocBreakpoint, "calloc")
-
-        ok("Tracking aligned_alloc()")
-        setup_breakpoints(TraceMallocBreakpoint, "aligned_alloc")
-        ok("Tracking memalign()")
-        setup_breakpoints(TraceMallocBreakpoint, "memalign")
-        ok("Tracking posix_memalign()")
-        setup_breakpoints(TraceMallocBreakpoint, "posix_memalign")
-        ok("Tracking valloc()")
-        setup_breakpoints(TraceMallocBreakpoint, "valloc")
-
+    def on_new_objfile(self, event):
+        if gdb.selected_inferior() not in GlibcHeapTracerCommand.heap_states:
+            return
+        # exec replaces the program, so the breakpoints and the tracked chunks are stale.
+        # gdb loads the new program of exec before it reports the stop, so the thread is still running.
+        objfile = event.new_objfile
+        if objfile.filename == objfile.progspace.filename:
+            thread = gdb.selected_thread()
+            if thread is not None and thread.is_running():
+                self.clean(None)
+                return
+        self.set_breakpoints(verbose=False)
         return
 
     def clean(self, event):
@@ -59054,6 +59133,7 @@ class GlibcHeapTracerCommand(GenericCommand):
 
         if not GlibcHeapTracerCommand.heap_states:
             EventHooking.gef_on_exit_unhook(self.clean)
+            gdb.events.new_objfile.disconnect(self.on_new_objfile)
         return
 
     @Decorator.parse_args
@@ -70655,6 +70735,31 @@ class HeapBaseCommand(GenericCommand):
         if heap_base is not None:
             return heap_base
 
+        # mp_ of libc.so is not just before main_arena (e.g., 0x940 before in Ubuntu glibc 2.43),
+        # so search for it by the values of its members
+        current = main_arena_addr - GlibcHeap.MallocPar(0).sizeof
+        for _ in range(500):
+            if not is_valid_addr(current):
+                break
+            mp = GlibcHeap.MallocPar(current)
+            current -= current_arch.ptrsize
+            # brk fails from the start, so sbrk_base is the start of the first mmapped region
+            sbrk_base = int(mp.sbrk_base)
+            if sbrk_base == 0 or sbrk_base % get_pagesize() != 0:
+                continue
+            sect = ProcessMap.process_lookup_address(sbrk_base)
+            if sect is None or not sect.is_writable():
+                continue
+            # the peaks are never less than the current values
+            if int(mp.max_n_mmaps) < int(mp.n_mmaps):
+                continue
+            if int(mp.max_mmapped_mem) < int(mp.mmapped_mem):
+                continue
+            # no_dyn_threshold is a flag (0 or 1)
+            if int(mp.no_dyn_threshold) > 1:
+                continue
+            return sbrk_base
+
         sect = ProcessMap.process_lookup_address(main_arena.top)
         if sect is None or sect.path == "[heap]":
             return None
@@ -73441,7 +73546,21 @@ class DistanceCommand(GenericCommand):
             err("Could not find the base address")
             return
 
-        base_address = ProcessMap.get_section_load_base_address(addr_a.section)
+        section = addr_a.section
+        if not section.path and addr_a.info:
+            # the latter part of .bss is in an anonymous region (e.g., `char big[0x10000]`),
+            # so use the nearest region below that maps a section of the same file
+            file_sections = []
+            for zone in ProcessMap.get_info_files():
+                if zone.filename != addr_a.info.filename or zone.zone_start > args.address_a:
+                    continue
+                zone_section = ProcessMap.process_lookup_address(zone.zone_start)
+                if zone_section and zone_section.path:
+                    file_sections.append(zone_section)
+            if file_sections:
+                section = max(file_sections, key=lambda x: x.page_start)
+
+        base_address = ProcessMap.get_section_load_base_address(section)
         offset = args.address_a - base_address
         gef_print("Address: {:#x}".format(args.address_a))
         gef_print("Base:    {:#x}".format(base_address))
@@ -73547,13 +73666,19 @@ class UnsignedCommand(GenericCommand):
     _category_ = "07-a. Misc - Conversion"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("value", metavar="VALUE", type=AddressUtil.parse_address,
+    # the unsigned parse makes a negative register positive in the pointer width (e.g., `$eax` = -0xa0 of i386)
+    parser.add_argument("value", metavar="VALUE", type=lambda x: AddressUtil.parse_address(x, signed=True),
                         help="the value to convert.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
         "{0:s} -- -0xa0",
     ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "In each width, a positive VALUE that fits with the MSB clear is taken as the absolute value of a negative number,",
+        "and the others are masked to the width.",
+    ])
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -73598,14 +73723,19 @@ class AddressifyCommand(GenericCommand):
     def do_invoke(self, args):
         hex_value = ""
         for value in args.value:
-            for c in value.lower().replace("0x", ""):
-                if c in "0123456789abcdef":
-                    hex_value += c
+            # a byte of 1 digit (e.g., `0x0 0x5 0xe0` by hex()) is padded to keep the byte boundary
+            for digits in re.split(r"[^0-9a-f]+", value.lower().replace("0x", "")):
+                if len(digits) == 1:
+                    digits = "0" + digits
+                hex_value += digits
         if hex_value == "":
             err("No hex digits found in input")
             return
         if len(hex_value) % 2 != 0:
             err("Hex value length is odd")
+            return
+        if len(hex_value) // 2 > current_arch.ptrsize:
+            err("Hex value is longer than the pointer size")
             return
 
         hex_values = slicer(hex_value, 2)
@@ -73617,7 +73747,8 @@ class AddressifyCommand(GenericCommand):
         address = ProcessMap.lookup(address)
 
         gef_print("Byte order: {:s}".format(args.byte_order))
-        if address.valid and address.section.path:
+        # the section is unknown before the process runs, and in qemu-system, KGDB and VMware
+        if is_alive() and address.valid and address.section and address.section.path:
             gef_print("{!s} @ {:s}".format(address, address.section.path))
         elif is_valid_addr(address.value):
             gef_print("{!s} (valid)".format(address))
@@ -87587,12 +87718,18 @@ class Kernel:
     @staticmethod
     def get_local_entry(addr):
         """Return the address where the callers in the same module (e.g., the kernel) enter the function at `addr`.
-        PPC64 (ELFv2) calls the local entry, which follows `addis r2,r12,hi` and `addi r2,r2,lo` of the global entry."""
+        PPC64 (ELFv2) calls the local entry, which follows `addis r2,r12,hi` and `addi r2,r2,lo` of the global entry.
+        Alpha calls the entry after `ldah gp,hi(t12)` and `lda gp,lo(gp)` by `bsr` (e.g., `bsr ra,__libc_malloc+0x8`)."""
         if is_ppc64():
             code = read_memory(addr, 8, safe=True)
             if code is not None:
                 # non-PIC code (e.g., a static binary) sets the TOC by `lis r2,hi` instead of `addis r2,r12,hi`
                 if u32(code[:4]) >> 16 in (0x3c4c, 0x3c40) and u32(code[4:]) >> 16 == 0x3842:
+                    return addr + 8
+        elif is_alpha():
+            code = read_memory(addr, 8, safe=True)
+            if code is not None:
+                if u32(code[:4]) >> 16 == 0x27bb and u32(code[4:]) >> 16 == 0x23bd:
                     return addr + 8
         return addr
 
