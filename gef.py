@@ -2012,13 +2012,29 @@ class AddressUtil:
     @Cache.cache_this_session
     def get_recursive_dereference_blacklist():
         """Return the blacklist of addresses (for caching purposes after eval())."""
-        blacklist = eval(Config.get("dereference.blacklist"))
-        for range_list in blacklist:
-            assert isinstance(range_list, list)
-            assert len(range_list) == 2
-            assert isinstance(range_list[0], int)
-            assert isinstance(range_list[1], int)
+        try:
+            blacklist = eval(Config.get("dereference.blacklist"))
+        except Exception:
+            blacklist = None
+        valid = isinstance(blacklist, list)
+        if valid:
+            for range_list in blacklist:
+                if not isinstance(range_list, list) or len(range_list) != 2:
+                    valid = False
+                    break
+                if not isinstance(range_list[0], int) or not isinstance(range_list[1], int):
+                    valid = False
+                    break
+        # this is cached, so the error is shown once
+        if not valid:
+            err('Ignore dereference.blacklist of an invalid format (e.g., "[[0xffffffffc9000000, 0xffffffffc9001000]]")')
+            return []
         return blacklist
+
+    @staticmethod
+    def is_in_dereference_blacklist(addr):
+        """Return True if `addr` is in dereference.blacklist, which must not be read."""
+        return any(bstart <= addr < bend for bstart, bend in AddressUtil.get_recursive_dereference_blacklist())
 
     @staticmethod
     @Cache.cache_until_next
@@ -2027,8 +2043,8 @@ class AddressUtil:
         if not is_alive():
             return [addr], None
 
-        recursion = Config.get("dereference.max_recursion")
-        blacklist = AddressUtil.get_recursive_dereference_blacklist()
+        # 1 reads nothing and 0 or less makes nothing, so make at least the address and its value
+        recursion = max(Config.get("dereference.max_recursion"), 2)
         addr_list = []
         addr_set = set()
         error = None
@@ -2048,8 +2064,10 @@ class AddressUtil:
             addr_list.append(addr)
             addr_set.add(addr)
 
-            # check blacklist
-            if any(bstart <= addr < bend for bstart, bend in blacklist):
+            # check blacklist, except for the first physical address, which the virtual addresses cannot be compared with
+            if phys and len(addr_list) == 1:
+                pass
+            elif AddressUtil.is_in_dereference_blacklist(addr):
                 error = "[blacklist detected]"
                 break
 
@@ -2060,6 +2078,9 @@ class AddressUtil:
             # goto next
             if phys and len(addr_list) == 1:
                 mem = read_physmem(addr, current_arch.ptrsize)
+                # read_physmem returns None instead of raising an error
+                if mem is None or len(mem) != current_arch.ptrsize:
+                    break
                 unpack = GefUtil.get_unpack()
                 addr = unpack(mem)
             else:
@@ -2095,15 +2116,17 @@ class AddressUtil:
 
         # replace to string if valid
         def to_ascii(v):
-            if not isinstance(v, int) or v < 0:
+            if not isinstance(v, int) or v < 0 or v >> (current_arch.ptrsize * 8):
                 return ""
+            # the bytes in memory, since the lowest byte of big endian is the last one
             s = ""
-            while v & 0xff: # \0
-                if chr(v & 0xff) in String.STRING_PRINTABLE:
-                    s += chr(v & 0xff)
+            for c in v.to_bytes(current_arch.ptrsize, Endian.endian_str()):
+                if c == 0: # \0
+                    break
+                if chr(c) in String.STRING_PRINTABLE:
+                    s += chr(c)
                 else:
                     return ""
-                v >>= 8
             return s
 
         last_elem = None
@@ -2135,12 +2158,15 @@ class AddressUtil:
         # others
         msg = []
         for addr in addrs[skip_idx:]:
-            address = ProcessMap.lookup(addr)
+            if AddressUtil.is_in_dereference_blacklist(addr):
+                # Address.valid of the color reads it
+                address_text = AddressUtil.format_address(addr, long_fmt=True)
+            else:
+                address_text = ProcessMap.lookup(addr).long_fmt()
             if quiet:
-                msg.append(address.long_fmt())
+                msg.append(address_text)
             else:
                 symbol = Symbol.format(addr)
-                address_text = address.long_fmt()
                 if symbol:
                     msg.append(address_text + " " + symbol)
                 else:
@@ -16638,6 +16664,9 @@ class ProcessMap:
 
             pages = []
             for phdr in elf.phdrs:
+                # the pages are from PT_LOAD, and only PT_GNU_RELRO lowers their permission (e.g., PT_TLS covers .data)
+                if phdr.p_type not in (Elf.Phdr.PT_LOAD, Elf.Phdr.PT_GNU_RELRO):
+                    continue
                 if not phdr.p_memsz:
                     continue
 
@@ -16738,12 +16767,25 @@ class ProcessMap:
                 vaddr_end += elf.addr
 
             # search DT_DEBUG
+            dt_debug = None
+            rld_map = None
             for tag_addr in range(vaddr, vaddr_end, current_arch.ptrsize * 2):
                 tag = read_int_from_memory(tag_addr)
                 if tag == 21: # DT_DEBUG
                     dt_debug = read_int_from_memory(tag_addr + current_arch.ptrsize)
-                    break
-            else:
+                    if dt_debug:
+                        break
+                elif is_mips() and tag == 0x70000035: # DT_MIPS_RLD_MAP_REL, relative to the entry itself
+                    value = read_int_from_memory(tag_addr + current_arch.ptrsize)
+                    rld_map = (tag_addr + value) & ((1 << (current_arch.ptrsize * 8)) - 1)
+                elif is_mips() and tag == 0x70000016 and rld_map is None: # DT_MIPS_RLD_MAP
+                    rld_map = read_int_from_memory(tag_addr + current_arch.ptrsize)
+
+            # .dynamic of MIPS is read-only, so ld.so leaves DT_DEBUG zero, and writes the address of r_debug
+            # where DT_MIPS_RLD_MAP_REL or DT_MIPS_RLD_MAP points instead (sysdeps/mips/dl-debug.h of glibc)
+            if not dt_debug and rld_map is not None:
+                dt_debug = read_int_from_memory(rld_map, safe=True)
+            if not dt_debug:
                 # not found
                 return None
 
@@ -17275,6 +17317,7 @@ class EventHandler:
             ("memory_changed", EventHandler.state_changed_handler),
             ("register_changed", EventHandler.state_changed_handler),
             ("inferior_call", ContextRegistersCommand.update_inferior_call),
+            ("inferior_call", EventHandler.inferior_call_handler),
         ]
         if hasattr(gdb.events, "selected_context"):
             handlers.extend([
@@ -17592,6 +17635,13 @@ class EventHandler:
     def state_changed_handler(_event):
         """Invalidate caches after memory or register changes."""
         Cache.reset_gef_caches()
+        return
+
+    @staticmethod
+    def inferior_call_handler(event):
+        """Invalidate caches after `call`, which may change the memory and the maps (e.g., mmap) without a stop."""
+        if isinstance(event, gdb.InferiorCallPostEvent):
+            Cache.reset_gef_caches()
         return
 
 
@@ -51591,15 +51641,15 @@ class DereferenceCommand(GenericCommand):
     parser.add_argument("-u", "--uniq", action="store_true",
                         help="display with uniq.")
     parser.add_argument("-i", "--interval", type=AddressUtil.parse_address, default=1,
-                        help="the line number of the interval for showing.")
+                        help="the interval of the lines to display.")
     parser.add_argument("-d", "--depth", type=AddressUtil.parse_address, default=1,
-                        help="depth of recursive. (default: %(default)s)")
+                        help="depth of recursion. (default: %(default)s)")
     parser.add_argument("-D", "--depth-nb-lines", type=AddressUtil.parse_address, default=4,
-                        help="NB_LINES when recursive. (default: %(default)s)")
+                        help="NB_LINES of each recursion. (default: %(default)s)")
     parser.add_argument("-p", "--phys", action="store_true",
-                        help="treat LOCATION as a physical address. (qemu-system only)")
+                        help="treat LOCATION as a physical address (qemu-system, vmware and kgdb only).")
     parser.add_argument("-l", "--list-head", action="store_true",
-                        help="display if LIST_HEAD or not.")
+                        help="tag the elements that look like list_head.")
     parser.add_argument("-s", "--slab-contains", action="store_true",
                         help="display slab_cache name if available.")
     parser.add_argument("-S", "--slab-contains-unaligned", action="store_true",
@@ -51615,18 +51665,20 @@ class DereferenceCommand(GenericCommand):
         "{0:s}                         # dereference $sp 64",
         "{0:s} $sp 20                  # specify location and number of elements to display",
         "{0:s} $sp -20                 # display memory backwards",
-        "{0:s} --reverse $sp 20        # display reverse order",
+        "{0:s} --reverse $sp 20        # display in reverse order",
         "{0:s} --depth 2 $sp 20        # display recursively if valid aligned address",
-        "{0:s} --is-addr $sp 20        # display elements which is valid address",
-        "{0:s} --slab-contains $sp 20  # with slab-contains result (available under qemu-system)",
+        "{0:s} --is-addr $sp 20        # display elements which are valid addresses",
+        "{0:s} --slab-contains $sp 20  # with slab-contains result (available under qemu-system, vmware and kgdb)",
         "{0:s} --tag 0 next $sp 20     # with tags",
         "{0:s} -v $sp 20               # with variable tags",
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
         "Use blacklist feature if reading the address causes process crash.",
-        'e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"',
+        'e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"`',
         "then `gef save`.",
+        "The memory cache reads the whole 4KB block around an address, so specify page aligned ranges,",
+        "or use `gef config gef.disable_memory_cache True`.",
     ])
 
     def __init__(self):
@@ -51643,29 +51695,52 @@ class DereferenceCommand(GenericCommand):
     @Cache.cache_until_next(per_cpu=True) # `thread N` does not reset the caches
     def get_frame_pcs():
         frames = []
-        frame_addresses = set()
         try:
             frame = gdb.newest_frame()
             no_ret_addr = [0, 0xffff_ffff, 0xffff_ffff_ffff_ffff]
             while frame:
+                # an inlined frame has the same pc as the frame it is inlined in
+                if frame.type() == gdb.INLINE_FRAME:
+                    frame = frame.older()
+                    continue
                 pc = frame.pc()
                 if pc in no_ret_addr:
                     break
-                if pc in frame_addresses:
+                # The frames of a recursion have the same pc, so do not stop at it.
+                # gdb itself stops a corrupted stack repeating a frame by its frame id, so this is only a limit.
+                if len(frames) >= 0x100:
                     break
                 frames.append(pc)
-                frame_addresses.add(pc)
                 frame = frame.older()
         except gdb.error:
             pass
         return frames
 
     @staticmethod
+    def get_retaddr_index(value):
+        """Return the index of the frame whose pc is the return address `value`, or None."""
+        # frame.pc() of gdb drops the Thumb bit of ARM and the privilege level of HPPA, and is %i7+8 for SPARC
+        if is_arm32() or is_arm32_cortex_m():
+            return_address = value & ~1
+        elif is_hppa32():
+            return_address = value & ~3
+        elif is_sparc():
+            return_address = value + 8
+        else:
+            return_address = value
+        for i, frame_pc in enumerate(DereferenceCommand.get_frame_pcs()):
+            if not is_valid_addr(frame_pc):
+                continue
+            if return_address == frame_pc:
+                return i
+        return None
+
+    @staticmethod
     @Cache.cache_this_session
     def get_target_registers():
         regs = []
         for reg in current_arch.all_registers:
-            # skip if not ggeneral registers
+            # skip if not general registers
             if current_arch.flag_register == reg:
                 continue
             if current_arch.special_registers and reg in current_arch.special_registers:
@@ -51758,21 +51833,9 @@ class DereferenceCommand(GenericCommand):
         current_address_value = addrs[1]
 
         # retaddr info
-        # frame.pc() of gdb drops the Thumb bit of ARM and the privilege level of HPPA, and is %i7+8 for SPARC
-        if is_arm32() or is_arm32_cortex_m():
-            return_address = current_address_value & ~1
-        elif is_hppa32():
-            return_address = current_address_value & ~3
-        elif is_sparc():
-            return_address = current_address_value + 8
-        else:
-            return_address = current_address_value
-        for i, frame_pc in enumerate(DereferenceCommand.get_frame_pcs()):
-            if not is_valid_addr(frame_pc):
-                continue
-            if return_address == frame_pc:
-                extra.append("retaddr[{:d}]".format(i))
-                break
+        retaddr_index = DereferenceCommand.get_retaddr_index(current_address_value)
+        if retaddr_index is not None:
+            extra.append("retaddr[{:d}]".format(retaddr_index))
 
         # canary info
         if not is_qemu_system() and not is_vmware() and not is_kgdb():
@@ -51796,7 +51859,8 @@ class DereferenceCommand(GenericCommand):
         if not phys:
             # for the physical address, 0x0 may be valid,
             # which tends to clutter the result, so skip
-            if is_valid_addr(current_address_value):
+            # (an address in the blacklist must not be read even to check it)
+            if not AddressUtil.is_in_dereference_blacklist(current_address_value) and is_valid_addr(current_address_value):
                 for regname, regvalue in DereferenceCommand.get_target_registers_value():
                     if current_address_value == regvalue:
                         extra.append(regname)
@@ -51897,76 +51961,79 @@ class DereferenceCommand(GenericCommand):
         has_tag = bool(self.tags_dict)
 
         out = []
-        seen = set()
+        last_value = None
         for idx in range(from_idx, to_idx, step):
             current_address = start_address + idx * current_arch.ptrsize
+            # the filters do not read an address in the blacklist (of virtual addresses), and its line shows the error
+            blacklisted = not self.args.phys and AddressUtil.is_in_dereference_blacklist(current_address)
             try:
-                # uniq filtering
-                if self.args.uniq:
-                    v = self.read_int_from_memory(current_address)
-                    if v in seen:
-                        if out == [] or out[-1] != "*":
-                            out.append("*")
-                        continue
-                    seen.add(v)
-
-                # valid address filtering
-                if self.args.is_addr:
-                    v = self.read_int_from_memory(current_address)
-                    if not is_valid_addr(v):
-                        continue
-
-                # invalid address filtering
-                if self.args.is_not_addr:
-                    v = self.read_int_from_memory(current_address)
-                    if is_valid_addr(v):
-                        continue
-
-                # zero filtering
-                if self.args.is_zero:
-                    v = self.read_int_from_memory(current_address)
-                    if v != 0:
-                        continue
-
-                # non-zero filtering
-                if self.args.is_not_zero:
-                    v = self.read_int_from_memory(current_address)
-                    if v == 0:
-                        continue
-
-                # mask hits filtering
-                if self.args.mask_hits is not None:
-                    v = self.read_int_from_memory(current_address)
-                    hit = False
-                    for m in self.args.mask_hits:
-                        masked = v & m[0]
-                        if (len(m) == 1 and masked != 0) or (len(m) != 1 and masked in m[1:]):
-                            hit = True
-                            break
-                    if not hit:
-                        continue
-
-                # mask no-hits filtering
-                if self.args.no_mask_hits is not None:
-                    v = self.read_int_from_memory(current_address)
-                    hit = False
-                    for m in self.args.no_mask_hits:
-                        masked = v & m[0]
-                        if (len(m) == 1 and masked == 0) or (len(m) != 1 and masked not in m[1:]):
-                            hit = True
-                            break
-                    if not hit:
-                        continue
-
-                # permission filtering
-                if self.args.perm is not None:
-                    v = self.read_int_from_memory(current_address)
-                    try:
-                        pm = ProcessMap.lookup(v)
-                        if not pm.section.permission.match(self.args.perm):
+                if not blacklisted:
+                    # valid address filtering
+                    if self.args.is_addr:
+                        v = self.read_int_from_memory(current_address)
+                        if not is_valid_addr(v):
                             continue
-                    except Exception:
-                        continue
+
+                    # invalid address filtering
+                    if self.args.is_not_addr:
+                        v = self.read_int_from_memory(current_address)
+                        if is_valid_addr(v):
+                            continue
+
+                    # zero filtering
+                    if self.args.is_zero:
+                        v = self.read_int_from_memory(current_address)
+                        if v != 0:
+                            continue
+
+                    # non-zero filtering
+                    if self.args.is_not_zero:
+                        v = self.read_int_from_memory(current_address)
+                        if v == 0:
+                            continue
+
+                    # mask hits filtering
+                    if self.args.mask_hits is not None:
+                        v = self.read_int_from_memory(current_address)
+                        hit = False
+                        for m in self.args.mask_hits:
+                            masked = v & m[0]
+                            if (len(m) == 1 and masked != 0) or (len(m) != 1 and masked in m[1:]):
+                                hit = True
+                                break
+                        if not hit:
+                            continue
+
+                    # mask no-hits filtering
+                    if self.args.no_mask_hits is not None:
+                        v = self.read_int_from_memory(current_address)
+                        hit = False
+                        for m in self.args.no_mask_hits:
+                            masked = v & m[0]
+                            if (len(m) == 1 and masked == 0) or (len(m) != 1 and masked not in m[1:]):
+                                hit = True
+                                break
+                        if not hit:
+                            continue
+
+                    # permission filtering
+                    if self.args.perm is not None:
+                        v = self.read_int_from_memory(current_address)
+                        try:
+                            pm = ProcessMap.lookup(v)
+                            if not pm.section.permission.match(self.args.perm):
+                                continue
+                        except Exception:
+                            continue
+
+                    # uniq filtering after the others, which omits the value of the line just before like `*` of hexdump
+                    if self.args.uniq:
+                        v = self.read_int_from_memory(current_address)
+                        if v == last_value:
+                            if out == [] or out[-1] != "*":
+                                out.append("*")
+                            continue
+                        last_value = v
 
                 # tags
                 if has_tag:
@@ -51983,7 +52050,8 @@ class DereferenceCommand(GenericCommand):
                 )
 
                 # most left registers info
-                if not self.args.quiet:
+                # a physical address cannot be compared with the virtual values of the registers
+                if not self.args.quiet and not self.args.phys:
                     # register info
                     regs_info = []
                     for regname, regvalue in DereferenceCommand.get_target_registers_value():
@@ -52003,10 +52071,13 @@ class DereferenceCommand(GenericCommand):
 
                 # add line
                 out.append(line)
+                line_index = len(out) - 1
 
                 # horizontal line
-                if self.args.frame_split:
-                    if "<-  retaddr[" in line:
+                # -q does not show retaddr[N] in the line, so compare the value with the frames
+                if self.args.frame_split and not blacklisted:
+                    v = self.read_int_from_memory(current_address)
+                    if DereferenceCommand.get_retaddr_index(v) is not None:
                         out.append(titlify(""))
 
             except (RuntimeError, gdb.MemoryError):
@@ -52016,23 +52087,32 @@ class DereferenceCommand(GenericCommand):
                 break
 
             # multiple level dump
-            if self.args.depth - 1 > 0:
+            if self.args.depth - 1 > 0 and not blacklisted:
                 v = self.read_int_from_memory(current_address)
-                if v % current_arch.ptrsize == 0 and is_valid_addr(v):
+                if v % current_arch.ptrsize == 0 and not AddressUtil.is_in_dereference_blacklist(v) and is_valid_addr(v):
                     args = self.args # backup
                     tags_dict = self.tags_dict
                     max_tag_width = self.max_tag_width
                     reader = self.read_int_from_memory
-                    cmd = "dereference --depth {:d} --depth-nb-lines {:d} --no-pager {:#x} {:#x}".format(
-                        self.args.depth - 1, self.args.depth_nb_lines, v, self.args.depth_nb_lines,
+                    # the nested command is not from tty, which resets repeat_count
+                    repeat_count = self.repeat_count
+                    flags = ""
+                    if self.args.quiet:
+                        flags += " --quiet"
+                    if self.args.quiet_offset:
+                        flags += " --quiet-offset"
+                    cmd = "dereference --depth {:d} --depth-nb-lines {:d} --no-pager{:s} {:#x} {:#x}".format(
+                        self.args.depth - 1, self.args.depth_nb_lines, flags, v, self.args.depth_nb_lines,
                     )
                     ret = gdb.execute(cmd, to_string=True)
                     self.args = args # revert
                     self.tags_dict = tags_dict
                     self.max_tag_width = max_tag_width
                     self.read_int_from_memory = reader
+                    self.repeat_count = repeat_count
+                    # the nested lines belong to the line, so that -r keeps them below it
                     for line in ret.splitlines():
-                        out.append("      " + line)
+                        out[line_index] += "\n      " + line
 
         if self.args.reverse:
             out.reverse()
@@ -52042,13 +52122,22 @@ class DereferenceCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
     def do_invoke(self, args):
+
+        def read_int_from_physmem(addr):
+            mem = read_physmem(addr, current_arch.ptrsize)
+            # read_physmem returns None instead of raising an error
+            if mem is None or len(mem) != current_arch.ptrsize:
+                raise gdb.MemoryError("Cannot access memory at address {:#x}".format(addr))
+            return GefUtil.get_unpack()(mem)
+
         slab_contains = args.slab_contains or args.slab_contains_unaligned
         if slab_contains or args.phys:
             if not (is_qemu_system() or is_kgdb() or is_vmware()):
                 err("Unsupported gdb mode")
                 return
 
-        if args.phys and (slab_contains or args.variables):
+        # -l reads LIST_HEAD by virtual addresses
+        if args.phys and (slab_contains or args.variables or args.list_head):
             err("Unsupported option pairs")
             return
 
@@ -52060,6 +52149,9 @@ class DereferenceCommand(GenericCommand):
             return
         if args.depth <= 0:
             err("DEPTH must be positive")
+            return
+        if args.depth > 1 and args.depth_nb_lines <= 0:
+            err("DEPTH_NB_LINES must be positive")
             return
 
         # perm
@@ -52092,8 +52184,7 @@ class DereferenceCommand(GenericCommand):
 
         # read memory function
         if args.phys:
-            unpack = GefUtil.get_unpack()
-            self.read_int_from_memory = lambda x: unpack(read_physmem(x, current_arch.ptrsize))
+            self.read_int_from_memory = read_int_from_physmem
         else:
             self.read_int_from_memory = read_int_from_memory
 
@@ -52106,6 +52197,9 @@ class DereferenceCommand(GenericCommand):
         # line numbers
         if args.nb_lines is None:
             nb_lines = Config.get("dereference.nb_lines")
+            if nb_lines <= 0:
+                err("dereference.nb_lines must be positive")
+                return
         else:
             nb_lines = args.nb_lines
         from_idx = nb_lines * self.repeat_count
@@ -52116,7 +52210,7 @@ class DereferenceCommand(GenericCommand):
         else:
             step = -1 * args.interval
             if args.depth > 1:
-                err("Unsupported using together -NB_LINES and -d DEPTH")
+                err("-NB_LINES cannot be used with -d DEPTH")
                 return
 
         # doit
@@ -52521,9 +52615,11 @@ class VMMapCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--outer", action="store_true",
                         help="display qemu-user's memory map instead of emulated process's memory map.")
-    parser.add_argument("filter", metavar="FILTER", nargs="?", help="filter string.")
+    parser.add_argument("filter", metavar="FILTER", nargs="?",
+                        help="a part of the path, an address or an expression, or `binary` for the executable itself.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
-    parser.add_argument("-q", "--quiet", action="store_true", help="do not display register information.")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="do not display the offset from the filter address and register information.")
     parser.add_argument("-w", "--writable", action="store_true", help="display writable maps only.")
     parser.add_argument("-x", "--executable", action="store_true", help="display executable maps only.")
     parser.add_argument("-A", "--lines-after", type=int, help="show this many maps after each match.")
@@ -52534,8 +52630,8 @@ class VMMapCommand(GenericCommand, BufferingOutput):
 
     _example_ = "\n".join([
         "{0:s} libc             # show only lines containing the string `libc`",
-        "{0:s} binary           # 'binary' means the area executable itself",
-        "{0:s} 0x555555577ab0   # show only lines included specified address",
+        "{0:s} binary           # 'binary' means the maps of the executable itself",
+        "{0:s} 0x555555577ab0   # show only the line that includes the specified address",
         "{0:s} --outer          # show qemu-user memory map; only valid in qemu-user mode",
     ]).format(_cmdline_)
 
@@ -52713,11 +52809,17 @@ class VMMapCommand(GenericCommand, BufferingOutput):
         # for filter
         filter_addr1 = None
         filter_addr2 = None
-        if args.filter is not None:
-            try:
-                filter_addr1 = AddressUtil.parse_address(args.filter)
-            except gdb.error:
-                pass
+        binary_path = None
+        if args.filter == "binary":
+            # the local file may be mapped as another path (e.g., the remote path of gdbserver)
+            binary_path = Path.get_binary_map_path()
+        elif args.filter is not None:
+            # a name of a path (e.g., heap and libc) can also be a symbol of the target, so evaluate it only if unmatched
+            if not any(args.filter in entry.path for entry in vmmap):
+                try:
+                    filter_addr1 = AddressUtil.parse_address(args.filter)
+                except gdb.error:
+                    pass
             try:
                 filter_addr2 = int(args.filter, 0)
             except ValueError:
@@ -52748,8 +52850,7 @@ class VMMapCommand(GenericCommand, BufferingOutput):
                     continue
 
             if args.filter == "binary":
-                filepath = Path.get_filepath(append_proc_root_prefix=False)
-                if filepath and entry.path in (filepath, filepath + " (deleted)"):
+                if binary_path and entry.path in (binary_path, binary_path + " (deleted)"):
                     matches[index] = False
                     continue
 
@@ -52761,11 +52862,19 @@ class VMMapCommand(GenericCommand, BufferingOutput):
             map_indices = [index for index, entry in enumerate(vmmap) if entry.path != "[gap]"]
             map_positions = {index: position for position, index in enumerate(map_indices)}
             for index in matches:
-                if index not in map_positions:
-                    continue
-                position = map_positions[index]
-                start = map_indices[max(0, position - before)]
-                end = map_indices[min(len(map_indices) - 1, position + after)]
+                if index in map_positions:
+                    position = map_positions[index]
+                    start = map_indices[max(0, position - before)]
+                    end = map_indices[min(len(map_indices) - 1, position + after)]
+                else:
+                    # a gap is between two maps, so count the maps from its both sides
+                    position = sum(1 for map_index in map_indices if map_index < index)
+                    start = index
+                    end = index
+                    if before:
+                        start = map_indices[max(0, position - before)]
+                    if after:
+                        end = map_indices[min(len(map_indices) - 1, position + after - 1)]
                 displayed.update(range(start, end + 1))
 
         for index, entry in enumerate(vmmap):
@@ -53659,14 +53768,21 @@ class UcontextCommand(GenericCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the address of ucontext_t (or mcontext_t if -m is specified).")
     parser.add_argument("-m", "--mcontext", action="store_true",
-                        help="interpret LOCATION as mcontext_t (e.g. &uc->uc_mcontext, struct sigcontext).")
+                        help="interpret LOCATION as mcontext_t (e.g. &uc->uc_mcontext).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        "{0:s} $rdx                 # the 3rd argument of a SA_SIGINFO handler, setcontext, etc.",
-        "{0:s} -m 0x7fffffffd9e8    # struct sigcontext",
+        "{0:s} $rdx                 # the 3rd argument of a SA_SIGINFO handler",
+        "{0:s} $rdi                 # the 1st argument of getcontext, setcontext, makecontext and swapcontext",
+        "{0:s} -m 0x7fffffffd9e8    # struct sigcontext of x86-64, which is the same as mcontext_t",
     ]).format(_cmdline_)
+
+    _note_ = "\n".join([
+        "struct sigcontext is not mcontext_t on PPC32, s390x, m68k and SPARC64, and -m cannot read it there.",
+        "uc_mcontext of PPC32 is a union of pointers, so give its uc_regs, which points to mcontext_t, to -m.",
+        "SPARC64 passes &sf->info to the 3rd argument of a SA_SIGINFO handler, which is not ucontext_t.",
+    ])
 
     SS_FLAGS = (
         (0x0000_0001, "SS_ONSTACK"),
@@ -53928,9 +54044,11 @@ class UcontextCommand(GenericCommand):
             layout["sigmask"] = 440
             layout["mcontext"] = 24
             layout["regs"] = seq(["flags"], 0, 4, "raw")
-            layout["regs"] += seq(["r{:d}".format(i) for i in range(32)], 4, 4)
+            # sc_gr[0] holds PSW instead of r0 (asm/sigcontext.h)
+            layout["regs"] += seq(["psw"], 4, 4, "raw")
+            layout["regs"] += seq(["r{:d}".format(i) for i in range(1, 32)], 8, 4)
             layout["regs"] += seq(["iasq0", "iasq1"], 392, 4, "raw")
-            layout["regs"] += seq(["iaoq0", "iaoq1"], 400, 4)
+            layout["regs"] += seq(["iaoq0", "iaoq1"], 400, 4, "iaoq")
             layout["regs"] += seq(["sar"], 408, 4, "raw")
 
         else:
@@ -53960,8 +54078,15 @@ class UcontextCommand(GenericCommand):
             return current_arch.flag_register_to_human(value)
         if kind == "raw":
             return "{:#0{:d}x}".format(value, size * 2 + 2)
+        if kind == "iaoq":
+            # the lower 2 bits are the privilege level, like hppa_read_pc of gdb
+            return AddressUtil.recursive_dereference_to_string(value & ~3)
+        if is_mips32() and size > current_arch.ptrsize:
+            # getcontext of glibc on MIPS o32 writes only the lower word of the 64-bit slots by `sw`, and the upper word
+            # keeps the old content. The kernel and setcontext also use only the lower word.
+            return AddressUtil.recursive_dereference_to_string(value & 0xffff_ffff)
         if size > current_arch.ptrsize:
-            # 64-bit registers on MIPS o32/n32
+            # 64-bit registers on MIPS n32
             s = AddressUtil.format_address(value, memalign_size=size, long_fmt=True)
             if value >> 32 in (0, 0xffff_ffff):
                 derefs = AddressUtil.recursive_dereference_to_string(value & 0xffff_ffff, skip_idx=1)
@@ -53976,11 +54101,19 @@ class UcontextCommand(GenericCommand):
         mask = 0
         for i in range(size // ptrsize):
             mask |= cls.unpack(data, offset + i * ptrsize, ptrsize) << (i * ptrsize * 8)
-        if generic_signo:
-            names = LinuxSignal.format_mask(mask)
+        # like sighands, the names depend on the architecture and the RT signals that the libc reserves
+        if current_arch.arch in LinuxSignal.ARCH_NAMES:
+            names = dict(enumerate(LinuxSignal.ARCH_NAMES[current_arch.arch], 1))
+        elif generic_signo:
+            names = {number: name for number, name in LinuxSignal.NAMES.items() if number < 32}
         else:
-            names = ",".join("SIG{:d}".format(i) for i in range(1, size * 8 + 1) if mask & (1 << (i - 1))) or "-"
-        return "{:#0{:d}x} [{:s}]".format(mask, size * 2 + 2, names)
+            names = {}
+        if size * 8 == 128:
+            names.update(LinuxSignal.get_libc_names(GefUtil.get_libc(), rtmax=127)) # the libc leaves the 128th unused
+        else:
+            names.update(LinuxSignal.get_libc_names(GefUtil.get_libc()))
+        names_s = LinuxSignal.format_mask(mask, names, nsig=size * 8)
+        return "{:#0{:d}x} [{:s}]".format(mask, size * 2 + 2, names_s)
 
     @classmethod
     def format_ss_flags(cls, flags):
@@ -54037,6 +54170,10 @@ class UcontextCommand(GenericCommand):
                         value_s = self.format_sigmask(
                             data, offset, layout["generic_signo"], layout["sigmask_size"], layout["sigmask_word"],
                         )
+                        # getcontext of glibc on i386, SH4 and m68k writes only the lower word by the old sigprocmask
+                        if is_x86_32() or is_sh4() or is_m68k():
+                            if self.unpack(data, offset + 4, 4):
+                                value_s += " (getcontext does not write the upper word)"
                     elif name.endswith("ss_flags"):
                         value_s = self.format_ss_flags(self.unpack(data, offset, size))
                     elif name in ("uc_link", "uc_stack.ss_sp", "uc_regs"):
@@ -54229,9 +54366,15 @@ class JmpbufCommand(GenericCommand):
             layout["name"] = "LoongArch64"
             layout["regs"] = seq(["ra", "sp"], 0, 8, "mangled")
             layout["regs"] += seq(["u0", "fp"] + ["s{:d}".format(i) for i in range(9)], 16, 8)
-            layout["regs"] += seq(["fs{:d}".format(i) for i in range(8)], 104, 8, "raw")
-            layout["mask_was_saved"] = 168
-            layout["saved_mask"] = 176
+            # lp64s has no __fpregs (`#ifndef __loongarch_soft_float` in bits/setjmp.h of glibc)
+            e_flags = JmpbufCommand.get_e_flags()
+            if e_flags is not None and e_flags & 7 == 1: # EF_LOONGARCH_ABI_SOFT_FLOAT
+                layout["mask_was_saved"] = 104
+                layout["saved_mask"] = 112
+            else:
+                layout["regs"] += seq(["fs{:d}".format(i) for i in range(8)], 104, 8, "raw")
+                layout["mask_was_saved"] = 168
+                layout["saved_mask"] = 176
 
         elif arch == "sparc64":
             layout["name"] = "SPARC64"
@@ -54256,9 +54399,18 @@ class JmpbufCommand(GenericCommand):
             layout["name"] = "m68k"
             layout["regs"] = seq(["d{:d}".format(i) for i in range(1, 8)] + ["pc"], 0, 4)
             layout["regs"] += seq(["a{:d}".format(i) for i in range(1, 6)] + ["fp", "sp"], 32, 4)
-            layout["regs"] += seq(["fp{:d}".format(i) for i in range(8)], 60, 12, "raw")
-            layout["mask_was_saved"] = 156
-            layout["saved_mask"] = 160
+            # ColdFire saves 8-byte fpregs with FPU (__mcffpu__), and none without it (bits/setjmp.h of glibc)
+            e_flags = JmpbufCommand.get_e_flags()
+            if e_flags is None or e_flags & 0x0f == 0: # EF_M68K_CF_ISA_MASK, which is 0 for 680x0
+                fp_size = 12
+            elif e_flags & 0x40: # EF_M68K_CF_FLOAT
+                fp_size = 8
+            else:
+                fp_size = 0
+            if fp_size:
+                layout["regs"] += seq(["fp{:d}".format(i) for i in range(8)], 60, fp_size, "raw")
+            layout["mask_was_saved"] = 60 + fp_size * 8
+            layout["saved_mask"] = 64 + fp_size * 8
 
         elif arch == "alpha":
             layout["name"] = "Alpha"
@@ -54297,6 +54449,11 @@ class JmpbufCommand(GenericCommand):
                 layout["regs"] = seq(["blink", "sp", "fp", "r30"] + ["r{:d}".format(i) for i in range(13, 27)], 0, 8)
                 layout["mask_was_saved"] = 256
                 layout["saved_mask"] = 264
+            elif current_arch.mode == "32v3":
+                # ARCv3 of 32-bit saves the same registers as arc64 (__sigsetjmp of the arc32-snps-linux-gnu glibc)
+                layout["regs"] = seq(["blink", "sp", "fp", "r30"] + ["r{:d}".format(i) for i in range(13, 27)], 0, 4)
+                layout["mask_was_saved"] = 128
+                layout["saved_mask"] = 132
             else:
                 layout["regs"] = seq(["blink", "sp", "fp", "gp"] + ["r{:d}".format(i) for i in range(13, 25)], 0, 4)
                 layout["mask_was_saved"] = 128
@@ -54323,6 +54480,17 @@ class JmpbufCommand(GenericCommand):
         else:
             layout["sigmask_word"] = 4
         return layout
+
+    @staticmethod
+    def get_e_flags():
+        """Return e_flags of the executable, or None."""
+        codebase = ProcessMap.get_codebase()
+        if codebase is None:
+            return None
+        elf = Elf.get_elf(codebase) # from memory, since the file may be only on the remote target
+        if elf is None or not elf.is_valid():
+            return None
+        return elf.e_flags
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -54368,6 +54536,33 @@ class JmpbufCommand(GenericCommand):
             else:
                 info("Cookie is {:s}".format(Color.colorify_hex(cookie, "bold")))
 
+        # setjmp saves ssp and gcspr only with SHSTK and GCS, and the field keeps a stale value of the stack otherwise.
+        # So show them only if they point to a shadow stack, which smaps marks with `ss` in VmFlags.
+        shadow_stacks = []
+        if any(kind == "shadow" for _, _, _, kind in regs) and not is_core_file():
+            if is_remote_debug():
+                pid = Pid.get_pid(remote=True)
+            else:
+                pid = Pid.get_pid()
+            smaps = ""
+            if pid:
+                smaps_path = "/proc/{:d}/smaps".format(pid)
+                if is_remote_debug():
+                    smaps = Path.read_remote_file(smaps_path, as_byte=False) or ""
+                else:
+                    try:
+                        with open(smaps_path) as fd:
+                            smaps = fd.read()
+                    except OSError:
+                        pass
+            region = None
+            for line in smaps.splitlines():
+                m = re.match(r"([0-9a-f]+)-([0-9a-f]+) ", line)
+                if m:
+                    region = (int(m.group(1), 16), int(m.group(2), 16))
+                elif line.startswith("VmFlags:") and "ss" in line.split()[1:]:
+                    shadow_stacks.append(region)
+
         entries = []
         for name, offset, size, kind in regs:
             if size not in (2, 4, 8):
@@ -54383,7 +54578,7 @@ class JmpbufCommand(GenericCommand):
                     value = current_arch.decode_cookie(value, cookie)
                     value_s = "{:s} [demangled]".format(UcontextCommand.format_value(value, size, None))
             elif kind == "shadow":
-                if not is_valid_addr(value):
+                if not any(start <= value < end for start, end in shadow_stacks):
                     continue
                 value_s = UcontextCommand.format_value(value, size, None)
             else:
@@ -55108,6 +55303,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
         0x6fffe005: "DT_ANDROID_RELRCOUNT",
         #0x6ffff000: "DT_HIOS", # unspecified
         #0x6ffffd00: "DT_VALRNGLO", # unspecified
+        0x6ffffdf4: "DT_GNU_FLAGS_1",
         0x6ffffdf5: "DT_GNU_PRELINKED",
         0x6ffffdf6: "DT_GNU_CONFLICTSZ",
         0x6ffffdf7: "DT_GNU_LIBLISTSZ",
@@ -55157,6 +55353,10 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             0x7000000b: "DT_AARCH64_MEMTAG_HEAP",
             0x7000000c: "DT_AARCH64_MEMTAG_STACK",
             0x7000000d: "DT_AARCH64_MEMTAG_GLOBALS",
+            0x7000000f: "DT_AARCH64_MEMTAG_GLOBALSSZ",
+            0x70000011: "DT_AARCH64_AUTH_RELRSZ",
+            0x70000012: "DT_AARCH64_AUTH_RELR",
+            0x70000013: "DT_AARCH64_AUTH_RELRENT",
         },
         "alpha": {
             0x70000000: "DT_ALPHA_PLTRO",
@@ -55357,9 +55557,15 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             # fast path
             try:
                 dynamic = Symbol.resolve_address("_DYNAMIC")
-                # patchelf may leave _DYNAMIC pointing to a clobbered old .dynamic section.
-                if dynamic is not None and read_memory(dynamic, 4) != b"\x5a\x5a\x5a\x5a":
-                    return ProcessMap.lookup(dynamic)
+                # gdb resolves the local _DYNAMIC of the objfile found first, which may be a shared library
+                # (e.g., ld-musl, or an unstripped library with the stripped executable), so use it only in the executable
+                section = None
+                if dynamic is not None:
+                    section = ProcessMap.process_lookup_address(dynamic)
+                if section is not None and ProcessMap.get_section_load_base_address(section) == ProcessMap.get_codebase():
+                    # patchelf may leave _DYNAMIC pointing to a clobbered old .dynamic section.
+                    if read_memory(dynamic, 4) != b"\x5a\x5a\x5a\x5a":
+                        return ProcessMap.lookup(dynamic)
             except gdb.error:
                 pass
 
@@ -55418,19 +55624,22 @@ class DynamicCommand(GenericCommand, BufferingOutput):
                 err("Could not find _DYNAMIC")
             return None
 
-        if isinstance(filename_or_addr, str):
-            if elf.is_pie():
+        if elf.is_pie():
+            if isinstance(filename_or_addr, str):
                 load_base = ProcessMap.get_section_base_address(filename_or_addr)
-                dynamic = phdr.p_vaddr + load_base
             else:
-                dynamic = phdr.p_vaddr
+                load_base = filename_or_addr
+            # the first PT_LOAD of ET_DYN is not always at 0 (e.g., prelinked or linked with -Ttext-segment)
+            first_vaddr = min(x.p_vaddr for x in elf.phdrs if x.p_type == Elf.Phdr.PT_LOAD)
+            dynamic = load_base - (first_vaddr & get_pagesize_mask_high()) + phdr.p_vaddr
         else:
-            if phdr.p_vaddr < filename_or_addr:
-                dynamic = phdr.p_vaddr + filename_or_addr
-            else:
-                dynamic = phdr.p_vaddr
+            dynamic = phdr.p_vaddr
 
         dynamic = ProcessMap.lookup(dynamic)
+        if dynamic.section is None:
+            if not silent:
+                err("_DYNAMIC at {:#x} is not mapped".format(dynamic.value))
+            return None
         if not silent:
             info("_DYNAMIC: {!s} [{!s}]".format(dynamic, dynamic.section.permission))
         return dynamic
@@ -55448,10 +55657,13 @@ class DynamicCommand(GenericCommand, BufferingOutput):
             elf_source = args.filename
             if args.elf_address is not None:
                 elf_source = args.elf_address
-            if elf_source is None and Path.get_filepath() is None:
-                binary_path = Path.get_binary_map_path()
-                if binary_path is not None:
-                    elf_source = ProcessMap.get_section_base_address(binary_path)
+            if elf_source is None:
+                # the local file may be mapped as another path (e.g., the remote path of gdbserver)
+                filepath = Path.get_filepath()
+                if filepath is None or ProcessMap.get_section_base_address(filepath) is None:
+                    binary_path = Path.get_binary_map_path()
+                    if binary_path is not None:
+                        elf_source = ProcessMap.get_section_base_address(binary_path)
             try:
                 dynamic = self.get_dynamic(elf_source)
             except gdb.error:
@@ -87344,7 +87556,12 @@ class Kernel:
         An address in the middle of an object is rejected unless `allow_unaligned`."""
         if not is_valid_addr(addr):
             return None
-        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"] or not (is_x86() or is_arm() or is_riscv()):
+        if Kernel.get_slab_type() not in ["SLUB", "SLUB_TINY", "SLAB"]:
+            return None
+        # the same architectures as slab-contains
+        if not (
+            is_x86() or is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32()
+        ):
             return None
         obj = Kernel.slab_contains().get_slab_object(addr)
         if obj["error"]:
@@ -87361,7 +87578,12 @@ class Kernel:
         resolver_factory = {
             "SLUB": Kernel.slub, "SLUB_TINY": Kernel.slub_tiny, "SLAB": Kernel.slab, "SLOB": Kernel.slob,
         }.get(allocator)
-        if resolver_factory is None or not (is_x86() or is_arm() or is_riscv()):
+        if resolver_factory is None:
+            return allocator, None
+        # the same architectures as slab-contains
+        if not (
+            is_x86() or is_arm() or is_riscv() or is_mips() or is_ppc() or is_s390x() or is_loongarch64() or is_sparc32()
+        ):
             return allocator, None
         try:
             return allocator, resolver_factory().get_kmem_caches(target_names)
