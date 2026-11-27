@@ -3149,10 +3149,15 @@ class Elf:
             symbols.add(dynstr[name_offset:end])
         return symbols
 
-    def get_symbol_values(self, names):
-        """Return {name: st_value} of the defined .symtab symbols named in `names` (the first one of each name)."""
-        symtab = self.read_shdr(".symtab")
-        strtab = self.read_shdr(".strtab")
+    def get_symbol_values(self, names, dynamic=False):
+        """Return {name: st_value} of the defined .symtab (.dynsym if `dynamic`) symbols named in `names`
+        (the first one of each name)."""
+        if dynamic:
+            symtab = self.read_shdr(".dynsym")
+            strtab = self.read_shdr(".dynstr")
+        else:
+            symtab = self.read_shdr(".symtab")
+            strtab = self.read_shdr(".strtab")
         if not symtab or not strtab:
             return {}
 
@@ -5039,6 +5044,23 @@ class GlibcHeap:
 
         raise OSError("Cannot find main_arena for {}".format(current_arch.arch))
 
+    @staticmethod
+    def get_tcache_perthread_struct_sizes():
+        TCACHE_MAX_BINS = GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
+        if get_libc_version() < (2, 30):
+            tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (1 + current_arch.ptrsize)
+        else:
+            tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (2 + current_arch.ptrsize)
+
+        for v in GlibcHeap.get_binsize_table()["tcache"].values():
+            if v.get("size", 0) > tcache_perthread_struct_size_real:
+                if get_libc_version() >= (2, 43):
+                    # When _int_malloc initializes tcache, tcache_init(av) passes request2size(bytes) to
+                    # _int_malloc, which rounds it again (e.g., 0x310 on x86_64). tcache_free_init rounds it once.
+                    return (v["size"], v["size"] + GlibcHeap.HeapInfo.MALLOC_ALIGNMENT())
+                return (v["size"],)
+        return ()
+
     # It must be a static method because it is also used to calculate the Heapbase.
     @staticmethod
     def search_for_tcache_from_tls(arena_addr, thread_tls=None):
@@ -5116,24 +5138,8 @@ class GlibcHeap:
                     matches.append(found)
             return matches
 
-        def get_tcache_perthread_struct_sizes():
-            TCACHE_MAX_BINS = GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
-            if get_libc_version() < (2, 30):
-                tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (1 + current_arch.ptrsize)
-            else:
-                tcache_perthread_struct_size_real = TCACHE_MAX_BINS * (2 + current_arch.ptrsize)
-
-            for v in GlibcHeap.get_binsize_table()["tcache"].values():
-                if v.get("size", 0) > tcache_perthread_struct_size_real:
-                    if get_libc_version() >= (2, 43):
-                        # When _int_malloc initializes tcache, tcache_init(av) passes request2size(bytes) to
-                        # _int_malloc, which rounds it again (e.g., 0x310 on x86_64). tcache_free_init rounds it once.
-                        return (v["size"], v["size"] + GlibcHeap.HeapInfo.MALLOC_ALIGNMENT())
-                    return (v["size"],)
-            return ()
-
         def search_tcache_perthread_struct(arena, tls):
-            tcache_perthread_struct_sizes = get_tcache_perthread_struct_sizes()
+            tcache_perthread_struct_sizes = GlibcHeap.get_tcache_perthread_struct_sizes()
             if not tcache_perthread_struct_sizes:
                 return None
             for i in range(1, 20): # "20" has no special meaning
@@ -7228,6 +7234,43 @@ class Symbol:
             return to_unsigned_long(gdb.parse_and_eval("&{:s}".format(name)))
         except (gdb.error, OverflowError, ValueError):
             return None
+
+    @staticmethod
+    def resolve_libc_address(name, address):
+        """Return the address of `name` in libc, if gdb resolves it to `address` in another library."""
+        # A loader with the symbol table has its own hidden __environ and __environ_array_list, which libc never updates,
+        # and an expression can resolve to them. The __environ copy relocated to the executable is the one that libc uses.
+        libc = None
+        for objfile in gdb.objfiles():
+            # libc.so.6.1 is for Alpha
+            if re.fullmatch(r"libc\.so\.6(\.1)?|libc-2\.\d+\.so", os.path.basename(objfile.filename or "")):
+                libc = objfile
+                break
+        if libc is None: # static, or not glibc
+            return address
+        if address is not None:
+            solib = gdb.solib_name(address)
+            if solib is None or os.path.basename(solib) == os.path.basename(libc.filename):
+                return address
+
+        # Resolve it from the .symtab of the separate debug file (or libc itself), which works without DWARF.
+        path = libc.filename
+        for objfile in gdb.objfiles():
+            if objfile.owner is not None and objfile.owner.filename == libc.filename:
+                path = objfile.filename
+                break
+        if not os.path.isfile(path): # e.g., `target:/...` of gdbserver
+            return None
+        elf = Elf(path)
+        value = elf.get_symbol_values([name]).get(name)
+        # a stripped libc has only .dynsym (e.g., malloc of glibc 2.31, which its ld.so also exports)
+        if value is None:
+            value = elf.get_symbol_values([name], dynamic=True).get(name)
+        # the first PT_LOAD of libc starts at 0, so its load base is the bias
+        base = ProcessMap.get_section_base_address(libc.filename)
+        if value is None or base is None:
+            return None
+        return base + value
 
     @staticmethod
     @Cache.cache_this_session(until_new_objfile=True)
@@ -17318,6 +17361,28 @@ class ProcessMap:
         return base_address
 
     @staticmethod
+    def lookup_file_section(address):
+        """Return the region that maps the file having `address`, or None if not found.
+        The latter part of .bss is in an anonymous region (e.g., `char big[0x10000]`) that a core file does not have,
+        so use the nearest region below that maps a section of the same file."""
+        addr = ProcessMap.lookup(address)
+        # the region may be named but not of a file (e.g., `[heap]`, and `<tls-th1>` for the TLS in the region)
+        if addr.section and addr.section.path.startswith("/"):
+            return addr.section
+        if not addr.info:
+            return addr.section
+        file_sections = []
+        for zone in ProcessMap.get_info_files():
+            if zone.filename != addr.info.filename or zone.zone_start > address:
+                continue
+            zone_section = ProcessMap.process_lookup_address(zone.zone_start)
+            if zone_section and zone_section.path.startswith("/"):
+                file_sections.append(zone_section)
+        if file_sections:
+            return max(file_sections, key=lambda x: x.page_start)
+        return addr.section
+
+    @staticmethod
     @Cache.cache_until_next(per_inferior=True)
     def get_section_base_address(name):
         if name is None:
@@ -21627,36 +21692,8 @@ class EnvpCommand(ArgvCommand):
         return
 
     def get_libc_address_from_symbol(self, name):
-        # A loader with the symbol table has its own hidden __environ and __environ_array_list, which libc never updates,
-        # and an expression can resolve to them. The __environ copy relocated to the executable is the one that libc uses.
         paddr = self.get_address_from_symbol("&{:s}".format(name))
-        libc = None
-        for objfile in gdb.objfiles():
-            # libc.so.6.1 is for Alpha
-            if re.fullmatch(r"libc\.so\.6(\.1)?|libc-2\.\d+\.so", os.path.basename(objfile.filename or "")):
-                libc = objfile
-                break
-        if libc is None: # static, or not glibc
-            return paddr
-        if paddr is not None:
-            solib = gdb.solib_name(paddr)
-            if solib is None or os.path.basename(solib) == os.path.basename(libc.filename):
-                return paddr
-
-        # Resolve it from the .symtab of the separate debug file (or libc itself), which works without DWARF.
-        path = libc.filename
-        for objfile in gdb.objfiles():
-            if objfile.owner is not None and objfile.owner.filename == libc.filename:
-                path = objfile.filename
-                break
-        if not os.path.isfile(path): # e.g., `target:/...` of gdbserver
-            return None
-        value = Elf(path).get_symbol_values([name]).get(name)
-        # the first PT_LOAD of libc starts at 0, so its load base is the bias
-        base = ProcessMap.get_section_base_address(libc.filename)
-        if value is None or base is None:
-            return None
-        return base + value
+        return Symbol.resolve_libc_address(name, paddr)
 
     def dump_environ(self):
         self.out.append(titlify("ENVP from __environ"))
@@ -58340,7 +58377,7 @@ class TraceMallocRetBreakpoint(gdb.Breakpoint):
     """Internal breakpoint to retrieve the return value of malloc() etc."""
 
     def __init__(self, name, nmemb, size, memptr, alignment, output_filename):
-        ret_addr = gdb.newest_frame().older().pc()
+        ret_addr = GlibcHeapTracerCommand.get_return_address()
         super().__init__("*{:#x}".format(ret_addr), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
         self.name = name
@@ -58518,6 +58555,29 @@ class TraceReallocBreakpoint(gdb.Breakpoint):
                 pass
         return False
 
+    def search_freed_index(self, addr):
+        for idx, (_action_index, freed, _size) in enumerate(self.state["freed"]):
+            if freed.value == addr.value:
+                return idx
+        return None
+
+    def check_double_free(self, to_free):
+        if to_free.value == 0:
+            return False
+
+        idx = self.search_freed_index(to_free)
+        if idx is None:
+            return False
+
+        msg = []
+        msg.append(Color.colorify("Heap-Analysis", "bold yellow"))
+        msg.append("Double-free detected:")
+        msg.append("{!s} is freed but it is already in the freed list".format(
+            to_free,
+        ))
+        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
+        return True
+
     def stop(self):
         if gdb.selected_inferior() != self.traced_inferior:
             return False
@@ -58538,6 +58598,11 @@ class TraceReallocBreakpoint(gdb.Breakpoint):
             _, nmemb = current_arch.get_ith_parameter(1)
             _, size = current_arch.get_ith_parameter(2)
 
+        # check double free before realloc, since it may free the old chunk by free (e.g., uClibc-ng)
+        ret = self.check_double_free(old_loc)
+        if ret:
+            return True # break
+
         TraceReallocRetBreakpoint(self.name, old_loc, nmemb, size, self.output_filename)
         return False
 
@@ -58546,7 +58611,7 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
     """Internal breakpoint to retrieve the return value of realloc() etc."""
 
     def __init__(self, name, old_loc, nmemb, size, output_filename):
-        ret_addr = gdb.newest_frame().older().pc()
+        ret_addr = GlibcHeapTracerCommand.get_return_address()
         super().__init__("*{:#x}".format(ret_addr), gdb.BP_BREAKPOINT, internal=True)
         self.silent = True
         self.name = name
@@ -58649,23 +58714,6 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
             open(self.output_filename, "a").write(Color.remove_color(line) + "\n")
         return
 
-    def check_double_free(self, to_free):
-        if to_free.value == 0:
-            return False
-
-        idx = self.search_freed_index(to_free)
-        if idx is None:
-            return False
-
-        msg = []
-        msg.append(Color.colorify("Heap-Analysis", "bold yellow"))
-        msg.append("Double-free detected:")
-        msg.append("{!s} is freed but it is already in the freed list".format(
-            to_free,
-        ))
-        ContextExtraCommand.push_context_message("warn", "\n".join(msg))
-        return True
-
     def check_inconsistency(self, new_loc):
         if self.old_loc.value == new_loc.value:
             return False
@@ -58731,11 +58779,6 @@ class TraceReallocRetBreakpoint(gdb.Breakpoint):
         # fast return if NULL
         if new_loc.value == 0:
             return False
-
-        # check double free
-        ret = self.check_double_free(self.old_loc)
-        if ret:
-            return True # break
 
         # check inconsistency
         ret = self.check_inconsistency(new_loc)
@@ -58820,7 +58863,7 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
 
         def get_caller():
             try:
-                caller = GlibcHeapTracerCommand.get_call_address(gdb.selected_frame().older().pc())
+                caller = GlibcHeapTracerCommand.get_call_address(GlibcHeapTracerCommand.get_return_address())
                 return Symbol.format(caller, missing="NO_SYMBOL", show_address=True)
             except Exception:
                 return ""
@@ -58868,6 +58911,28 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         ContextExtraCommand.push_context_message("warn", "\n".join(msg))
         return True
 
+    def is_drained_tcache(self, to_free):
+        # tcache_thread_shutdown of glibc 2.26-2.42 frees the tcache after draining its entries
+        libc_version = get_libc_version(silent=True)
+        if libc_version is None or libc_version < (2, 26) or libc_version >= (2, 43):
+            return False
+        chunk = GlibcHeap.GlibcChunk(None, to_free.value)
+        try:
+            if chunk.size not in GlibcHeap.get_tcache_perthread_struct_sizes():
+                return False
+        except gdb.MemoryError:
+            return False
+        if libc_version < (2, 30):
+            sizeof_counts = GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
+        else:
+            sizeof_counts = GlibcHeap.GlibcArena.TCACHE_MAX_BINS() * 2
+        # the entries are all NULL, while the counts are left
+        entries_size = current_arch.ptrsize * GlibcHeap.GlibcArena.TCACHE_MAX_BINS()
+        entries = read_memory(to_free.value + sizeof_counts, entries_size, safe=True)
+        if entries is None:
+            return False
+        return not any(entries)
+
     def update_list(self, to_free):
         # move from allocated list to freed list
         idx = self.search_allocated_index(to_free)
@@ -58903,7 +58968,10 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         # by tcache_thread_shutdown at the thread exit, so do not check what libc frees by itself
         if self.search_allocated_index(to_free) is None:
             libc = gdb.solib_name(self.loc.value)
-            if libc is not None and libc == gdb.solib_name(gdb.selected_frame().older().pc()):
+            if libc is not None and libc == gdb.solib_name(GlibcHeapTracerCommand.get_return_address()):
+                return False
+            # the callers in a static binary are not told from libc
+            if self.is_drained_tcache(to_free):
                 return False
 
         # check double free
@@ -58919,8 +58987,9 @@ class TraceFreeBreakpoint(gdb.Breakpoint):
         # update list
         self.update_list(to_free)
 
-        # FinishBreakpoint cannot be set on a dummy frame (e.g., `call (void)free(p)` from gdb)
-        if gdb.newest_frame().older().type() != gdb.DUMMY_FRAME:
+        # FinishBreakpoint cannot be set on a dummy frame (e.g., `call (void)free(p)` from gdb), nor without the caller
+        frame = gdb.newest_frame().older()
+        if frame is not None and frame.type() != gdb.DUMMY_FRAME:
             TraceFreeRetBreakpoint(to_free)
 
         return False
@@ -59011,6 +59080,14 @@ class GlibcHeapTracerCommand(GenericCommand):
         except OSError:
             return []
         return GlibcHeap.get_all_arenas()
+
+    @staticmethod
+    def get_return_address():
+        frame = gdb.newest_frame().older()
+        # gdb may not unwind at the entry (e.g., __libc_malloc of MicroBlaze)
+        if frame is None:
+            return Kernel.get_return_address()
+        return frame.pc()
 
     @staticmethod
     def get_call_address(ret_addr):
@@ -71120,6 +71197,24 @@ class LdBaseCommand(GenericCommand):
             gef_print("ver:\t{:s}".format(String.bytes2str(pos.group(0))))
         return
 
+    @staticmethod
+    def get_ld_base():
+        ld_targets = "|".join([
+            r"ld-2\.\d+\.so", r"ld-linux[-.\w]*\.so\.\d+", # glibc
+            r"ld(64)?-uClibc(-[\d.]+\.so|\.so\.\d+)", # uClibc
+            r"ld-musl-[-\w]+\.so\.1", # musl
+        ])
+        ld_base = ProcessMap.get_section_base_address_by_basename(ld_targets)
+        if ld_base is None:
+            auxv = Auxv.get_auxiliary_values()
+            if auxv and auxv.get("AT_BASE"):
+                section = ProcessMap.process_lookup_address(auxv["AT_BASE"])
+                # AT_BASE is the interpreter of any name (e.g., ld.so.1 of MIPS/PPC32, ld64.so.2 of PPC64, linker64,
+                # and libc.so of musl), and 0 for static binaries
+                if section and section.path:
+                    ld_base = section.page_start
+        return ld_base
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
@@ -71140,21 +71235,7 @@ class LdBaseCommand(GenericCommand):
         # auto estimation
         if not is_valid_addr(ld_base):
             Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
-
-            ld_targets = "|".join([
-                r"ld-2\.\d+\.so", r"ld-linux[-.\w]*\.so\.\d+", # glibc
-                r"ld(64)?-uClibc(-[\d.]+\.so|\.so\.\d+)", # uClibc
-                r"ld-musl-[-\w]+\.so\.1", # musl
-            ])
-            ld_base = ProcessMap.get_section_base_address_by_basename(ld_targets)
-            if ld_base is None:
-                auxv = Auxv.get_auxiliary_values()
-                if auxv and auxv.get("AT_BASE"):
-                    section = ProcessMap.process_lookup_address(auxv["AT_BASE"])
-                    # AT_BASE is the interpreter of any name (e.g., ld.so.1 of MIPS/PPC32, ld64.so.2 of PPC64, linker64,
-                    # and libc.so of musl), and 0 for static binaries
-                    if section and section.path:
-                        ld_base = section.page_start
+            ld_base = LdBaseCommand.get_ld_base()
             if ld_base is None:
                 gdb.set_convenience_variable("ld", None)
                 err("Could not find the ld")
@@ -71190,38 +71271,59 @@ class MagicCommand(GenericCommand):
         return any(filt in sym for filt in self.args.filter)
 
     def resolve_and_print(self, sym, base):
+
+        def is_in_base_object(address):
+            # the latter part of .bss (e.g., __free_hook) is in an anonymous region, which a core file does not have
+            section = ProcessMap.lookup_file_section(address)
+            if section is None:
+                return False
+            return section.path == base_section.path
+
         if not self.should_be_print(sym):
             return
 
         width = AddressUtil.get_format_address_width()
-        addr = Symbol.resolve_address(sym[1:] if sym.startswith("*") else sym)
+        name = sym.lstrip("*")
+        addr = Symbol.resolve_address(name)
         if addr is None:
             gef_print("{:45s} {:>{:d}s}".format(sym, "Not found", width))
             return
+        base_section = ProcessMap.lookup(base).section
+        # gdb may resolve the name to ld.so (e.g., malloc of glibc 2.31, and munmap with the DWARF of ld.so)
+        if base_section and not is_in_base_object(addr):
+            libc_addr = Symbol.resolve_libc_address(name, addr)
+            if libc_addr is not None:
+                addr = libc_addr
         if sym.startswith("*"):
             addr = read_int_from_memory(addr)
 
         addr = ProcessMap.lookup(addr)
-        perm = addr.section.permission
-        base_section = ProcessMap.lookup(base).section
-        if base_section and addr.section.path != base_section.path:
+        # a core file does not have the anonymous regions
+        if addr.section is None:
+            perm = "???"
+        else:
+            perm = addr.section.permission
+        if base_section and not is_in_base_object(addr.value):
             gef_print("{:45s} {!s} [{!s}] (different object)".format(sym, addr, perm))
             return
-        if is_ascii_string(addr.value):
-            val = read_cstring_from_memory(addr.value)
-            gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}".format(
-                sym, addr, perm, addr.value - base, val,
-            ))
+
+        # a variable narrower than a pointer needs its type (e.g., `static uint8_t global_max_fast` of glibc 2.37-2.42)
+        value = read_int_from_memory(addr.value)
+        try:
+            value_type = gdb.parse_and_eval(sym).type.strip_typedefs()
+        except gdb.error:
+            value_type = None
+        if value_type is not None and value_type.code == gdb.TYPE_CODE_INT and value_type.sizeof < current_arch.ptrsize:
+            value = int(gdb.Value(addr.value).cast(value_type.pointer()).dereference())
+        val = ProcessMap.lookup(value)
+        val_sym = Symbol.format(val.value)
+        if val_sym:
+            val_sym = " " + val_sym
         else:
-            val = ProcessMap.lookup(read_int_from_memory(addr.value))
-            val_sym = Symbol.format(val.value)
-            if val_sym:
-                val_sym = " " + val_sym
-            else:
-                val_sym = ""
-            gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}{:s}".format(
-                sym, addr, perm, addr.value - base, val.long_fmt(), val_sym,
-            ))
+            val_sym = ""
+        gef_print("{:45s} {!s} [{!s}] ({:+#011x}) -> {:s}{:s}".format(
+            sym, addr, perm, addr.value - base, val.long_fmt(), val_sym,
+        ))
         return
 
     def resolve_and_print_fj(self, sym, base):
@@ -71247,10 +71349,11 @@ class MagicCommand(GenericCommand):
     def magic(self):
         codebase = ProcessMap.get_codebase()
         libc = ProcessMap.get_section_base_address_by_list(("libc-2.", "libc.so.6"))
-        ld = ProcessMap.get_section_base_address_by_list(("ld-2.", "ld-linux-", "ld-linux.so.2"))
-        if libc is None or ld is None:
-            gef_print("libc/ld not found")
+        if libc is None:
+            err("Could not find the libc")
             return
+        # ld.so of glibc 2.34 and later is named by its soname (e.g., ld.so.1 of MIPS, ld64.so.2 of PPC64)
+        ld = LdBaseCommand.get_ld_base()
 
         gef_print(titlify("Legend"))
         fmt = "{:45s} {:{:d}s} {:5s} (+{:10s}) -> {:{:d}s}"
@@ -71303,6 +71406,10 @@ class MagicCommand(GenericCommand):
                 self.resolve_and_print_fj("_IO_helper_jumps", libc)
                 self.resolve_and_print_fj("_IO_cookie_jumps", libc)
                 self.resolve_and_print_fj("_IO_obstack_jumps", libc)
+            elif Symbol.resolve_address("__io_vtables[IO_FILE_JUMPS]") is None:
+                # the indexes need DWARF, but the 2 are exported by the names
+                self.resolve_and_print_fj("_IO_file_jumps", libc)
+                self.resolve_and_print_fj("_IO_wfile_jumps", libc)
             else:
                 self.resolve_and_print_fj("__io_vtables[IO_STR_JUMPS]", libc)
                 self.resolve_and_print_fj("__io_vtables[IO_WSTR_JUMPS]", libc)
@@ -71371,8 +71478,9 @@ class MagicCommand(GenericCommand):
             self.resolve_and_print("__libc_argv", libc)
             self.resolve_and_print("__environ", libc)
             gef_print(titlify("Destructor"))
-            self.resolve_and_print("_rtld_global->_dl_rtld_lock_recursive", ld)
-            self.resolve_and_print("_rtld_global->_dl_rtld_unlock_recursive", ld)
+            if ld is not None:
+                self.resolve_and_print("_rtld_global->_dl_rtld_lock_recursive", ld)
+                self.resolve_and_print("_rtld_global->_dl_rtld_unlock_recursive", ld)
             self.resolve_and_print("error_print_progname", libc)
             gef_print(titlify("Unwind"))
             self.resolve_and_print("'DW.ref.__gxx_personality_v0'", codebase)
@@ -71759,11 +71867,11 @@ class OneGadgetCommand(GenericCommand):
                         help="pass the output format to one_gadget (e.g. raw).")
     _syntax_ = parser.format_help()
 
-    def parse_exp(self, exp):
+    def parse_exp(self, exp, libc_base):
         orig_exp = exp[::] # for debug
 
         # preparation
-        exp = re.sub(r"(xmm\d+)", "$\\1.uint128", exp)
+        exp = exp.replace("$base", "{:#x}".format(libc_base)) # e.g., `(s64)[$base+0x3c3e88] <= 0x0`
         exp = exp.replace("NULL", "0")
         exp = exp.replace("(u16)", "(unsigned short)")
         exp = exp.replace("(s16)", "(signed short)")
@@ -71774,7 +71882,9 @@ class OneGadgetCommand(GenericCommand):
 
         # fix register name
         for regname in current_arch.general_registers:
-            exp = exp.replace(regname[1:], "((unsigned long)" + regname + ")")
+            exp = re.sub(r"\b{:s}\b".format(regname[1:]), "((unsigned long)" + regname + ")", exp)
+        # the 32-bit registers (e.g., `esi == 0x1` and `r15d == 0x1`)
+        exp = re.sub(r"\b(e[a-d]x|e[sd]i|e[sb]p|r(?:[89]|1[0-5])d)\b", "((unsigned int)$\\1)", exp)
 
         # enclose both sides in parentheses
         if "==" in exp:
@@ -71797,6 +71907,11 @@ class OneGadgetCommand(GenericCommand):
             target = "(*({:s}*)({:s}))".format(target_type, target)
             exp = prefix + target + suffix
 
+        # fix xmm register after memory accessing, since it is subscripted.
+        # The integer of 16 bytes cannot be cast by old gdb (e.g., 11.2), so use the 8-byte element
+        exp = re.sub(r"(xmm\d+) >> 64", "$\\1.v2_int64[1]", exp)
+        exp = re.sub(r"(?<!\$)(xmm\d+)", "$\\1.v2_int64[0]", exp)
+
         # evaluate
         try:
             return AddressUtil.parse_address(exp)
@@ -71808,8 +71923,8 @@ class OneGadgetCommand(GenericCommand):
             err("after : " + exp)
         return None
 
-    def get_filtered_result(self, one_gadget_command, libc_path):
-        res = GefUtil.gef_execute_external([one_gadget_command, libc_path, "-l", "1"], as_list=True)
+    def get_filtered_result(self, one_gadget_command, libc):
+        res = GefUtil.gef_execute_external([one_gadget_command, libc.path, "-l", "1"], as_list=True)
         res_groups = "\n".join(res).split("\n\n")
         gadgets = [line.split("\n") for line in res_groups]
 
@@ -71817,19 +71932,30 @@ class OneGadgetCommand(GenericCommand):
         for g in gadgets:
             valid = True
 
-            for constraints in g[2:]:
+            for constraints in g[1:]:
                 constraints = constraints.strip()
 
+                # the caveats (e.g., `close([rsp+0x60]): prevent it from being 0 ...`) are not the constraints
+                if constraints == "caveats:":
+                    break
+                if constraints == "constraints:":
+                    continue
+
                 # pattern 1: address rsp+0x60 is writable
-                m = re.match(r"address (\S+) is writable", constraints)
+                #            addresses r10+0x10, rbp-0x80 are writable
+                #            address (rsp+0xf & 0xfffffffffffffff0) is writable
+                m = re.match(r"address(?:es)? (.+) (?:is|are) writable$", constraints)
                 if m:
-                    ret = self.parse_exp(m.group(1))
-                    if ret is None:
-                        valid = False
-                        break
-                    addr = ProcessMap.lookup(ret)
-                    if not addr.valid or not addr.section.is_writable():
-                        valid &= False
+                    for exp in m.group(1).split(", "):
+                        ret = self.parse_exp(exp, libc.page_start)
+                        if ret is None:
+                            valid = False
+                            break
+                        addr = ProcessMap.lookup(ret)
+                        if not addr.valid or addr.section is None or not addr.section.is_writable():
+                            valid = False
+                            break
+                    if valid is False:
                         break
                     continue
 
@@ -71844,11 +71970,13 @@ class OneGadgetCommand(GenericCommand):
                         continue
 
                     if sub_constraints.startswith("readable: "):
-                        ret = self.parse_exp(sub_constraints.split(": ", 1)[1])
+                        ret = self.parse_exp(sub_constraints.split(": ", 1)[1], libc.page_start)
                         if ret is None:
                             continue
                         addr = ProcessMap.lookup(ret)
-                        if addr.valid and addr.section.is_readable() and read_memory(ret, 1, safe=True) is not None:
+                        if not addr.valid or addr.section is None:
+                            continue
+                        if addr.section.is_readable() and read_memory(ret, 1, safe=True) is not None:
                             sub_valid = True
                             break
                         continue
@@ -71856,11 +71984,11 @@ class OneGadgetCommand(GenericCommand):
                     # pattern 2-2: writable: rdi
                     if "writable:" in sub_constraints:
                         exp = sub_constraints.split(": ")[-1]
-                        ret = self.parse_exp(exp)
+                        ret = self.parse_exp(exp, libc.page_start)
                         if ret is None:
                             continue
                         addr = ProcessMap.lookup(ret)
-                        if addr.valid and addr.section.is_writable():
+                        if addr.valid and addr.section and addr.section.is_writable():
                             sub_valid = True
                             break
                         continue
@@ -71870,7 +71998,7 @@ class OneGadgetCommand(GenericCommand):
                     #              rdx == NULL
                     #              (s32)[rdx+0x4] <= 0
                     exp = sub_constraints
-                    if self.parse_exp(sub_constraints):
+                    if self.parse_exp(sub_constraints, libc.page_start):
                         sub_valid = True
                         break
                     continue
@@ -71901,6 +72029,10 @@ class OneGadgetCommand(GenericCommand):
         if args.apply_smart_filter and args.output_format:
             err("Output format and smart filter cannot be combined")
             return
+        # the maps of a core file have no permission (all `r--`) nor anonymous region
+        if args.apply_smart_filter and is_core_file():
+            err("Smart filter is unsupported for a core file")
+            return
 
         libc = ProcessMap.process_lookup_path(("libc-2.", "libc.so.6"))
         if libc is None:
@@ -71917,7 +72049,12 @@ class OneGadgetCommand(GenericCommand):
             false = Color.boldify("false")
             info("The condition {:s} is always assumed to be {:s}".format(condition, false))
 
-            res = self.get_filtered_result(one_gadget_command, libc.path)
+            try:
+                res = self.get_filtered_result(one_gadget_command, libc)
+            except subprocess.CalledProcessError as e:
+                # e.g., no gadget is found
+                gef_print(e.output.decode("utf-8").rstrip())
+                return
             gef_print(res)
         else:
             GefUtil.os_system(command)
@@ -72104,19 +72241,30 @@ class MmxSetCommand(GenericCommand):
             "$mm6": b"\x0f\x6f\x30", # movq  mm6, qword ptr [rax]
             "$mm7": b"\x0f\x6f\x38", # movq  mm7, qword ptr [rax]
         }
-        codes = [REG_CODE[reg] + p64(value)] # movq mm0, [rax]; db value
+        # An MMX instruction sets TOP to 0 and all tags to valid, so restore the x87 environment after it.
+        # The registers stay in place, while gdb writing $fstat rotates them, since FXSAVE has them in the order of st.
+        if is_x86_64():
+            sub_sp = b"\x48\x81\xec\x00\x01\x00\x00" # sub rsp, 0x100 (beyond the red zone)
+        else:
+            sub_sp = b"\x81\xec\x00\x01\x00\x00" # sub esp, 0x100
+        codes = [
+            sub_sp,
+            b"\xd9\x34\x24", # fnstenv [rsp]
+            REG_CODE[reg], # movq mm0, [rax]
+            b"\xd9\x24\x24" + p64(value), # fldenv [rsp]; db value
+        ]
 
         if is_x86_64():
-            regs = {"$rax": current_arch.pc + 5} # points to value
+            regs = {"$rax": current_arch.pc + 18} # points to value
         else:
-            regs = {"$eax": current_arch.pc + 5} # points to value
+            regs = {"$eax": current_arch.pc + 17} # points to value
 
-        ExecAsm(codes, regs=regs).exec_code()
+        ExecAsm(codes, regs=regs, step=len(codes)).exec_code()
         return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "rr", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     @Decorator.only_if_kvm_disabled
     def do_invoke(self, args):
@@ -72152,6 +72300,24 @@ class MmxCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     _syntax_ = parser.format_help()
 
+    @staticmethod
+    def is_st_physical(top_of_stack):
+        """Return True if st0-st7 are the physical registers R0-R7, which the gdbstub of QEMU 7.2 and earlier returns
+        (49be78ca of QEMU 8.0 fixed it)."""
+        if not is_qemu():
+            return False
+        if is_qemu_system():
+            version = GefVersionCommand.qemu_system_version()
+        else:
+            version = GefVersionCommand.qemu_user_version()
+        m = re.search(r"(\d+)\.(\d+)", version)
+        if m is None:
+            # the order matters only while x87 is used
+            if top_of_stack != 0:
+                warn("The order of mm0-7 may be wrong, since QEMU 7.2 and earlier returns R0-R7 as st0-7")
+            return False
+        return tuple(map(int, m.groups())) < (8, 0)
+
     def print_mmx(self):
         gef_print(titlify("MMX Register (from fpu register)"))
         regs = []
@@ -72175,7 +72341,8 @@ class MmxCommand(GenericCommand):
             err("Could not read x87 status register")
             return
         top_of_stack = (fstat >> 11) & 0b111
-        regs = regs[-top_of_stack:] + regs[:-top_of_stack] # need rotate. because mmx0 != st(0)
+        if not MmxCommand.is_st_physical(top_of_stack):
+            regs = regs[-top_of_stack:] + regs[:-top_of_stack] # need rotate. because mmx0 != st(0)
 
         fmt = "{:5s}: {:s}"
         legend = ["Name", "64-bit hex"]
@@ -72216,7 +72383,7 @@ class XmmSetCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("rr", "kgdb"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "rr", "kgdb"))
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64"))
     def do_invoke(self, args):
         # arg parse
@@ -72544,11 +72711,17 @@ class FpuCommand(GenericCommand):
         top_of_stack = (fstat >> 11) & 0b111
         regs = ["mm{:d}".format(i) for i in range(8)]
         regs = regs[top_of_stack:] + regs[:top_of_stack] # need rotate. because mmx0 != st(0)
+        st_physical = MmxCommand.is_st_physical(top_of_stack)
 
         for i in range(8):
             regname = "$st{:d}".format(i)
+            # the gdbstub of QEMU 7.2 and earlier returns R0-R7 as st0-st7, so read st(i) from R(TOP+i)
+            if st_physical:
+                src_regname = "$st{:d}".format((top_of_stack + i) % 8)
+            else:
+                src_regname = regname
             try:
-                result = gdb.execute("info registers {}".format(regname), to_string=True)
+                result = gdb.execute("info registers {}".format(src_regname), to_string=True)
                 raw = re.search(r"\(raw (0x[0-9a-fA-F]+)\)", result)
                 if raw is None:
                     gef_print("{:4s}({:3s}) : <unavailable>".format(red(regname), regs[i]))
@@ -72558,13 +72731,13 @@ class FpuCommand(GenericCommand):
                 if "invalid" in value:
                     u64, u32 = "<invalid>", "<invalid>"
                 else:
-                    reg = float(gdb.parse_and_eval(regname))
+                    reg = float(gdb.parse_and_eval(src_regname))
                     if math.isinf(reg) and (u80 >> 64) & 0x7fff != 0x7fff:
                         u64, u32 = "<overflow>", "<overflow>"
                     else:
                         u64 = "{:#x}".format(GefUtil.d2u(reg))
                         # convert from the 80-bit value directly, since rounding to double first can differ
-                        reg32 = float(gdb.parse_and_eval("(float){:s}".format(regname)))
+                        reg32 = float(gdb.parse_and_eval("(float){:s}".format(src_regname)))
                         if math.isinf(reg32):
                             u32 = "<overflow>"
                         else:
@@ -73541,24 +73714,10 @@ class DistanceCommand(GenericCommand):
             gef_print("Offset:  {:#x}".format(offset))
             return
 
-        addr_a = ProcessMap.lookup(args.address_a)
-        if addr_a.section is None:
+        section = ProcessMap.lookup_file_section(args.address_a)
+        if section is None:
             err("Could not find the base address")
             return
-
-        section = addr_a.section
-        if not section.path and addr_a.info:
-            # the latter part of .bss is in an anonymous region (e.g., `char big[0x10000]`),
-            # so use the nearest region below that maps a section of the same file
-            file_sections = []
-            for zone in ProcessMap.get_info_files():
-                if zone.filename != addr_a.info.filename or zone.zone_start > args.address_a:
-                    continue
-                zone_section = ProcessMap.process_lookup_address(zone.zone_start)
-                if zone_section and zone_section.path:
-                    file_sections.append(zone_section)
-            if file_sections:
-                section = max(file_sections, key=lambda x: x.page_start)
 
         base_address = ProcessMap.get_section_load_base_address(section)
         offset = args.address_a - base_address
@@ -87760,6 +87919,12 @@ class Kernel:
             o7 = get_register("$o7")
             if o7 is not None:
                 return o7 + 8
+            return None
+        if is_microblaze():
+            # `brlid` writes its own address to r15, and `rtsd r15,8` returns after the delay slot
+            r15 = get_register("$r15")
+            if r15 is not None:
+                return r15 + 8
             return None
         return None
 
@@ -240481,11 +240646,15 @@ class GefVersionCommand(GenericCommand):
                 return String.bytes2str(pos.group(0))
         return "Not found"
 
-    def qemu_system_version(self):
+    @staticmethod
+    def qemu_system_version():
         return gdb.execute("monitor info version", to_string=True).strip()
 
-    def qemu_user_version(self):
+    @staticmethod
+    def qemu_user_version():
         pid = Pid.get_pid()
+        if pid is None: # e.g., qemu-user on another host
+            return "Not recognized"
         try:
             res = GefUtil.gef_execute_external(["/proc/{:d}/exe".format(pid), "--version"], as_list=True)
             return res[0].strip()
