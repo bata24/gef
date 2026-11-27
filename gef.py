@@ -17277,6 +17277,15 @@ class ProcessMap:
         return None
 
     @staticmethod
+    def get_section_base_address_by_basename(pattern):
+        """Return the start of the first region whose file name matches the regex entirely.
+        The directory is not matched (e.g., `glibc-2.39/chall` is not libc)."""
+        for section in ProcessMap.get_process_maps():
+            if section.path and re.fullmatch(pattern, os.path.basename(section.path)):
+                return section.page_start
+        return None
+
+    @staticmethod
     def get_section_base_address_by_list(names):
         for name in names:
             page_start = ProcessMap.get_section_base_address(name)
@@ -56197,12 +56206,28 @@ class DestructorDumpCommand(GenericCommand):
         thread_tbss_base = thread_arena - thread_arena_offset
         thread_tls_dtor_list = thread_tbss_base + tls_dtor_list_offset
 
-        # tls_dotr_list of current thread
+        # tls_dtor_list of current thread
         tls_dtor_list = thread_tls_dtor_list - thread_tls + current_arch.get_tls()
         return tls_dtor_list
 
+    def get_tls_search_range(self):
+        # the static TLS of the executable (and libstdc++ etc.) shifts the TLS block of libc,
+        # so search around &thread_arena in the TLS block of libc if found
+        ret = GlibcHeap.search_for_thread_arena_from_tls()
+        if ret is None:
+            return range(1, 16)
+        tls, thread_arena_addr = ret[:2]
+        index = (thread_arena_addr - tls) // current_arch.ptrsize * TlsCommand.get_direction()
+        return range(max(1, index - 15), index + 16)
+
     def get_dtor_list_from_linkmap_relative(self, codebase):
         if codebase is None:
+            return None
+
+        # lm_cache next to tls_dtor_list points to the link_map of the object that registered it,
+        # whose l_addr is not codebase for non-PIE and shared libraries
+        link_map_addresses = [link_map.address for link_map in self.yield_link_map(codebase)]
+        if not link_map_addresses:
             return None
 
         direction = TlsCommand.get_direction()
@@ -56229,19 +56254,24 @@ class DestructorDumpCommand(GenericCommand):
         ...
         """
         tls = current_arch.get_tls()
-        for i in range(1, 16):
+        for i in self.get_tls_search_range():
             addr = tls + (current_arch.ptrsize * i) * direction
 
             if not is_valid_addr(addr):
                 break
 
             candidate_link_map = read_int_from_memory(addr)
-            if not is_valid_addr(candidate_link_map):
-                continue
-
-            candidate_codebase = read_int_from_memory(candidate_link_map)
-            if candidate_codebase == codebase:
-                # found
+            if candidate_link_map in link_map_addresses:
+                # found lm_cache. tls_dtor_list is near it (e.g., the next on x86_64, 3 words before on ppc64le),
+                # and the first node of it has the link_map at +2 words
+                for j in [i - 1, i + 1, i - 2, i + 2, i - 3, i + 3]:
+                    tls_dtor_list = tls + (current_arch.ptrsize * j) * direction
+                    node = read_int_from_memory(tls_dtor_list, safe=True)
+                    if not node or not is_valid_addr(node):
+                        continue
+                    if read_int_from_memory(node + current_arch.ptrsize * 2, safe=True) in link_map_addresses:
+                        return tls_dtor_list
+                # the empty list cannot be told, so assume the usual layout
                 if is_s390x():
                     tls_dtor_list = tls + (current_arch.ptrsize * (i + 1)) * direction
                 else:
@@ -56279,7 +56309,7 @@ class DestructorDumpCommand(GenericCommand):
         ...
         """
         tls = current_arch.get_tls()
-        for i in range(1, 16):
+        for i in self.get_tls_search_range():
             addr = tls + (current_arch.ptrsize * i) * direction
 
             if not is_valid_addr(addr):
@@ -56312,6 +56342,9 @@ class DestructorDumpCommand(GenericCommand):
         # user specified
         if offset_tls_dtor_list is not None:
             tls_dtor_list = AddressUtil.normalize_address(current_arch.get_tls() + offset_tls_dtor_list)
+            if not is_valid_addr(tls_dtor_list):
+                err("Memory read error at {:#x}".format(tls_dtor_list))
+                return
 
         # method 1 (directly)
         if tls_dtor_list is None:
@@ -56338,7 +56371,7 @@ class DestructorDumpCommand(GenericCommand):
                 tls_dtor_list = self.get_dtor_list_from_heuristic()
 
         if tls_dtor_list is None:
-            err("Could not find tls_dtor_list")
+            err("Could not find tls_dtor_list (specify the offset from TLS by --tdl)")
             return
 
         # parse tls_dtor_list and print
@@ -56427,6 +56460,8 @@ class DestructorDumpCommand(GenericCommand):
             return flavor, fn, arg, dso_handle
 
         fns_size = ptrsize * 4 # flavor, fn, arg, dso_handle
+        # stdlib/exit.h
+        flavor_names = {2: "ef_on", 3: "ef_at", 4: "ef_cxa"}
 
         seen = set()
         while current:
@@ -56455,6 +56490,9 @@ class DestructorDumpCommand(GenericCommand):
                     break
                 if fn.value == 0:
                     continue
+                # ef_free (0) is left by __cxa_finalize of dlclose without decreasing idx, and ef_us (1) is not set yet
+                if flavor.value not in flavor_names:
+                    continue
                 if cookie is None:
                     decoded_fn = fn.value
                 else:
@@ -56468,13 +56506,16 @@ class DestructorDumpCommand(GenericCommand):
                     valid_msg = Color.colorify("invalid", "bold red")
 
                 fns = "       fns[{:#x}]: {:s}:".format(i, self.C(addr))
-                width = len(fns) - 9
-                gef_print("{} flavor:     {!s}".format(fns, flavor))
+                width = len(Color.remove_color(fns))
+                gef_print("{} flavor:     {!s} ({:s})".format(fns, flavor, flavor_names[flavor.value]))
                 gef_print("{} func:       {!s} (={:s}) [{:s}]".format(
                     " " * width, fn, Symbol.format(decoded_fn, show_address=True), valid_msg,
                 ))
-                gef_print("{} arg:        {!s}".format(" " * width, arg))
-                gef_print("{} dso_handle: {!s}".format(" " * width, dso_handle))
+                # the union has arg for ef_on and ef_cxa, and dso_handle only for ef_cxa
+                if flavor.value in (2, 4):
+                    gef_print("{} arg:        {!s}".format(" " * width, arg))
+                if flavor.value == 4:
+                    gef_print("{} dso_handle: {!s}".format(" " * width, dso_handle))
             current = next.value
         return
 
@@ -56490,12 +56531,14 @@ class DestructorDumpCommand(GenericCommand):
                 break
             seen.add(current)
             dic = {}
+            dic["address"] = current
             dic["load_address"] = read_int_from_memory(current)
             name_ptr = read_int_from_memory(current + current_arch.ptrsize * 1)
             # a path may be longer than context.nb_max_string_length, and have non-ASCII characters
             dic["name"] = dic["name_org"] = read_cstring_from_memory(name_ptr, max_length=0x1000, allow_non_ascii=True)
             if dic["name_org"] == "":
-                dic["name"] = "{:s}".format(self.local_filepath)
+                # the local file is a temporary one with -r
+                dic["name"] = "{:s}".format(self.remote_filepath or self.local_filepath)
             dic["dynamic"] = read_int_from_memory(current + current_arch.ptrsize * 2)
             dic["next"] = read_int_from_memory(current + current_arch.ptrsize * 3)
             link_map = GefUtil.dict_to_namedtuple("LinkMap", dic)
@@ -56503,15 +56546,33 @@ class DestructorDumpCommand(GenericCommand):
             current = dic["next"]
         return
 
+    def get_dynamic(self, link_map):
+        # l_ld is the runtime address of _DYNAMIC, while the local file may not be mapped (e.g., -r of non-PIE)
+        if link_map.dynamic:
+            dynamic = ProcessMap.lookup(link_map.dynamic)
+            if dynamic.section is not None:
+                return dynamic
+        return DynamicCommand.get_dynamic(link_map.load_address or link_map.name, silent=True)
+
+    def get_link_maps(self, codebase):
+        link_maps = []
+        if self.elf.has_dynamic():
+            link_maps = list(self.yield_link_map(codebase))
+            if not link_maps:
+                # e.g., at `starti`, `ld.so ./a.out`, -f of a shared library, and static-pie of glibc 2.27 (no DT_DEBUG)
+                err("Could not find link_map, so parse only the section header of the binary")
+        return link_maps
+
     def dump_fini(self, codebase):
         if not codebase:
             return None
 
-        if self.elf.has_dynamic():
+        link_maps = self.get_link_maps(codebase)
+        if link_maps:
             # Parse all loaded libraries.
-            for link_map in self.yield_link_map(codebase):
+            for link_map in link_maps:
                 # get dynamic
-                dynamic = DynamicCommand.get_dynamic(link_map.load_address or link_map.name, silent=True)
+                dynamic = self.get_dynamic(link_map)
                 if dynamic is None:
                     continue
 
@@ -56532,7 +56593,7 @@ class DestructorDumpCommand(GenericCommand):
                 gef_print(link_map.name)
                 gef_print("    -> {:s}".format(Symbol.format(fini, show_address=True)))
         else:
-            # Static binary has no _DYNAMIC, but we can resolve the target address
+            # Static binary has no _DYNAMIC (and link_map may not be found), but we can resolve the target address
             # from section name due to local file path.
             shdr = self.elf.get_shdr(".fini")
             if shdr is None:
@@ -56542,7 +56603,7 @@ class DestructorDumpCommand(GenericCommand):
             fini = shdr.sh_addr
             if fini < codebase:
                 fini += codebase
-            gef_print(self.local_filepath)
+            gef_print(self.remote_filepath or self.local_filepath)
             gef_print("    -> {:s}".format(Symbol.format(fini, show_address=True)))
         return
 
@@ -56550,11 +56611,12 @@ class DestructorDumpCommand(GenericCommand):
         if not codebase:
             return None
 
-        if self.elf.has_dynamic():
+        link_maps = self.get_link_maps(codebase)
+        if link_maps:
             # Parse all loaded libraries.
-            for link_map in self.yield_link_map(codebase):
+            for link_map in link_maps:
                 # get dynamic
-                dynamic = DynamicCommand.get_dynamic(link_map.load_address or link_map.name, silent=True)
+                dynamic = self.get_dynamic(link_map)
                 if dynamic is None:
                     continue
 
@@ -56567,7 +56629,7 @@ class DestructorDumpCommand(GenericCommand):
                         fini_array = val
                         if fini_array < link_map.load_address:
                             fini_array += link_map.load_address
-                    if tag == 28: # DT_FINI_ARRAY_SZ
+                    if tag == 28: # DT_FINI_ARRAYSZ
                         fini_array_sz = val
                     if fini_array is not None and fini_array_sz is not None:
                         break
@@ -56594,17 +56656,20 @@ class DestructorDumpCommand(GenericCommand):
                 for addr, func in entries:
                     gef_print("    -> {:s}: {:s}".format(self.C(addr), Symbol.format(func, show_address=True)))
         else:
-            # Static binary has no _DYNAMIC, but we can resolve the target address
+            # Static binary has no _DYNAMIC (and link_map may not be found), but we can resolve the target address
             # from section name due to local file path.
             shdr = self.elf.get_shdr(".fini_array")
             if shdr is None:
                 err("Could not find .fini_array section")
                 return
 
+            fini_array = shdr.sh_addr
+            if fini_array < codebase:
+                fini_array += codebase
             entries = []
             vend = AddressUtil.get_vmem_end() - 1
             for i in range(shdr.sh_size // current_arch.ptrsize):
-                addr = shdr.sh_addr + current_arch.ptrsize * i
+                addr = fini_array + current_arch.ptrsize * i
                 func = read_int_from_memory(addr, safe=True)
                 if func is None:
                     warn("Cannot read .fini_array at {:#x}".format(addr))
@@ -56615,7 +56680,7 @@ class DestructorDumpCommand(GenericCommand):
             if not entries:
                 err("Could not find valid entry")
                 return
-            gef_print(self.local_filepath)
+            gef_print(self.remote_filepath or self.local_filepath)
             for addr, func in entries:
                 gef_print("    -> {:s}: {:s}".format(self.C(addr), Symbol.format(func, show_address=True)))
         return
@@ -56632,10 +56697,14 @@ class DestructorDumpCommand(GenericCommand):
             args.file, remote=args.remote, prefix=self._cmdline_
         ) as (local_filepath, remote_filepath):
             if local_filepath is None:
+                # e.g., gdbserver without the local file
+                if is_remote_debug() and not args.remote:
+                    info("Use -r to parse the remote binary")
                 return
 
             # filepath and elf
             self.local_filepath = local_filepath
+            self.remote_filepath = remote_filepath
             self.elf = Elf.get_elf(local_filepath)
             if self.elf is None or not self.elf.is_valid():
                 err("Invalid ELF")
@@ -56678,7 +56747,7 @@ class DestructorDumpCommand(GenericCommand):
 
 @register_command
 class FpChainCommand(GenericCommand):
-    """Dump chains from __IO_list_all."""
+    """Dump chains from _IO_list_all."""
 
     _cmdline_ = "fpchain"
     _category_ = "02-e. Process Information - Complex Structure Information"
@@ -56689,7 +56758,9 @@ class FpChainCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def get_io_list_all(self):
-        return Symbol.resolve_address("_IO_list_all")
+        # the language of the frame (e.g., Rust) cannot evaluate it
+        with ContextManager.gdb_parameter("language", "c"):
+            return Symbol.resolve_address("_IO_list_all")
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -56733,6 +56804,9 @@ class FpChainCommand(GenericCommand):
                 break
             seen.add(current)
             gef_print("[{:d}] -> {:s}".format(i, Symbol.format(current, show_address=True)))
+            # the end of the chain, even if the address 0 is mapped (e.g., the gateway page of qemu-hppa)
+            if current == 0:
+                break
 
             i += 1
         return
@@ -56748,7 +56822,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", nargs="*", type=AddressUtil.parse_address,
-                        help="the ELF address to parse (default: stdin, stdout, stderr).")
+                        help="the FILE address to parse (default: stdin, stdout, stderr).")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
 
@@ -56810,6 +56884,11 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                 val = read_int32_from_memory(member_addr)
                 val_s = "{:#010x}".format(val)
                 msg += "{:{:d}s}{:{:d}s} ".format(val_s, val_width, "", sym_width)
+            elif member_size == 3:
+                # the bit-field of 24 bits (e.g., _flags2) is at the first 3 bytes on both endians
+                val = int.from_bytes(read_memory(member_addr, 3), Endian.endian_str())
+                val_s = "{:#08x}".format(val)
+                msg += "{:{:d}s}{:{:d}s} ".format(val_s, val_width, "", sym_width)
             elif member_size == 2:
                 val = read_int16_from_memory(member_addr)
                 val_s = "{:#06x}".format(val)
@@ -56826,6 +56905,45 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
 
     def stdio_dump(self, struct_io_file_array):
         self.process_member("__addr__", None, struct_io_file_array)
+
+        # an unknown version (e.g., a static binary under qemu-user) uses the layout of 2.31-2.39
+        libc_version = get_libc_version(silent=True)
+
+        # __off_t is 64-bit on the 32-bit architectures with 64-bit time (sysdeps/unix/sysv/linux/bits/typesizes.h)
+        if is_riscv32() or is_arc32() or is_or1k():
+            size_old_offset = 8
+        else:
+            size_old_offset = current_arch.ptrsize
+
+        # gdb does not return the alignment of long long of the ABI for some architectures (e.g., 8 for SH4)
+        if is_x86_32() or is_sh4() or is_csky() or is_microblaze() or is_nios2() or is_or1k() or is_arc32():
+            align_long_long = 4
+        elif is_m68k():
+            align_long_long = 2
+        elif is_cris():
+            align_long_long = 1
+        else:
+            align_long_long = 8
+
+        # glibc 2.41 splits _flags2 into `int _flags2:24` and `char _short_backupbuf[1]`
+        if libc_version is not None and libc_version >= (2, 41):
+            flags2_member = [[3, "_flags2"], [1, "_short_backupbuf"]]
+        else:
+            flags2_member = [[4, "_flags2"], [0, ""]]
+
+        # glibc 2.40 replaces __pad5 with _prevchain
+        if libc_version is not None and libc_version >= (2, 40):
+            pad5_name = "_prevchain"
+        else:
+            pad5_name = "__pad5"
+
+        # glibc 2.42 adds _total_written (and _unused3) after _mode
+        if libc_version is not None and libc_version >= (2, 42) and is_64bit():
+            mode_member = [[4, "_mode"], [4, "_unused3"], [8, "_total_written"], [8, "_unused2"]]
+        elif libc_version is not None and libc_version >= (2, 42):
+            mode_member = [[4, "_mode"], [8, "_total_written"], [4, "_unused3"], [28, "_unused2"]]
+        else:
+            mode_member = [[4, "_mode"], [[40, 20][is_64bit()], "_unused2"]]
 
         # _IO_FILE
         self.out.append(titlify("FILE"))
@@ -56846,8 +56964,8 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             [current_arch.ptrsize, "_markers"],
             [current_arch.ptrsize, "_chain"],
             [4,                    "_fileno"],
-            [4,                    "_flags2"],
-            [current_arch.ptrsize, "_old_offset"],
+            *flags2_member,
+            [size_old_offset,      "_old_offset"],
             [2,                    "_cur_column"],
             [1,                    "_vtable_offset"],
             [1,                    "_shortbuf"],
@@ -56859,13 +56977,12 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             [current_arch.ptrsize, "_wide_data"],
             [current_arch.ptrsize, "_freeres_list"],
             [current_arch.ptrsize, "_freeres_buf"],
-            [current_arch.ptrsize, "__pad5"],
-            [4,                    "_mode"],
-            [[40, 20][is_64bit()], "_unused2"],
+            [current_arch.ptrsize, pad5_name],
+            *mode_member,
             [current_arch.ptrsize, "vtable"],
         ]
         offset = self.get_offset("_offset", struct_io_file_member)
-        struct_io_file_member[23][0] = align(offset, gdb.lookup_type("long long").alignof) - offset
+        struct_io_file_member[24][0] = align(offset, align_long_long) - offset
         for _, m in struct_io_file_member:
             self.process_member(m, struct_io_file_member, struct_io_file_array)
 
@@ -56923,6 +57040,13 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                     struct_io_wide_data_array.append(0)
                 else:
                     struct_io_wide_data_array.append(wide_data)
+        # struct _IO_codecvt has the function pointers before 2.30, and the union `_IO_iconv_t` before 2.31
+        if libc_version is not None and libc_version < (2, 30):
+            size_codecvt = [0x70, 0xc0][is_64bit()]
+        elif libc_version is not None and libc_version < (2, 31):
+            size_codecvt = [0x50, 0x80][is_64bit()]
+        else:
+            size_codecvt = [0x48, 0x70][is_64bit()]
         struct_io_wide_data_member = [
             [current_arch.ptrsize,     "_IO_read_ptr"],
             [current_arch.ptrsize,     "_IO_read_end"],
@@ -56937,7 +57061,7 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
             [current_arch.ptrsize,     "_IO_save_end"],
             [8,                        "_IO_state"],
             [8,                        "_IO_last_state"],
-            [[0x48, 0x70][is_64bit()], "_codecvt"],
+            [size_codecvt,             "_codecvt"],
             [4,                        "_shortbuf"],
             [[0, 4][is_64bit()],       ""],
             [current_arch.ptrsize,     "_wide_vtable"],
@@ -56980,13 +57104,22 @@ class StandardIoCommand(GenericCommand, BufferingOutput):
                     return
                 struct_io_file_array.append(x)
         else:
-            try:
-                stdin = AddressUtil.parse_address("(void*) stdin")
-                stdout = AddressUtil.parse_address("(void*) stdout")
-                stderr = AddressUtil.parse_address("(void*) stderr")
-            except gdb.error:
-                err("Could not find stdin, stdout, and stderr")
-                return
+            # the language of the frame (e.g., Rust) cannot evaluate them
+            with ContextManager.gdb_parameter("language", "c"):
+                # uClibc and bionic, which get_libc() does not know, have FILE of other layouts
+                # (the gdb of SH4 drops the leading underscore of symbols)
+                if libc is None:
+                    names = ["_IO_2_1_stdin_", "IO_2_1_stdin_"]
+                    if all(Symbol.resolve_address(name) is None for name in names):
+                        err("Unsupported libc: _IO_2_1_stdin_ of glibc is not found")
+                        return
+                try:
+                    stdin = AddressUtil.parse_address("(void*) stdin")
+                    stdout = AddressUtil.parse_address("(void*) stdout")
+                    stderr = AddressUtil.parse_address("(void*) stderr")
+                except gdb.error:
+                    err("Could not find stdin, stdout, and stderr")
+                    return
 
             if not is_valid_addr(stdin):
                 err("stdin: memory read error")
@@ -70557,6 +70690,9 @@ class LibcBaseCommand(GenericCommand):
 
     def libc_calc_hash(self, libc_base):
         libc = ProcessMap.process_lookup_address(libc_base)
+        # the maps may be unavailable (e.g., context.disable_vmmap, or `remote get` fails)
+        if libc is None:
+            return
         data, real_libc_path = GefUtil.read_mapped_file(libc)
         if not data:
             return
@@ -70594,6 +70730,9 @@ class LibcBaseCommand(GenericCommand):
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
+            if not is_valid_addr(args.set):
+                err("Invalid libc base address: {:#x}".format(args.set))
+                return
             GefUtil.set_user_base("libc", args.set)
 
         if args.reset:
@@ -70605,12 +70744,12 @@ class LibcBaseCommand(GenericCommand):
         if not is_valid_addr(libc_base):
             Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
 
-            libc_targets = (
-                "libc-2.", "libc.so.6", # glibc
-                "libuClibc-", "/libc.so.0", # uClibc
-                "/libc.so", # musl
-            )
-            libc_base = ProcessMap.get_section_base_address_by_list(libc_targets)
+            libc_targets = "|".join([
+                r"libc-2\.\d+\.so", r"libc\.so\.6(\.1)?", # glibc (libc.so.6.1 is for Alpha)
+                r"libuClibc-[\d.]+\.so", r"libc\.so\.0", # uClibc
+                r"libc\.so", # musl
+            ])
+            libc_base = ProcessMap.get_section_base_address_by_basename(libc_targets)
             if libc_base is None:
                 err("Could not find the libc")
                 if not args.quiet:
@@ -70643,6 +70782,9 @@ class LdBaseCommand(GenericCommand):
 
     def ld_calc_hash(self, ld_base):
         ld = ProcessMap.process_lookup_address(ld_base)
+        # the maps may be unavailable (e.g., context.disable_vmmap, or `remote get` fails)
+        if ld is None:
+            return
         data, real_ld_path = GefUtil.read_mapped_file(ld)
         if not data:
             return
@@ -70670,6 +70812,9 @@ class LdBaseCommand(GenericCommand):
     def do_invoke(self, args):
         # user specific
         if args.set is not None:
+            if not is_valid_addr(args.set):
+                err("Invalid ld base address: {:#x}".format(args.set))
+                return
             GefUtil.set_user_base("ld", args.set)
 
         if args.reset:
@@ -70681,17 +70826,19 @@ class LdBaseCommand(GenericCommand):
         if not is_valid_addr(ld_base):
             Cache.reset_gef_caches(all=True) # get_process_maps may be caching old information
 
-            ld_targets = (
-                "ld-2.", "ld-linux-", "ld-linux.", # glibc
-                "ld64-uClibc-", "ld-uClibc-", "ld64-uClibc.", "ld-uClibc.", # uClibc
-                "ld-musl-", # musl
-            )
-            ld_base = ProcessMap.get_section_base_address_by_list(ld_targets)
+            ld_targets = "|".join([
+                r"ld-2\.\d+\.so", r"ld-linux[-.\w]*\.so\.\d+", # glibc
+                r"ld(64)?-uClibc(-[\d.]+\.so|\.so\.\d+)", # uClibc
+                r"ld-musl-[-\w]+\.so\.1", # musl
+            ])
+            ld_base = ProcessMap.get_section_base_address_by_basename(ld_targets)
             if ld_base is None:
                 auxv = Auxv.get_auxiliary_values()
                 if auxv and auxv.get("AT_BASE"):
                     section = ProcessMap.process_lookup_address(auxv["AT_BASE"])
-                    if section and os.path.basename(section.path) == "libc.so":
+                    # AT_BASE is the interpreter of any name (e.g., ld.so.1 of MIPS/PPC32, ld64.so.2 of PPC64, linker64,
+                    # and libc.so of musl), and 0 for static binaries
+                    if section and section.path:
                         ld_base = section.page_start
             if ld_base is None:
                 err("Could not find the ld")
@@ -70960,7 +71107,8 @@ class KernelMagicCommand(GenericCommand):
         if not self.should_be_print(sym):
             return
 
-        width = AddressUtil.get_format_address_width()
+        # kernel addresses are full width even while stopping in the user space (e.g., KPTI is disabled)
+        width = current_arch.ptrsize * 2 + 2
         if external_func:
             try:
                 addr = external_func()
@@ -71004,7 +71152,13 @@ class KernelMagicCommand(GenericCommand):
                 sym, addr, width, perm, val, width,
             ))
         elif to_string:
-            val = read_cstring_from_memory(addr) or "???"
+            # modprobe_path and poweroff_cmd are 256 bytes, core_pattern is 128 bytes,
+            # and an empty modprobe_path disables loading modules automatically
+            val = read_cstring_from_memory(addr, max_length=0x100, allow_non_ascii=True)
+            if val is None:
+                val = "???"
+            elif val == "":
+                val = '""'
             gef_print("{:42s} {:#0{:d}x} [{:3s}] ({:+#011x}) -> {:s}".format(
                 sym, addr, width, perm, addr - base, val,
             ))
@@ -71019,7 +71173,7 @@ class KernelMagicCommand(GenericCommand):
         if not self.should_be_print(sym):
             return
 
-        width = AddressUtil.get_format_address_width()
+        width = current_arch.ptrsize * 2 + 2
         if value is None:
             gef_print("{:42s} {:>{:d}s}".format(sym, "Not found", width))
         else:
@@ -71039,12 +71193,13 @@ class KernelMagicCommand(GenericCommand):
         text_base = klayout.text_base
         text_size = klayout.text_size
         if text_base is None or text_size is None:
+            err("Failed to resolve kernel text")
             return
         gef_print("{:42s} {:#x} ({:#x} bytes)".format("kernel_base", text_base, text_size))
 
         gef_print(titlify("Legend"))
         fmt = "{:42s} {:{:d}s} {:5s} (+{:10s}) -> {:{:d}s}"
-        width = AddressUtil.get_format_address_width()
+        width = current_arch.ptrsize * 2 + 2
         legend = ["Symbol", "Addr", width, "Perm", "Offset", "Value", width]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
@@ -71097,7 +71252,11 @@ class KernelMagicCommand(GenericCommand):
             self.resolve_and_print_kernel("__arch_copy_to_user", text_base, maps)
             self.resolve_and_print_kernel("__arch_copy_from_user", text_base, maps)
         gef_print(titlify("Memory remapper"))
-        self.resolve_and_print_kernel(["ioremap", "__ioremap", "ioremap_cache"], text_base, maps)
+        # ioremap may be a macro of ioremap_nocache (x86 ~5.5), ioremap_prot (e.g., MIPS, s390x), __ioremap_prot
+        # (arm64 6.19~) or __arm_ioremap (ARM32 ~4.1). ioremap_cache of arm64 maps RAM as normal memory, so it is tried last
+        self.resolve_and_print_kernel([
+            "ioremap", "__ioremap", "ioremap_nocache", "ioremap_prot", "__ioremap_prot", "__arm_ioremap", "ioremap_cache",
+        ], text_base, maps)
         self.resolve_and_print_kernel(["iounmap", "__iounmap"], text_base, maps)
         if is_x86():
             gef_print(titlify("Automatically called function pointer"))
@@ -71213,12 +71372,32 @@ class KernelMagicCommand(GenericCommand):
         self.resolve_and_print_kernel(
             "VMALLOC_END", None, maps, KernelAddressHeuristicFinder.get_VMALLOC_END, value_only=True,
         )
-        if is_x86_64() or is_arm64() or is_riscv() or is_ppc64() or is_s390x() or is_loongarch64():
+        # the array of struct page is at VMEMMAP_START only with SPARSEMEM_VMEMMAP,
+        # i.e., neither FLATMEM (e.g., RV32) nor SPARSEMEM without VMEMMAP (e.g., arm64 of SPARSEMEM_VMEMMAP=n)
+        page = Kernel.page()
+        if is_x86_64() or is_riscv64() or is_ppc64() or is_s390x() or is_loongarch64():
+            use_vmemmap = True
+        elif is_arm64():
+            use_vmemmap = page.initialize() is None or page.mode == "VMEMMAP"
+        else:
+            use_vmemmap = False
+        if use_vmemmap:
             self.resolve_and_print_kernel(
                 "VMEMMAP_START (struct page[])", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_START,
             )
             self.resolve_and_print_kernel(
                 "VMEMMAP_END", None, maps, KernelAddressHeuristicFinder.get_VMEMMAP_END, value_only=True,
+            )
+        elif is_arm64():
+            self.resolve_and_print_kernel(
+                "mem_section (struct page[][])", None, maps, lambda: page.mem_section,
+            )
+        else:
+            self.resolve_and_print_kernel(
+                "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
+            )
+            self.resolve_and_print_kernel(
+                "mem_section (struct page[][])", None, maps, KernelAddressHeuristicFinder.get_mem_section,
             )
         if is_x86_64() and (
             self.should_be_print("phys_base (load delta)") or self.should_be_print("kbase@phys")
@@ -71235,13 +71414,6 @@ class KernelMagicCommand(GenericCommand):
             else:
                 kbase_phys = AddressUtil.normalize_address(phys_base + text_base - start_kernel_map)
             self.print_kernel_value("kbase@phys", kbase_phys)
-        if is_x86_32() or is_arm32():
-            self.resolve_and_print_kernel(
-                "mem_map (struct page[])", None, maps, KernelAddressHeuristicFinder.get_mem_map,
-            )
-            self.resolve_and_print_kernel(
-                "mem_section (struct page[][])", None, maps, KernelAddressHeuristicFinder.get_mem_section,
-            )
         return
 
     @Decorator.parse_args
@@ -81889,9 +82061,6 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_mem_section():
-        if not is_x86_32() and not is_arm32():
-            return None
-
         # Since mem_map and mem_section are mutually exclusive, make sure that mem_map is not being used
         if KernelAddressHeuristicFinder.get_mem_map() is not None:
             return None
@@ -81901,6 +82070,10 @@ class KernelAddressHeuristicFinder:
             addr = Ksym.get_addr("mem_section")
             if addr:
                 return addr
+
+        # the following plans are for x86_32 and ARM32
+        if not is_x86_32() and not is_arm32():
+            return None
 
         kversion = Kernel.version()
 
@@ -81938,9 +82111,6 @@ class KernelAddressHeuristicFinder:
     @staticmethod
     @Decorator.switch_to_intel_syntax
     def get_mem_map():
-        if not is_x86_32() and not is_arm32():
-            return None
-
         # plan 1 (directly)
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
             addr = Ksym.get_addr("mem_map")
@@ -81951,6 +82121,10 @@ class KernelAddressHeuristicFinder:
                 if v != 0:
                     return v
                 return None
+
+        # the following plans are for x86_32 and ARM32
+        if not is_x86_32() and not is_arm32():
+            return None
 
         kversion = Kernel.version()
 
@@ -84786,7 +84960,7 @@ class KernelAddressHeuristicFinder:
     def get_tss_base():
         if is_x86():
             if is_qemu_system():
-                res = gdb.execute("monitor info registers", to_string=True)
+                res = PageTable.execute_monitor("info registers")
                 tr = QemuMonitor.parse_x86_system_segment(res, "TR")
                 if tr and not tr["base_truncated"]:
                     return tr["base"]
@@ -84797,7 +84971,7 @@ class KernelAddressHeuristicFinder:
     def get_ldt_base():
         if is_x86():
             if is_qemu_system():
-                res = gdb.execute("monitor info registers", to_string=True)
+                res = PageTable.execute_monitor("info registers")
                 ldtr = QemuMonitor.parse_x86_system_segment(res, "LDT")
                 if ldtr and not ldtr["base_truncated"]:
                     return ldtr["base"]
@@ -117071,7 +117245,8 @@ class KernelWorkqueueCommand(GenericCommand, BufferingOutput):
     ])
 
     def print_records(self, records, object_address=None):
-        width = AddressUtil.get_format_address_width()
+        # kernel addresses are full width even while stopping in the user space (e.g., KPTI is disabled)
+        width = current_arch.ptrsize * 2 + 2
         work_width = max(width, len("work_struct"))
         queue_width = max([24] + [len(record["owner"]["name"]) for record in records.values() if record["owner"] is not None])
         fmt = "{:<{ww}s}  {:<10s}  {:<5s}  {:<{qw}s}  {:<{w}s}  {:<{w}s}  "
@@ -121346,7 +121521,7 @@ class GdtInfoCommand(GenericCommand, BufferingOutput):
         selector = None
         truncated = False
         if is_qemu_system():
-            res = gdb.execute("monitor info registers", to_string=True)
+            res = PageTable.execute_monitor("info registers")
             ldtr = QemuMonitor.parse_x86_system_segment(res, "LDT")
             if not ldtr:
                 self.err_add_out("Could not find LDTR")
@@ -241254,7 +241429,8 @@ class GefUtil:
     def get_x86_descriptor_table_register(name):
         """Return (base, limit) of `gdtr` or `idtr`, or (None, None)."""
         if is_qemu_system():
-            res = gdb.execute("monitor info registers", to_string=True)
+            # GDT is per CPU
+            res = PageTable.execute_monitor("info registers")
             return QemuMonitor.parse_x86_descriptor_table_register(res, name[:-1].upper())
         if is_vmware():
             res = gdb.execute("monitor r {:s}".format(name), to_string=True)
