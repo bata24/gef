@@ -515,9 +515,25 @@ class Cache:
         # gdb cache
         if not new_objfile:
             try:
-                gdb.execute("maintenance flush dcache", to_string=True)
+                Cache.flush_gdb_dcache()
             except Exception:
                 pass
+        return
+
+    @staticmethod
+    def flush_gdb_dcache():
+        """Clear the memory cache of gdb."""
+        if GDB_VERSION < (11, 0):
+            # `maintenance flush dcache` is added in gdb 11, and older gdb silently takes it as
+            # `maintenance flush-symbol-cache`. Changing code-cache also clears it, so change it twice.
+            if gdb.parameter("code-cache"):
+                values = ("off", "on")
+            else:
+                values = ("on", "off")
+            for value in values:
+                gdb.execute("set code-cache {:s}".format(value), to_string=True)
+            return
+        gdb.execute("maintenance flush dcache", to_string=True)
         return
 
     @staticmethod
@@ -12538,15 +12554,32 @@ class XTENSA(Architecture):
     capstone_support = False
     unicorn_support = False
 
-    nop_insn = b"\x3d\xf0" # nop.n
-    infloop_insn = b"\x06\xff\xff" # j self
+    # The users reverse the bytes for big endian, but the fields of big endian are placed in the mirrored
+    # positions instead. So return the reversed bytes of big endian.
+    @property
+    def nop_insn(self):
+        if Endian.is_big_endian():
+            return b"\x0f\xd3" # nop.n (d3 0f)
+        return b"\x3d\xf0" # nop.n
+
+    @property
+    def infloop_insn(self):
+        # J_INSN in arch/xtensa/kernel/jump_label.c
+        if Endian.is_big_endian():
+            return b"\xfc\xff\x63" # j self (63 ff fc)
+        return b"\x06\xff\xff" # j self
+
     trap_insn = None
-    ret_insn = b"\x1d\xf0" # retw.n
+
+    @property
+    def ret_insn(self):
+        if Endian.is_big_endian():
+            return b"\x0f\xd1" # retw.n (d1 0f)
+        return b"\x1d\xf0" # retw.n
 
     @property
     def syscall_insn(self):
-        # The users reverse the bytes for big endian, but the fields of big endian are placed in the mirrored
-        # positions instead. syscall is `00 05 00` (__XTENSA_EB__ in arch/xtensa/kernel/signal.c).
+        # syscall is `00 05 00` (__XTENSA_EB__ in arch/xtensa/kernel/signal.c)
         if Endian.is_big_endian():
             return b"\x00\x05\x00" # syscall
         return b"\x00\x50\x00" # syscall
@@ -13698,7 +13731,7 @@ def write_memory(addr, data):
                     fd.seek(addr)
                     ret = fd.write(data[:length])
                     fd.flush()
-                    gdb.execute("maintenance flush dcache", to_string=True)
+                    Cache.flush_gdb_dcache()
                     return ret
             except (OSError, gdb.error):
                 return None
@@ -13708,6 +13741,10 @@ def write_memory(addr, data):
         def write_with_check(pid, addr, data, length, offset=0):
             before = read_memory_via_proc_mem(pid, addr + offset, length)
             if before is None:
+                return None
+            # a candidate holding other bytes is not the guest memory. Checking only after writing is not enough,
+            # since the guest memory may already hold `data` (e.g., the same bytes or undo after the program restores it).
+            if before != read_memory(addr, length, safe=True):
                 return None
 
             ret = write_memory_via_proc_mem(pid, addr + offset, data, length)
@@ -14575,7 +14612,8 @@ class QemuMonitor:
             yield target_mode == "virt"
             return
         if original_mode not in ("virt", "phys"):
-            yield False
+            # QEMU before 4.1 does not have qqemu.PhyMemMode, so memory is always virtual
+            yield target_mode == "virt"
             return
         if original_mode == target_mode:
             yield True
@@ -15017,14 +15055,14 @@ def enable_phys():
     if is_qemu_system():
         gdb.execute("maintenance packet Qqemu.PhyMemMode:1", to_string=True, from_tty=False)
         response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
-        gdb.execute("maintenance flush dcache", to_string=True)
+        Cache.flush_gdb_dcache()
         success = 'received: "1"' in response
         if success:
             MemoryCache.set_default_namespace("physical")
         return success
     elif is_vmware():
         gdb.execute("monitor phys", to_string=True)
-        gdb.execute("maintenance flush dcache", to_string=True)
+        Cache.flush_gdb_dcache()
         MemoryCache.set_default_namespace("physical")
         return True
     return None
@@ -15034,14 +15072,14 @@ def disable_phys():
     if is_qemu_system():
         gdb.execute("maintenance packet Qqemu.PhyMemMode:0", to_string=True, from_tty=False)
         response = gdb.execute("maintenance packet qqemu.PhyMemMode", to_string=True, from_tty=False)
-        gdb.execute("maintenance flush dcache", to_string=True)
+        Cache.flush_gdb_dcache()
         success = 'received: "0"' in response
         if success:
             MemoryCache.set_default_namespace("virtual")
         return success
     elif is_vmware():
         gdb.execute("monitor virt", to_string=True)
-        gdb.execute("maintenance flush dcache", to_string=True)
+        Cache.flush_gdb_dcache()
         MemoryCache.set_default_namespace("virtual")
         return True
     return None
@@ -17436,7 +17474,11 @@ class EventHandler:
         """GDB event handler for new object file cases."""
         objfile = getattr(_event, "new_objfile", None)
         if objfile is not None and objfile.filename == objfile.progspace.filename:
-            PatchCommand.invalidate_history(progspace=objfile.progspace)
+            # exec replaces the memory, but `file` and `symbol-file` (e.g., by ktypes-load) at a stop do not.
+            # gdb loads the new program of exec before it reports the stop, so the thread is still running.
+            thread = gdb.selected_thread()
+            if thread is not None and thread.is_running():
+                PatchCommand.invalidate_history(progspace=objfile.progspace)
             GefUtil.clear_user_bases(progspace=objfile.progspace)
         Cache.reset_gef_caches(new_objfile=True)
         if current_arch is None:
@@ -34372,6 +34414,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
             return
 
         tag = PatchCommand.PatchInfo.get_unique_tag()
+        # the temporary patches clear the redo history, so restore it after reverting them
+        redo_history = PatchCommand.redo_history[:]
         try:
             # modify (registers, memories)
             for regname, regvalue in patch_info.regs_new.items():
@@ -34440,6 +34484,8 @@ class GlibcHeapTryFreeCommand(GenericCommand):
                 gdb.execute("set {:s}={:#x}".format(regname, regvalue))
             if tag in PatchCommand.PatchInfo.get_tag_set():
                 PatchCommand.PatchInfo.revert_to_tag(tag, silent=not self.args.verbose)
+            if tag not in PatchCommand.PatchInfo.get_tag_set():
+                PatchCommand.redo_history[:] = redo_history
             Cache.reset_gef_caches()
             if self.args.verbose:
                 info("patch revert ok")
@@ -37326,6 +37372,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
         )
         patches = []
         tag = PatchCommand.PatchInfo.get_unique_tag()
+        # the temporary patches clear the redo history, so restore it after reverting them
+        redo_history = PatchCommand.redo_history[:]
         try:
             for address, digest in segments:
                 compressed, stored = state["blobs"][digest]
@@ -37429,6 +37477,8 @@ class GlibcHeapTimelineCommand(GenericCommand):
                     patch.revert(silent=True)
                 except Exception as e:
                     rollback_error = e
+            if rollback_error is None:
+                PatchCommand.redo_history[:] = redo_history
             Cache.reset_gef_caches()
             if rollback_error is not None:
                 raise RuntimeError("Cannot restore current memory: {!s}".format(rollback_error))
@@ -48842,7 +48892,7 @@ class ContextTraceCommand(GenericCommand):
                 if newer_frame and newer_frame.type() not in (gdb.SIGTRAMP_FRAME, gdb.DUMMY_FRAME):
                     lookup_pc = pc - 1
                 if lookup_pc == pc:
-                    location = Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
+                    symbol = Symbol.format(pc, missing="NO_SYMBOL")
                 else:
                     ret = Symbol.lookup(lookup_pc)
                     if ret is None:
@@ -48850,7 +48900,12 @@ class ContextTraceCommand(GenericCommand):
                     else:
                         name, offset = ret
                         symbol = "<{:s}+{:#x}>".format(Instruction.smartify_text(name), offset + 1)
-                    location = "{!s} {:s}".format(ProcessMap.lookup(pc), symbol)
+                if is_x86_16():
+                    # the linear address is wider than the 16-bit pointer
+                    address = AddressUtil.format_address(pc, memalign_size=2.5)
+                else:
+                    address = ProcessMap.lookup(pc)
+                location = "{!s} {:s}".format(address, symbol)
 
                 # frame name
                 """
@@ -49057,10 +49112,13 @@ class ContextThreadsCommand(GenericCommand):
                         # if failed, print thread information without frame (but with $pc).
                         pc = get_register("$pc")
                     if is_x86_16():
-                        # the pc of the frame is IP without CS
+                        # the pc of the frame is IP without CS, and the linear address is wider than the 16-bit pointer
                         pc = current_arch.pc
+                        address = AddressUtil.format_address(pc, memalign_size=2.5)
+                    else:
+                        address = ProcessMap.lookup(pc)
                     # make reason
-                    line += " at " + Symbol.format(pc, missing="NO_SYMBOL", show_address=True)
+                    line += " at {!s} {:s}".format(address, Symbol.format(pc, missing="NO_SYMBOL"))
                     stop = GefUtil.get_stop_reason()
                     if stop:
                         reason = stop["reason"]
@@ -49340,7 +49398,7 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x100,
                         help="the number of bytes to dump, regardless of the display unit. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
-                        help="treat LOCATION as a physical address (qemu-system only).")
+                        help="treat LOCATION as a physical address (qemu-system, vmware and kgdb only).")
     parser.add_argument("-r", "--reverse", action="store_true", help="display in reverse order line by line.")
     parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
     parser.add_argument("-s", "--symbol", action="store_true", help="display the symbol.")
@@ -49352,7 +49410,12 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         return
 
     def complete(self, text, word):
-        return GefUtil.complete_candidates(self.modes, text, word)
+        # the format is optional, so complete an expression unless a format is being typed.
+        # COMPLETE_LOCATION takes the whole arguments as a location, so it cannot complete LOCATION after the format.
+        candidates = GefUtil.complete_candidates(self.modes, text, word)
+        if candidates:
+            return candidates
+        return gdb.COMPLETE_EXPRESSION
 
     @staticmethod
     def merge_lines(lines_unmerged, nb_skip_merge=1):
@@ -49390,33 +49453,56 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         return lines
 
     def read_memory(self, read_from, read_len):
-        if read_len > 0x0100_0000: # Too large
-            return None
+        """Return the start address and the bytes of the readable part, or None for the bytes."""
 
-        try:
-            if self.args.phys:
-                mem = read_physmem(read_from, read_len)
-            else:
-                mem = read_memory(read_from, read_len)
-            return mem
-        except (gdb.MemoryError, ValueError, OverflowError):
-            pass
-
-        # If you get an error, you probably read outside a valid memory page.
-        # Read in page size units.
-        read_end = read_from + read_len
-        read_end &= get_pagesize_mask_high()
-        while read_end - read_from > 0:
+        def read(addr, size):
             try:
                 if self.args.phys:
-                    mem = read_physmem(read_from, read_end - read_from)
+                    mem = read_physmem(addr, size)
                 else:
-                    mem = read_memory(read_from, read_end - read_from)
-                return mem
+                    mem = read_memory(addr, size)
             except (gdb.MemoryError, ValueError, OverflowError):
-                pass
-            read_end -= get_pagesize()
-        return None
+                return None
+            # read_physmem returns None instead of raising an error
+            if mem is None or len(mem) != size:
+                return None
+            return mem
+
+        if read_len > 0x0100_0000: # Too large
+            return read_from, None
+
+        mem = read(read_from, read_len)
+        if mem is not None:
+            return read_from, mem
+
+        # If you get an error, you probably read outside a valid memory page.
+        # Read in page size units from the start, so that the readable part is not read again for each page.
+        read_end = read_from + read_len
+        chunks = []
+        current = read_from
+        while current < read_end:
+            end = min((current & get_pagesize_mask_high()) + get_pagesize(), read_end)
+            mem = read(current, end - current)
+            if mem is None:
+                break
+            chunks.append(mem)
+            current = end
+        if chunks:
+            return read_from, b"".join(chunks)
+
+        # Enter of -r goes to lower addresses, so if the start is not readable, keep the end next to the previous output
+        if self.args.reverse:
+            current = read_end
+            while read_from < current:
+                start = max((current - 1) & get_pagesize_mask_high(), read_from)
+                mem = read(start, current - start)
+                if mem is None:
+                    break
+                chunks.insert(0, mem)
+                current = start
+            if chunks:
+                return current, b"".join(chunks)
+        return read_from, None
 
     def do_invoke(self, argv):
         options_done = False
@@ -49437,8 +49523,11 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
     def hexdump(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
-                err("Unsupported in this gdb mode.")
+                err("Unsupported in this gdb mode (qemu-system, vmware and kgdb only)")
                 return
+        if args.count < 1:
+            err("COUNT must be positive")
+            return
         if args.count > 0x0100_0000:
             err("Maximum read size is 16 MiB; split the range")
             return
@@ -49456,8 +49545,12 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         else:
             memalign_size = None
 
-        read_from = AddressUtil.normalize_address(args.location, memalign_size=memalign_size) + min(from_idx, to_idx)
-        mem = self.read_memory(read_from, args.count)
+        if args.phys:
+            # do not truncate a physical address to the width of a virtual address (e.g., PAE and LPAE)
+            read_from = args.location + min(from_idx, to_idx)
+        else:
+            read_from = AddressUtil.normalize_address(args.location, memalign_size=memalign_size) + min(from_idx, to_idx)
+        read_from, mem = self.read_memory(read_from, args.count)
         if mem is None:
             err("Cannot access memory")
             return
@@ -49465,11 +49558,12 @@ class HexdumpCommand(GenericCommand, BufferingOutput):
         unit = {"byte": 1, "word": 2, "dword": 4, "qword": 8, "b": 1, "w": 2, "d": 4, "q": 8}[args.format]
         lines = hexdump(mem, show_symbol=args.symbol, base=read_from, unit=unit).splitlines()
 
-        if not args.full:
-            lines = HexdumpCommand.merge_lines(lines)
-
+        # merge after reversing, so that `*` is placed below the repeated line
         if args.reverse:
             lines.reverse()
+
+        if not args.full:
+            lines = HexdumpCommand.merge_lines(lines)
 
         self.out = lines
         if len(mem) < args.count:
@@ -49493,12 +49587,16 @@ class XxdCommand(HexdumpCommand):
     parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x100,
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
-                        help="treat LOCATION as a physical address (qemu-system only).")
+                        help="treat LOCATION as a physical address (qemu-system, vmware and kgdb only).")
     parser.add_argument("-r", "--reverse", action="store_true", help="display in reverse order line by line.")
     parser.add_argument("-f", "--full", action="store_true", help="display the same line without omitting.")
     parser.add_argument("-s", "--symbol", action="store_true", help="display the symbol.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     _syntax_ = parser.format_help()
+
+    def complete(self, text, word):
+        # xxd has no format argument
+        return gdb.COMPLETE_EXPRESSION
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -49538,7 +49636,7 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
     parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=1,
                         help="the count of displayed units. (default: %(default)s)")
     parser.add_argument("--phys", action="store_true",
-                        help="treat LOCATION as a physical address (qemu-system only).")
+                        help="treat LOCATION as a physical address (qemu-system, vmware and kgdb only).")
     parser.add_argument("-t", "--tag", nargs=2, action="append", metavar=("IDX", "TAG"),
                         help="display with tags.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -49549,11 +49647,20 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
         '{0:s} "4Q-2Q" $rsp 4     # "Show qword*4 and skip qword*2" from $rsp and repeat 4 times',
     ]).format(_cmdline_)
 
+    def __init__(self):
+        # COMPLETE_LOCATION takes the whole arguments as a location, so it cannot complete LOCATION after FORMAT
+        super().__init__(complete=gdb.COMPLETE_EXPRESSION)
+        return
+
     def extract_each_type(self, fmt):
         out = []
         repeat = 1
         for r in re.split(r"(-?\d+|)", fmt):
             if r == "":
+                continue
+            # `-` without a number skips the next one like `-1`, otherwise it takes a value as a type
+            if r == "-":
+                repeat = -1
                 continue
             try:
                 repeat = int(r)
@@ -49582,6 +49689,15 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
                 tags_dic[idx] = tag
                 max_tag_width = max(max_tag_width, len(tag))
 
+        # the widths of the offset and the index are those of the last line
+        offset_width = max(6, len("{:+#x}".format(size * (self.args.count - 1))))
+        index_width = max(4, len("{:+d}".format(self.args.count - 1)))
+
+        if is_x86_16():
+            memalign_size = 2.5
+        else:
+            memalign_size = None
+
         for i in range(self.args.count):
             # read content
             address = self.args.location + size * i
@@ -49591,6 +49707,9 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
                 else:
                     data = read_memory(address, size)
             except (gdb.MemoryError, ValueError, OverflowError):
+                data = None
+            # read_physmem returns None instead of raising an error
+            if data is None or len(data) != size:
                 self.err_add_out("Failed to read memory")
                 break
 
@@ -49598,16 +49717,21 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
             values = struct.unpack(fmt.replace("-", ""), data)
 
             # make address line
+            if self.args.phys:
+                # do not truncate a physical address to the width of a virtual address (e.g., PAE and LPAE)
+                address_s = "{:#0{:d}x}".format(address, AddressUtil.get_format_address_width())
+            else:
+                address_s = AddressUtil.format_address(address, memalign_size=memalign_size)
             if max_tag_width == 0:
-                line = "{:s}|{:+#06x}|{:+04d}:   ".format(
-                    Color.colorify(AddressUtil.format_address(address), base_address_color),
-                    size * i, i,
+                line = "{:s}|{:+#0{:d}x}|{:+0{:d}d}:   ".format(
+                    Color.colorify(address_s, base_address_color),
+                    size * i, offset_width, i, index_width,
                 )
             else:
                 tag_i = tags_dic.get(i, "")
-                line = "{:s}|{:+#06x}|{:+04d}: {:{:d}s}:".format(
-                    Color.colorify(AddressUtil.format_address(address), base_address_color),
-                    size * i, i,
+                line = "{:s}|{:+#0{:d}x}|{:+0{:d}d}: {:{:d}s}:".format(
+                    Color.colorify(address_s, base_address_color),
+                    size * i, offset_width, i, index_width,
                     tag_i, max_tag_width,
                 )
 
@@ -49633,8 +49757,11 @@ class HexdumpFlexibleCommand(GenericCommand, BufferingOutput):
     def do_invoke(self, args):
         if args.phys:
             if not is_qemu_system() and not is_vmware() and not is_kgdb():
-                err("Unsupported in this gdb mode.")
+                err("Unsupported in this gdb mode (qemu-system, vmware and kgdb only)")
                 return
+        if args.count < 1:
+            err("COUNT must be positive")
+            return
 
         fmt = args.format
         if not fmt.startswith(("<", ">")):
@@ -50006,6 +50133,7 @@ class PatchCommand(GenericCommand):
 
             self.phys = phys
             self.context = PatchCommand.history_context()
+            self.space = self.get_space()
 
             # tag: A key to group multiple patches together
             if tag is None:
@@ -50039,17 +50167,41 @@ class PatchCommand(GenericCommand):
         def get_tag_set():
             return {x[0].tag for x in PatchCommand.patch_history + PatchCommand.redo_history}
 
+        @staticmethod
+        def format_bytes(data):
+            s = " ".join(["{:02x}".format(x) for x in data[:0x10]])
+            if len(data) > 0x10:
+                s += " ..."
+            return s
+
         def a(self):
-            a = " ".join(["{:02x}".format(x) for x in self.after_data[:0x10]])
-            if len(self.after_data) > 0x10:
-                a += " ..."
-            return a
+            return self.format_bytes(self.after_data)
 
         def b(self):
-            b = " ".join(["{:02x}".format(x) for x in self.before_data[:0x10]])
-            if len(self.before_data) > 0x10:
-                b += " ..."
-            return b
+            return self.format_bytes(self.before_data)
+
+        def get_space(self):
+            """Return the physical address that the virtual address is translated to now."""
+            # In qemu-system, the stub translates a virtual address by the page table of a cpu.
+            # So after a context switch or `thread N`, the same address may point to another process.
+            if self.phys:
+                return None
+            if not is_qemu_system():
+                return None
+            try:
+                if GDB_VERSION >= (14, 0):
+                    # gdb 14 and later send `Hgp1.0` for gdb.Inferior.write_memory(), so the stub uses the first cpu,
+                    # which the monitor also uses
+                    res = gdb.execute("monitor gva2gpa {:#x}".format(self.addr), to_string=True)
+                else:
+                    # older gdb uses the cpu of the selected thread
+                    res = PageTable.execute_monitor("gva2gpa {:#x}".format(self.addr))
+            except gdb.error:
+                return None
+            r = re.search(r"gpa: (0x[0-9a-fA-F]+|0)\b", res)
+            if r:
+                return int(r.group(1), 16)
+            return None
 
         def recover_failed_patch(self, redo):
             changed = read_memory(self.addr, self.length, safe=True)
@@ -50089,6 +50241,9 @@ class PatchCommand(GenericCommand):
                 return
             if self.context != PatchCommand.history_context():
                 raise gdb.error("Patch belongs to a different inferior or execution")
+            if redo:
+                if self.space != self.get_space():
+                    raise gdb.error("Patch belongs to a different address space")
             if self.phys:
                 target_mode = "phys"
             else:
@@ -50096,12 +50251,15 @@ class PatchCommand(GenericCommand):
             with QemuMonitor.use_mmu_mode(target_mode) as available:
                 if not available:
                     raise gdb.error("Could not select {:s} memory mode".format(target_mode))
-                if not redo:
-                    self.before_data = read_memory(self.addr, self.length)
+                current = read_memory(self.addr, self.length)
                 if redo:
+                    if current != self.before_data:
+                        warn("Memory at {:#x} was changed after the undo".format(self.addr))
                     data = self.after_data
                 else:
                     data = self.data
+                # the next undo restores the memory just before this write
+                self.before_data = current
                 try:
                     write_memory(self.addr, data)
                 except Exception:
@@ -50141,6 +50299,8 @@ class PatchCommand(GenericCommand):
         def revert(self, silent=False, undo=False):
             if self.context != PatchCommand.history_context():
                 raise gdb.error("Patch belongs to a different inferior or execution")
+            if self.space != self.get_space():
+                raise gdb.error("Patch belongs to a different address space")
             if self.phys:
                 target_mode = "phys"
             else:
@@ -50148,6 +50308,9 @@ class PatchCommand(GenericCommand):
             with QemuMonitor.use_mmu_mode(target_mode) as available:
                 if not available:
                     raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+                current = read_memory(self.addr, self.length)
+                if current != self.after_data:
+                    warn("Memory at {:#x} was changed after the patch".format(self.addr))
                 write_memory(self.addr, self.before_data)
                 self.remove_history()
                 if undo:
@@ -50157,7 +50320,9 @@ class PatchCommand(GenericCommand):
 
             # print
             if not silent:
-                ok("Revert success: {:s}: {:s} -> {:s}".format(Symbol.format(self.addr, show_address=True), self.a(), self.b()))
+                ok("Revert success: {:s}: {:s} -> {:s}".format(
+                    Symbol.format(self.addr, show_address=True), self.format_bytes(current), self.b(),
+                ))
 
             return
 
@@ -50178,8 +50343,8 @@ class PatchCommand(GenericCommand):
         def revert_to_tag(tag, silent=False):
             history = PatchCommand.get_history()
             if tag not in {hist[0].tag for hist in history}:
-                err("Not found tag")
-                return None
+                err("Tag not found")
+                return
             for hist in history:
                 hist_tag = hist[0].tag
                 for patch_info in reversed(hist[:]):
@@ -50220,9 +50385,10 @@ class PatchCommand(GenericCommand):
         try:
             values = []
             for value in args.values:
-                number = AddressUtil.parse_address(value)
-                if self.format == "qword" and number > (1 << 64) - 1:
-                    raise ValueError("QWORD value exceeds 64 bits")
+                # parse_address(signed=False) truncates an expression to the pointer width (e.g., a qword of a 32-bit target)
+                number = AddressUtil.parse_address(value, signed=True)
+                if not AddressUtil.fits_width(number, size * 8):
+                    raise ValueError("{:s} value out of range: {:s}".format(self.format.upper(), value))
                 values.append(struct.pack(d + fcode, number & ((1 << size * 8) - 1)))
         except Exception as e:
             err(e)
@@ -50366,7 +50532,7 @@ class PatchStringCommand(PatchCommand):
     parser.add_argument("vstr", metavar='"double backslash-escaped string"',
                         type=lambda x: codecs.escape_decode(x)[0], help="the string to write to memory.")
     parser.add_argument("length", metavar="LENGTH", nargs="?", type=AddressUtil.parse_address,
-                        help="the number of bytes to patch. (default: %(default)s)")
+                        help="the number of bytes to patch, repeating or truncating the input. (default: the input length)")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -50422,7 +50588,7 @@ class PatchHexCommand(PatchCommand):
     parser.add_argument("hstr", metavar='"hex-string"', type=lambda x: bytes.fromhex(x),
                         help="the string to write to memory.")
     parser.add_argument("length", metavar="LENGTH", nargs="?", type=AddressUtil.parse_address,
-                        help="the number of bytes to patch. (default: %(default)s)")
+                        help="the number of bytes to patch, repeating or truncating the input. (default: the input length)")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -50478,7 +50644,7 @@ class PatchPatternCommand(PatchCommand):
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
                         help="the memory address to patch.")
     parser.add_argument("length", metavar="LENGTH", type=AddressUtil.parse_address,
-                        help="the number of bytes to patch. (default: %(default)s)")
+                        help="the number of bytes to patch.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -50535,7 +50701,7 @@ class PatchNopCommand(PatchCommand):
                         help="the memory address to patch. (default: current_arch.pc)")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-b", dest="byte_length", type=AddressUtil.parse_address,
-                       help="the patch length in bytes. (default: %(default)s)")
+                       help="the patch length in bytes instead of -i.")
     group.add_argument("-i", dest="inst_count", type=AddressUtil.parse_address, default=1,
                        help="the number of instructions to patch. (default: %(default)s)")
     _syntax_ = parser.format_help()
@@ -50548,7 +50714,7 @@ class PatchNopCommand(PatchCommand):
         super().__init__(prefix=False, complete=gdb.COMPLETE_LOCATION)
         return
 
-    def get_insns_size(self, addr, num_insts):
+    def get_insns(self, addr, num_insts):
         if num_insts < 0:
             raise ValueError("Instruction count must not be negative")
         if self.args.phys:
@@ -50575,9 +50741,11 @@ class PatchNopCommand(PatchCommand):
                     insns = gdb.selected_frame().architecture().disassemble(location, count=num_insts)
                 else:
                     insns = []
-                return sum(insn["length"] for insn in insns)
+                # the mnemonic decides the nop of a 32-bit Thumb instruction
+                return [(insn["length"], insn["asm"].split()[0]) for insn in insns]
 
-    def patch_nop(self, addr, num_bytes):
+    def patch_nop(self, addr, insns):
+        num_bytes = sum(size for size, _ in insns)
         if num_bytes == 0:
             info("Not patching since num_bytes == 0")
             return
@@ -50585,20 +50753,47 @@ class PatchNopCommand(PatchCommand):
         addr, insn = self.get_patch_insn(addr, "nop")
         nop_op_len = len(insn)
 
-        if nop_op_len > num_bytes:
-            err("Cannot patch instruction at {:#x} (nop_size is {:d}, insn_size is {:d})".format(
-                addr, nop_op_len, num_bytes,
-            ))
-            return
+        # make nops for each instruction, or for the length of -b (its mnemonic is None)
+        code = b""
+        for size, mnemonic in insns:
+            if (is_arm32() or is_arm32_cortex_m()) and nop_op_len == 2 and size == 4:
+                # An IT block counts instructions, so a 32-bit Thumb instruction needs nop.w. But ARMv6-M, ARMv8-M Baseline
+                # and Thumb-1 have neither IT nor nop.w, and these are the only 32-bit ones of ARMv6-M and Thumb-1.
+                if mnemonic not in (None, "bl", "blx", "dmb", "dsb", "isb", "mrs", "msr") and get_arch() != "armv8-m.base":
+                    code += b"\xaf\xf3\x00\x80" # nop.w
+                    continue
+            elif is_riscv():
+                # a 2-byte instruction means the C extension, so use c.nop for the 2-byte remainder
+                if size % nop_op_len == 2:
+                    code += insn * (size // nop_op_len) + b"\x01\x00" # c.nop
+                    continue
+            elif is_xtensa():
+                # nop.n needs the Code Density option, so use the 3-byte nop as much as possible
+                if Endian.is_big_endian():
+                    nop3 = b"\x0f\x02\x00" # nop (NOP_INSN in arch/xtensa/kernel/jump_label.c)
+                else:
+                    nop3 = b"\xf0\x20\x00" # nop
+                count3, remain = divmod(size, 3)
+                if remain == 1 and count3 > 0:
+                    count3 -= 1
+                    remain += 3
+                if remain % nop_op_len == 0:
+                    code += nop3 * count3 + insn * (remain // nop_op_len)
+                    continue
 
-        count = num_bytes // nop_op_len
-        patch_bytes = nop_op_len * count
+            if nop_op_len > size:
+                err("Cannot patch instruction at {:#x} (nop_size is {:d}, insn_size is {:d})".format(
+                    addr, nop_op_len, size,
+                ))
+                return
 
-        if patch_bytes != num_bytes:
-            err("Cannot patch instruction at {:#x} (nop instruction does not evenly fit in requested size)".format(addr))
-            return
+            if size % nop_op_len:
+                err("Cannot patch instruction at {:#x} (nop instruction does not evenly fit in requested size)".format(addr))
+                return
 
-        self.PatchInfo(addr, insn * count, length=patch_bytes, phys=self.args.phys).patch()
+            code += insn * (size // nop_op_len)
+
+        self.PatchInfo(addr, code, length=num_bytes, phys=self.args.phys).patch()
         return
 
     @Decorator.parse_args
@@ -50616,6 +50811,10 @@ class PatchNopCommand(PatchCommand):
                 return
 
         if args.location is None:
+            # $pc is a virtual address
+            if args.phys:
+                err("--phys requires LOCATION")
+                return
             location = current_arch.pc
         else:
             location = args.location
@@ -50623,15 +50822,15 @@ class PatchNopCommand(PatchCommand):
         try:
             self.get_patch_insn(location, "nop")
             if args.byte_length is not None:
-                num_bytes = args.byte_length
+                insns = [(args.byte_length, None)]
             else:
-                num_bytes = self.get_insns_size(location, args.inst_count)
+                insns = self.get_insns(location, args.inst_count)
         except Exception as e:
             err("Failed to get patch bytes: {!s}".format(e))
             return
 
         try:
-            self.patch_nop(location, num_bytes)
+            self.patch_nop(location, insns)
         except Exception as e:
             err(e)
         return
@@ -50692,6 +50891,10 @@ class PatchInfloopCommand(PatchCommand):
                 return
 
         if args.location is None:
+            # $pc is a virtual address
+            if args.phys:
+                err("--phys requires LOCATION")
+                return
             location = current_arch.pc
         else:
             location = args.location
@@ -50754,6 +50957,10 @@ class PatchTrapCommand(PatchCommand):
                 return
 
         if args.location is None:
+            # $pc is a virtual address
+            if args.phys:
+                err("--phys requires LOCATION")
+                return
             location = current_arch.pc
         else:
             location = args.location
@@ -50854,6 +51061,10 @@ class PatchRetCommand(PatchCommand):
                 return
 
         if args.location is None:
+            # $pc is a virtual address
+            if args.phys:
+                err("--phys requires LOCATION")
+                return
             location = current_arch.pc
         else:
             location = args.location
@@ -50916,6 +51127,10 @@ class PatchSyscallCommand(PatchCommand):
                 return
 
         if args.location is None:
+            # $pc is a virtual address
+            if args.phys:
+                err("--phys requires LOCATION")
+                return
             location = current_arch.pc
         else:
             location = args.location
