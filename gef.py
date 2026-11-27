@@ -20441,6 +20441,8 @@ class HistoryCommand(GenericCommand, BufferingOutput):
         history = {}
         arg = "0"
         prev_idx = None
+        prev_lines = []
+        end_idx = 0
         while True:
             ret = GefUtil.show_commands(arg)
             if not ret:
@@ -20451,9 +20453,21 @@ class HistoryCommand(GenericCommand, BufferingOutput):
             if line_idx == prev_idx:
                 break
             prev_idx = line_idx
+            lines = ret[:-1].split("\n")
+
+            # GDB moves the last window back to show 10 entries, so skip the overlap with the previous one.
+            # A continuation line may start with the next number, so the overlap is found by the lines themselves.
+            if line_idx < end_idx:
+                next_header = "{:5d}  ".format(end_idx)
+                for i in range(1, len(lines)):
+                    if lines[i].startswith(next_header) and lines[:i] == prev_lines[-i:]:
+                        break
+                lines = lines[i:]
+                line_idx = end_idx
+            prev_lines = lines
             end_idx = line_idx + 10
 
-            for line in ret[:-1].split("\n"):
+            for line in lines:
                 if line_idx < end_idx and line.startswith("{:5d}  ".format(line_idx)):
                     history[line_idx] = line
                     line_idx += 1
@@ -72080,7 +72094,7 @@ class SeccompCommand(GenericCommand):
         "Default: Search `ceccomp` -> `seccomp-tools`, and use the one found.",
         "With `-c` or `-s`: Forces GEF to use the specified one.",
         "The tool starts a new process with `show args`; use `-- ARGS` to replace them, or `--` for no arguments.",
-        "The process uses the environment and cwd of GDB itself, ignoring `set environment` and `set cwd`.",
+        "The process also uses `show environment` and `show cwd`, as `run` does.",
         "`ceccomp probe` emulates the syscalls with the first filter only.",
     ])
 
@@ -72154,6 +72168,22 @@ class SeccompCommand(GenericCommand):
             if is_alive():
                 warn("A new process will be inspected with the arguments of `show args`")
 
+        # same as `run`, which starts the process with `show environment` in `show cwd`
+        env = {}
+        name = None
+        for line in gdb.execute("show environment", to_string=True).split("\n")[:-1]:
+            # a line without NAME= continues a multi-line value (e.g., an exported bash function)
+            if name is not None and not re.match(r"[^=\s]+=", line):
+                env[name] += "\n" + line
+                continue
+            name, _, value = line.partition("=")
+            env[name] = value
+        cwd = gdb.parameter("cwd")
+        if cwd:
+            cwd = os.path.expanduser(cwd)
+        else:
+            cwd = None
+
         if args.force_seccomp_tools:
             ret = self.get_seccomp_tools_command(cmdline)
         elif args.force_ceccomp:
@@ -72166,7 +72196,9 @@ class SeccompCommand(GenericCommand):
 
         for comm in commands:
             gef_print(titlify(comm))
-            GefUtil.os_system(comm)
+            # flush as GefUtil.os_system does, since the tool writes to our stdout directly
+            sys.stdout.flush()
+            subprocess.run(comm, shell=True, env=env, cwd=cwd)
         return
 
 
@@ -73971,7 +74003,7 @@ class AddressifyCommand(GenericCommand):
 
 @register_command
 class ConvertCommand(GenericCommand, BufferingOutput):
-    """The base command to convert values to various."""
+    """The base command to convert values to various formats."""
 
     _cmdline_ = "convert"
     _category_ = "07-a. Misc - Conversion"
@@ -74029,15 +74061,22 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             pass
         return
 
-    def unpack(self, value):
+    def unpack(self, value, zero_padding):
         try:
-            value = codecs.escape_decode(value)[0] + b"\0" * 16
+            value = codecs.escape_decode(value)[0]
+            if zero_padding:
+                value += b"\0" * 16
             self.out.append(titlify("unpack"))
             self.out.append("unpack8:        {:#04x}".format(u8(value[:1])))
-            self.out.append("unpack16:       {:#06x}".format(u16(value[:2])))
-            self.out.append("unpack32:       {:#010x}".format(u32(value[:4])))
-            self.out.append("unpack64:       {:#018x}".format(u64(value[:8])))
-            self.out.append("unpack128:      {:#034x}".format(u128(value[:16])))
+            # without the padding, the widths beyond the value are not shown
+            if len(value) >= 2:
+                self.out.append("unpack16:       {:#06x}".format(u16(value[:2])))
+            if len(value) >= 4:
+                self.out.append("unpack32:       {:#010x}".format(u32(value[:4])))
+            if len(value) >= 8:
+                self.out.append("unpack64:       {:#018x}".format(u64(value[:8])))
+            if len(value) >= 16:
+                self.out.append("unpack128:      {:#034x}".format(u128(value[:16])))
         except (binascii.Error, ValueError):
             pass
         return
@@ -74056,7 +74095,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
     def unhex(self, value):
         try:
-            if value.startswith("0x"):
+            if value.startswith(("0x", "0X")):
                 value = binascii.unhexlify(value[2:])
             else:
                 value = binascii.unhexlify(value)
@@ -74137,8 +74176,17 @@ class ConvertCommand(GenericCommand, BufferingOutput):
         try:
             value = int(value, 0)
             self.out.append(titlify("signed"))
-            self.out.append("u2i-64:         {:#018x}".format(u2i(value)))
-            self.out.append("u2i-32:         {:#010x}".format(u2i(value, 32)))
+            # pad the absolute value, since the sign takes a digit of the zero padding
+            signed64 = u2i(value)
+            if signed64 < 0:
+                self.out.append("u2i-64:         -{:#018x}".format(-signed64))
+            else:
+                self.out.append("u2i-64:         {:#018x}".format(signed64))
+            signed32 = u2i(value, 32)
+            if signed32 < 0:
+                self.out.append("u2i-32:         -{:#010x}".format(-signed32))
+            else:
+                self.out.append("u2i-32:         {:#010x}".format(signed32))
         except ValueError:
             pass
         return
@@ -74157,8 +74205,9 @@ class ConvertCommand(GenericCommand, BufferingOutput):
     def url_encode(self, value):
         try:
             import urllib.parse
-            s = urllib.parse.quote_from_bytes(codecs.escape_decode(value)[0])
-            if s != value:
+            value = codecs.escape_decode(value)[0]
+            s = urllib.parse.quote_from_bytes(value)
+            if s.encode() != value:
                 self.out.append(titlify("URL-encode"))
                 self.out.append("URL-encode:     {:s}".format(s))
         except Exception:
@@ -74168,17 +74217,19 @@ class ConvertCommand(GenericCommand, BufferingOutput):
     def url_decode(self, value):
         try:
             import urllib.parse
-            s = urllib.parse.unquote(value)
+            value = codecs.escape_decode(value)[0]
+            # bytes, since the result may be NUL, a control character or not UTF-8
+            s = urllib.parse.unquote_to_bytes(value)
             if s != value:
                 self.out.append(titlify("URL-decode"))
-                self.out.append("URL-decode:     {:s}".format(s))
+                self.out.append("URL-decode:     {!s}".format(s))
         except Exception:
             pass
         return
 
     def unhex_xor(self, value):
         try:
-            if value.startswith("0x"):
+            if value.startswith(("0x", "0X")):
                 value = binascii.unhexlify(value[2:])
             else:
                 value = binascii.unhexlify(value)
@@ -74195,7 +74246,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
     def unhex_add(self, value):
         try:
-            if value.startswith("0x"):
+            if value.startswith(("0x", "0X")):
                 value = binascii.unhexlify(value[2:])
             else:
                 value = binascii.unhexlify(value)
@@ -74212,7 +74263,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
     def unhex_rol_for_each_byte(self, value):
         try:
-            if value.startswith("0x"):
+            if value.startswith(("0x", "0X")):
                 value = binascii.unhexlify(value[2:])
             else:
                 value = binascii.unhexlify(value)
@@ -74226,7 +74277,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
     def unhex_rol_whole(self, value):
         try:
-            if value.startswith("0x"):
+            if value.startswith(("0x", "0X")):
                 value = binascii.unhexlify(value[2:])
             else:
                 value = binascii.unhexlify(value)
@@ -74246,7 +74297,7 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
     def unhex_caesar(self, value):
         try:
-            if value.startswith("0x"):
+            if value.startswith(("0x", "0X")):
                 value = binascii.unhexlify(value[2:])
             else:
                 value = binascii.unhexlify(value)
@@ -74351,12 +74402,21 @@ class ConvertCommand(GenericCommand, BufferingOutput):
             pass
         return
 
-    def convert(self, value, args, numeric_value=None):
+    def convert(self, value, args, numeric_value=None, zero_padding=True):
+        # `set endian` does not clear the cached byte order, while it is often used to convert without a process
+        for func in [Endian.get_endian, Endian.arrow_str, Endian.endian_str, p16, p32, p64, u16, u32, u64, u128]:
+            Cache.clear_cache_for(func)
+        # Python 3.11+ limits the conversion between int and decimal str to 4300 digits by default
+        try:
+            sys.set_int_max_str_digits(0)
+        except AttributeError:
+            pass
+
         if numeric_value is None:
             numeric_value = value
         self.pack(numeric_value)
         self.pack_hex(numeric_value)
-        self.unpack(value)
+        self.unpack(value, zero_padding)
         self.tohex(value)
         self.unhex(value)
         self.byteswap(numeric_value)
@@ -74388,16 +74448,16 @@ class ConvertCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class ConvertMemoryCommand(ConvertCommand):
-    """Convert memory values to various."""
+    """Convert memory values to various formats."""
 
     _cmdline_ = "convert memory"
     _category_ = "07-a. Misc - Conversion"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
-                        help="start address for hash calculation.")
+                        help="start address to convert.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address,
-                        help="the size for hash calculation.")
+                        help="the size to convert.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-v", "--verbose", action="store_true", help="enable verbose mode.")
     _syntax_ = parser.format_help()
@@ -74413,20 +74473,24 @@ class ConvertMemoryCommand(ConvertCommand):
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     def do_invoke(self, args):
+        if args.size <= 0:
+            err("Invalid size")
+            return
         value = read_memory(args.location, args.size, safe=True)
         if value is None:
             err("Memory read error")
             return
-        value = str(value)[2:-1]
+        # the same form as `convert value --hex`, so that the bytes are not taken as a number or hex digits
+        value = GefUtil.fromhex_ignore_invalid(value.hex(), to_str=True)
         self.out = []
-        self.convert(value, args)
+        self.convert(value, args, zero_padding=False)
         self.print_output()
         return
 
 
 @register_command
 class ConvertValueCommand(ConvertCommand):
-    """Convert values to various."""
+    """Convert values to various formats."""
 
     _cmdline_ = "convert value"
     _category_ = "07-a. Misc - Conversion"
@@ -74442,6 +74506,7 @@ class ConvertValueCommand(ConvertCommand):
         "{0:s} 0xdeadbeef",
         '{0:s} "\\\\x41\\\\x42\\\\x43\\\\x44" -v',
         '{0:s} --hex "41 42 43 44" -v',
+        "{0:s} -- -0x10  # `--` is needed for a negative value other than decimal",
     ]).format(_cmdline_)
 
     def __init__(self):
@@ -74452,14 +74517,18 @@ class ConvertValueCommand(ConvertCommand):
     def do_invoke(self, args):
         if args.hex: # "41414141" -> "\x41\x41\x41\x41"
             value = GefUtil.fromhex_ignore_invalid(args.value, to_str=True)
-            if not value:
+            if value is None:
                 return
         else:
             value = args.value
+        if not value:
+            err("Value must not be empty")
+            return
         numeric_value = value
+        # a leading zero means octal, as GDB and `convert memory` take it (int(x, 0) rejects it)
         if re.fullmatch(r"[+-]?0(?:_?[0-9])+", value):
             try:
-                numeric_value = str(int(value, 10))
+                numeric_value = str(int(value, 8))
             except ValueError:
                 err("Invalid numeric value")
                 return
@@ -94243,7 +94312,7 @@ class KernelCred:
 
     ID_NAMES = ["uid", "gid", "suid", "sgid", "euid", "egid", "fsuid", "fsgid"]
 
-    # capability index -> name (CAP_LAST_CAP is 40 as of v5.8)
+    # capability index -> name (CAP_LAST_CAP is 40 as of v5.9)
     CAP_NAMES = [
         "CAP_CHOWN", "CAP_DAC_OVERRIDE", "CAP_DAC_READ_SEARCH", "CAP_FOWNER", "CAP_FSETID",
         "CAP_KILL", "CAP_SETGID", "CAP_SETUID", "CAP_SETPCAP", "CAP_LINUX_IMMUTABLE",
@@ -94812,7 +94881,7 @@ class KernelCred:
                     bset = self.read_cap(init_cred + offset_cap + 8 * 3, is_u32_array)
                 except gdb.MemoryError:
                     return None, layouts[0]
-                # CAP_FULL_SET is all ones (~v4.2) or (1 << (CAP_LAST_CAP + 1)) - 1 (v4.3~)
+                # CAP_FULL_SET is all ones (~v3.16) or (1 << (CAP_LAST_CAP + 1)) - 1 (v3.17~, and 3.10.y-3.16.y later)
                 if permitted != effective or permitted != bset:
                     continue
                 if permitted & (permitted + 1):
@@ -94878,6 +94947,13 @@ class KernelCred:
                 next_word = read_int_from_memory(group_info + current_arch.ptrsize, safe=True)
                 if user_ns is not None and next_word == user_ns:
                     return False
+                # The ucounts of v6.15~ starts with a hlist_nulls_node, and the last node of a bucket has the
+                # nulls marker 1 as next, which looks like usage 1 and ngroups 0 on 64-bit LE. The pprev of a
+                # node points back to it, while init_groups of v7.x is followed by the user_ns of
+                # init_task_exec_state, so ucounts->ns does not tell them apart.
+                if next_word is not None and is_valid_addr(next_word):
+                    if read_int_from_memory(next_word, safe=True) == group_info:
+                        return False
             if ngroups and "4.9" <= Kernel.version():
                 # Modern group_info stores a sorted inline gid array.  Sampling
                 # it also rejects arbitrary objects whose first two ints happen
@@ -105535,7 +105611,8 @@ class KernelTask:
         return entries
 
     def get_task_info(self, task, *, all_ids=False, comm_filter=None, task_filter=None, user_only=False):
-        comm = read_cstring_from_memory(task + self.offset_comm)
+        # comm may be UTF-8 (e.g., the name of the executable) or any bytes set by prctl(PR_SET_NAME)
+        comm = read_cstring_from_memory(task + self.offset_comm, allow_non_ascii=True)
         if not GefUtil.matches_regex(comm, comm_filter):
             return None
         if task_filter and task not in task_filter:
@@ -105547,7 +105624,8 @@ class KernelTask:
             kstack = None
         else:
             kstack = read_int_from_memory(task + self.offset_stack)
-        if user_only and (mm == 0 or pid == 0):
+        is_kthread = self.is_kernel_thread(task, mm, pid)
+        if user_only and is_kthread:
             return None
         if self.offset_kcanary:
             kcanary = read_int_from_memory(task + self.offset_kcanary)
@@ -105560,9 +105638,19 @@ class KernelTask:
             ids_count = 2
         return {
             "task": task, "comm": comm, "pid": pid, "cred": cred, "mm": mm, "kstack": kstack,
-            "kcanary": kcanary, "is_thread": is_thread, "ids": self.kcred.get_ids(cred, ids_count),
-            "seccomp_enabled": KernelSeccomp.is_enabled(task, self.offset_stack),
+            "kcanary": kcanary, "is_thread": is_thread, "is_kthread": is_kthread,
+            "ids": self.kcred.get_ids(cred, ids_count), "seccomp_enabled": KernelSeccomp.is_enabled(task, self.offset_stack),
         }
+
+    def is_kernel_thread(self, task, mm, pid):
+        """Return whether `task` is a kernel thread. A user process also has no mm while it exits (e.g., a zombie)
+        or after its leader exits alone, and a kernel thread may borrow an mm, so PF_KTHREAD is used if found."""
+        if pid == 0:
+            return True
+        if self.offset_flags is None:
+            return mm == 0
+        flags = read_int32_from_memory(task + self.offset_flags)
+        return (flags & 0x0020_0000) != 0 # PF_KTHREAD
 
     def get_current_task_list(self):
         current_tasks = {}
@@ -105749,13 +105837,13 @@ class KernelTask:
         for task in task_addrs:
             try:
                 pid = read_int32_from_memory(task + self.offset_pid)
-                comm = read_cstring_from_memory(task + self.offset_comm)
+                comm = read_cstring_from_memory(task + self.offset_comm, allow_non_ascii=True)
                 if cred:
                     task_cred = read_int_from_memory(task + self.offset_cred)
                     real_cred = read_int_from_memory(task + self.offset_real_cred)
                 if user_only:
                     mm = read_int_from_memory(task + self.offset_mm)
-                    if mm == 0 or pid == 0:
+                    if self.is_kernel_thread(task, mm, pid):
                         continue
             except gdb.MemoryError:
                 continue
@@ -105799,7 +105887,7 @@ class KernelTask:
     def get_pid_comm(self, task, safe=False):
         """Return (pid, comm) of `task`. With `safe`, an unreadable pid is None."""
         pid = read_int32_from_memory(task + self.offset_pid, safe=safe)
-        comm = read_cstring_from_memory(task + self.offset_comm)
+        comm = read_cstring_from_memory(task + self.offset_comm, allow_non_ascii=True)
         return pid, comm
 
     def get_file_by_fd(self, pid, fd):
@@ -106056,6 +106144,9 @@ class KernelTask:
     def get_open_files(self, task):
         """Return ([(fd, struct file, close-on-exec), ...], [warning, ...]) of `task`."""
         files = read_int_from_memory(task + self.offset_files)
+        # an exiting task has no files, and 0 is valid on s390x
+        if files == 0:
+            return [], []
         if not is_valid_addr(files):
             return [], []
         fdt = read_int_from_memory(files + self.offset_fdt)
@@ -106100,7 +106191,8 @@ class KernelTask:
                 flags = read_int32_from_memory(address)
             else:
                 handler = read_int_from_memory(address)
-                flags = read_int_from_memory(address + current_arch.ptrsize)
+                # the libc sign-extends its int sa_flags (e.g., SA_RESETHAND), which v5.11~ masks with UAPI_SA_FLAGS
+                flags = read_int_from_memory(address + current_arch.ptrsize) & 0xffff_ffff
             if self.offset_sa_restorer is None:
                 restorer = None
             elif is_sparc32():
@@ -106246,6 +106338,9 @@ class KernelTask:
             is_init = None
         entries = [{"name": "real_cred->user_ns", "value": user_ns, "type": "user", "is_init": is_init}]
         nsproxy = read_int_from_memory(task + self.offset_nsproxy)
+        # an exiting task has no nsproxy
+        if nsproxy == 0:
+            return entries
         for name, offset in context["members"]:
             if name == "count":
                 value = read_int32_from_memory(nsproxy + offset)
@@ -106308,6 +106403,21 @@ class KernelTask:
         else:
             self.meta.append(("info", "offsetof(task_struct, stack): {:#x}".format(self.offset_stack)))
 
+        # task_struct->flags
+        self.offset_flags = GefUtil.offsetof("task_struct", "flags")
+        if self.offset_flags is None and self.offset_stack is not None:
+            # `unsigned int flags` follows `stack` and the 4-byte `usage` (atomic_t or refcount_t)
+            self.offset_flags = self.offset_stack + current_arch.ptrsize + 4
+        if self.offset_flags is not None:
+            # init_task is a kernel thread
+            flags = read_int32_from_memory(init_task + self.offset_flags, safe=True)
+            if flags is None or (flags & 0x0020_0000) == 0: # PF_KTHREAD
+                self.offset_flags = None
+        if self.offset_flags is None:
+            self.meta.append(("info", "offsetof(task_struct, flags): None"))
+        else:
+            self.meta.append(("info", "offsetof(task_struct, flags): {:#x}".format(self.offset_flags)))
+
         # task_struct->pid
         self.offset_pid = self.get_offset_pid()
         if self.offset_pid is None:
@@ -106362,7 +106472,8 @@ class KernelTask:
             if not self.initialize_ptregs_offset():
                 self.disable_option(enabled, "regs")
         elif enabled["regs"]:
-            self.meta.append(("warn", "Could not find saved ptregs without task_struct->stack; skipping registers"))
+            self.meta.append(("err", "Could not find saved ptregs without task_struct->stack"))
+            self.disable_option(enabled, "regs")
 
         # vm_area_struct->vm_mm
         # vm_area_struct->vm_flags
@@ -107389,7 +107500,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     parser.add_argument("-u", "--user-process-only", action="store_true", help="display user-land process (+ thread) only.")
     parser.add_argument("--init-task", type=AddressUtil.parse_address, help="specifies the address of init_task.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
-    parser.add_argument("--all", action="store_true", help="enable all option.")
+    parser.add_argument("--all", action="store_true", help="enable all options.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -107409,7 +107520,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         "    | list_head |---+    +-->+-kstack----------+    +--->+-vm_area_struct--+",
         "    +-----------+   |    |   | (thread_info)   |    |    | vm_start        |",
         "                    |    |   | STACK_END_MAGIC |    |    | vm_end          |",
-        "+-------------------+    |   | ...             |    |    | vm_next (~6.1)  |",
+        "+-------------------+    |   | ...             |    |    | vm_next (~6.0)  |",
         "|                        |   | ...             |    |    | ...             |",
         "|   +-task_struct---+    |   | ...             |    |    | vm_flags        |",
         "|   | (thread_info) |    |   | ...             |    |    | vm_file         |-----+",
@@ -107419,9 +107530,9 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         "+-->| tasks         |-->...               +---------+<------------------------+  |",
         "    | ...           |                     |                                   |  |",
         "    | mm            |-->+-mm_struct----+  |  +-------->+-maple_node(6.1~)--+  |  |",
-        "    | ...           |   | mmap (~6.1)  |--+  |         | ...               |  |  |",
+        "    | ...           |   | mmap (~6.0)  |--+  |         | ...               |  |  |",
         "    | pid           |   | ...          |     |         | mr64|ma64|alloc   |  |  |",
-        "    | tid           |   | mm_mt (6.1~) |     |         |   ...             |  |  |",
+        "    | tgid          |   | mm_mt (6.1~) |     |         |   ...             |  |  |",
         "    | ...           |   |   ma_root    |-----+         |   slot[]          |--+  |",
         "    | stack_canary  |   | ...          |               +-------------------+     |",
         "    | ...           |   +--------------+                                         |",
@@ -107522,26 +107633,39 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         for message in self.ktask.kmm.pop_warnings():
             self.quiet_warn(message)
         if not maps:
-            return
+            return False
         self.out.append(titlify("memory map of `{:s}`".format(comm_string)))
         for vm_area in maps:
             self.out.append("{:#018x}-{:#018x} {:s} {:s}".format(
                 vm_area.start, vm_area.end, vm_area.flags, vm_area.file,
             ).rstrip())
-        return
+        return True
 
     def dump_regs(self, kstack, comm_string):
-        regs = self.ktask.get_regs(kstack, self.ktask.offset_ptregs)
+        try:
+            regs = self.ktask.get_regs(kstack, self.ktask.offset_ptregs)
+        except gdb.MemoryError:
+            # PPC32 may not read the kstack of a sleeping task in the vmalloc area (see get_offset_stack)
+            self.warn_add_out("Could not read the registers of `{:s}` at kstack {:#x}".format(comm_string, kstack))
+            return True
         if not regs:
-            return
+            return False
         self.out.append(titlify("registers of `{:s}`".format(comm_string)))
         nr_table = Syscall.get_syscall_table().nr_table
-        syscall_nr_regs = ["orig_rax", "orig_eax", "x8", "a7", "v0", "g1"]
-        # r7 and r0 are general registers of the other arches too
+        syscall_nr_regs = ["orig_rax", "orig_eax", "x8", "v0", "g1"]
+        # r7, r0 and a7 are general registers of the other arches too
         if is_arm32():
             syscall_nr_regs.append("r7")
         elif is_ppc():
             syscall_nr_regs.append("r0")
+        elif is_riscv() or is_loongarch64():
+            syscall_nr_regs.append("a7")
+        # a compat task uses the numbers of the 32-bit table, and AArch32 passes it in r7 (x7)
+        if is_x86_64() and regs["cs"] & 0xffff == 0x23: # __USER32_CS
+            nr_table = Syscall.get_syscall_table("X86", "Emulated-32").nr_table
+        elif is_arm64() and regs["pstate"] & 0x10: # PSR_MODE32_BIT
+            nr_table = Syscall.get_syscall_table("ARM", "Emulated-32").nr_table
+            syscall_nr_regs = ["x7"]
         for name, value in regs.items():
             if name in syscall_nr_regs and value in nr_table:
                 self.out.append("{:16s}: {:s} ({:s})".format(
@@ -107551,7 +107675,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 self.out.append("{:16s}: {:s}".format(
                     name, AddressUtil.format_address(value, long_fmt=True),
                 ))
-        return
+        return True
 
     def dump_files(self, task, comm_string):
         self.out.append(titlify("file descriptors of `{:s}`".format(comm_string)))
@@ -107585,10 +107709,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             self.out.append(titlify("sighandlers of `{:s}` ({:s})".format(comm_string, libc)))
         else:
             self.out.append(titlify("sighandlers of `{:s}`".format(comm_string)))
-        fmt = "{:14s} {:11s} {:18s} {:18s} {:18s} {:42s} {:s}"
-        legend = ["sig", "libc name", "sigaction", "handler", "restorer", "flags", "mask"]
+        flags_list = [LinuxSignal.format_flags(action["flags"], self.ktask.sa_flags_extra) for action in info["actions"]]
+        # SA_RESTORER and the flags only the kernel sees can make the flags wider than the legend
+        flags_width = max([42] + [len(flags) for flags in flags_list])
+        # MIPS has 128 signals
+        fmt = "{:15s} {:11s} {:18s} {:18s} {:18s} {:{:d}s} {:s}"
+        legend = ["sig", "libc name", "sigaction", "handler", "restorer", "flags", flags_width, "mask"]
         self.out.append(GefUtil.make_legend(fmt.format(*legend)))
-        for action in info["actions"]:
+        for action, flags in zip(info["actions"], flags_list):
             number = action["number"]
             signame = self.ktask.signame_list.get(number, "???")
             handler = action["handler"]
@@ -107604,9 +107732,8 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 restorer = "-"
             else:
                 restorer = "{:#018x}".format(action["restorer"])
-            self.out.append("{:<2d} {:11s} {:11s} {:#018x} {:18s} {:18s} {:42s} {:s}".format(
-                number, signame, libc_names.get(number, "-"), action["address"], handler, restorer,
-                LinuxSignal.format_flags(action["flags"], self.ktask.sa_flags_extra),
+            self.out.append("{:<3d} {:11s} {:11s} {:#018x} {:18s} {:18s} {:{:d}s} {:s}".format(
+                number, signame, libc_names.get(number, "-"), action["address"], handler, restorer, flags, flags_width,
                 LinuxSignal.format_mask(action["mask"], self.ktask.signame_list, compact=True, nsig=nsig),
             ).rstrip())
         return
@@ -107669,17 +107796,14 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
     def dump_task_details(self, task_info, namespace_context):
         task = task_info["task"]
         comm_string = task_info["comm"]
-        is_user = task_info["mm"] != 0 and task_info["pid"] != 0
+        is_user = not task_info["is_kthread"]
         additional = False
 
         if self.args.print_maps:
-            additional = True
-            self.dump_maps(task, comm_string)
-        if is_user and self.args.print_regs and task_info["kstack"] is not None and (
-            self.ktask.offset_ptregs is not None
-        ):
-            additional = True
-            self.dump_regs(task_info["kstack"], comm_string)
+            additional = self.dump_maps(task, comm_string) or additional
+        # an exited task may have freed its kstack (NULL)
+        if is_user and self.args.print_regs and task_info["kstack"] and self.ktask.offset_ptregs is not None:
+            additional = self.dump_regs(task_info["kstack"], comm_string) or additional
         if is_user and self.args.print_fd:
             additional = True
             self.dump_files(task, comm_string)
@@ -107700,7 +107824,7 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         task = info["task"]
         comm_string = info["comm"]
         pid, cred, kstack = info["pid"], info["cred"], info["kstack"]
-        if info["mm"] == 0 or pid == 0:
+        if info["is_kthread"]:
             proctype = "K"
         else:
             proctype = "U"
@@ -107769,10 +107893,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
         self.ktask = Kernel.task(args.init_task)
         ret = self.ktask.initialize(**{name: getattr(args, option) for name, option in KernelTask.OPTIONS.items()})
         self.meta = Kernel.export_meta(self, self.ktask.meta)
-        for name in self.ktask.disabled:
+        for name, reason in self.ktask.disabled.items():
             setattr(args, KernelTask.OPTIONS[name], False)
-        if "files" in self.ktask.disabled and not args.meta:
-            warn("Disabled --print-fd: {:s} (see `ktask --print-fd --meta`)".format(self.ktask.disabled["files"]))
+            # not quiet, since the shortcuts (e.g., kfiles) always pass --quiet
+            if not args.meta:
+                option = KernelTask.OPTIONS[name].replace("_", "-")
+                warn("Disabled --{:s}: {:s} (see `ktask --{:s} --meta`)".format(option, reason, option))
 
         if args.meta or not ret:
             for func, line in self.meta:
@@ -114901,7 +115027,7 @@ class KernelMount:
             if read_int32_from_memory(task + task_command.offset_pid) != 0:
                 sample = task
                 break
-        return read_cstring_from_memory(sample + task_command.offset_comm)
+        return read_cstring_from_memory(sample + task_command.offset_comm, allow_non_ascii=True)
 
     def find_task_root(self, pid=None, task=None, safe=False):
         """Return (task->fs->root, task, None) of `task`, or of the task of `pid` if `task` is None.
@@ -231005,7 +231131,9 @@ class KernelKvm(KernelTaskFileScanner):
         # struct kvm is validated with kvm->mm, which is the mm of the process that created it
         self.task_mms = set()
         for info in tasks:
-            self.task_mms.add(info["mm"])
+            # an exiting process has no mm
+            if info["mm"]:
+                self.task_mms.add(info["mm"])
         vm_files = []
         vcpu_files = []
         # threads share the files of their process, so only the processes are scanned

@@ -1381,7 +1381,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - ![](images/u2d.png)
 - `unsigned`: shows unsigned value.
     - ![](images/unsigned.png)
-- `convert`: shows various conversion.
+- `convert`: shows various conversions.
     - ![](images/convert.png)
 - `addressify`: converts reverse-order hex values to address.
     - ![](images/addressify.png)
