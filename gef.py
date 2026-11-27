@@ -1762,13 +1762,15 @@ class AddressUtil:
     @Cache.cache_this_session
     def ptr_width():
         """Determine whether the environment is 32-bit or 64-bit."""
-        void = GefUtil.cached_lookup_type("void")
-        if void:
-            return void.pointer().sizeof
+        # a frame of another language (e.g., Rust) has no void type
+        with ContextManager.gdb_parameter("language", "c"):
+            void = GefUtil.cached_lookup_type("void")
+            if void:
+                return void.pointer().sizeof
 
-        uintptr_t = GefUtil.cached_lookup_type("uintptr_t")
-        if uintptr_t:
-            return uintptr_t.sizeof
+            uintptr_t = GefUtil.cached_lookup_type("uintptr_t")
+            if uintptr_t:
+                return uintptr_t.sizeof
 
         raise EnvironmentError("GEF is running under an unsupported mode")
 
@@ -9127,7 +9129,10 @@ class X86(Architecture):
     ret_insn = b"\xc3" # ret
     syscall_insn = b"\xcd\x80" # int 0x80
 
-    RE_PREFIX = re.compile(r"(?:lock|rep(?:e|ne|z|nz)?|bnd|notrack|addr(?:16|32|64)|data(?:16|32)|rex(?:\.[WRXB]+)?)$")
+    # an unused segment prefix is also shown apart (e.g., `cs nop WORD PTR [rax+rax*1+0x0]`)
+    RE_PREFIX = re.compile(
+        r"(?:lock|rep(?:e|ne|z|nz)?|bnd|notrack|addr(?:16|32|64)|data(?:16|32)|rex(?:\.[WRXB]+)?|[cdefgs]s)$"
+    )
 
     @staticmethod
     def get_mnemonic_operands(insn, operands=None):
@@ -47952,7 +47957,8 @@ class ContextMemoryAccessCommand(GenericCommand):
         return
 
     RE_SUB_OPERAND3 = re.compile(r"<.*?>")
-    RE_FINDALL_SEG1 = re.compile(r"[^:](\[.+?\])")
+    # `[` must start an operand, which skips seg:[reg] and the element index of ARM (e.g., `v0.d[1]`)
+    RE_FINDALL_SEG1 = re.compile(r"(?:^|[\s,])(\[.+?\])")
     RE_MATCH_REG1 = re.compile(r"r\d+d?")
     RE_MATCH_REG2 = re.compile(r"r\d+")
     RE_MATCH_REG3 = re.compile(r"[xw]\d+")
@@ -47963,6 +47969,7 @@ class ContextMemoryAccessCommand(GenericCommand):
         code = code.replace("-", " - ")
         code = code.replace("*", " * ")
         code = code.replace("eiz", " 0 ")
+        code = code.replace("riz", " 0 ")
         code = code.split()
         code_parts = []
         for part in code:
@@ -47973,10 +47980,18 @@ class ContextMemoryAccessCommand(GenericCommand):
         code = code_parts
         code = "".join(code)
         code_orig = code
+        # only xlat has an 8-bit index, which is zero-extended, but $al of gdb is signed
+        code = code.replace("$al", "($al&0xff)")
         if is_x86_64():
             code = re.sub(r"\$(?:rip|eip)\b", "{:#x}".format(current_arch.pc + codesize), code)
             if re.search(r"\$e(?:ax|bx|cx|dx|si|di|sp|bp|ip)\b|\$r\d+d\b", code_orig):
                 code = "({:s})&0xffffffff".format(code)
+        elif is_x86_16():
+            # the offset wraps in the segment
+            if re.search(r"\$e(?:ax|bx|cx|dx|si|di|sp|bp)\b", code_orig):
+                code = "({:s})&0xffffffff".format(code)
+            else:
+                code = "({:s})&0xffff".format(code)
         return code_orig, code
 
     def context_memory_access1(self, redirect):
@@ -47987,12 +48002,26 @@ class ContextMemoryAccessCommand(GenericCommand):
         if insn_here is None:
             return
 
-        if insn_here.operands == []:
+        mnemonic = insn_here.mnemonic
+        operands = insn_here.operands
+        if is_x86():
+            # e.g., `data16 cs nop WORD PTR [rax+rax*1+0x0]`
+            mnemonic, _ = X86.get_mnemonic_operands(insn_here)
+            # xlat reads [rbx+al], but gdb shows [rbx] or ds:[ebx] and capstone shows no operand
+            if mnemonic in ["xlat", "xlatb"]:
+                if is_x86_64():
+                    operands = ["[rbx+al]"]
+                elif is_x86_32():
+                    operands = ["[ebx+al]"]
+                else:
+                    operands = ["[bx+al]"]
+
+        if operands == []:
             return
-        if insn_here.mnemonic == "nop" or (is_x86() and self.RE_LEA.fullmatch(insn_here.mnemonic)):
+        if mnemonic == "nop" or (is_x86() and self.RE_LEA.fullmatch(mnemonic)):
             return
 
-        insn = ",".join(insn_here.operands)
+        insn = ",".join(operands)
         insn = self.RE_SUB_OPERAND3.sub("", insn)
         r = self.RE_FINDALL_SEG1.findall(str(insn)) # Unsupported: seg:[reg]
         if not r:
@@ -48010,19 +48039,47 @@ class ContextMemoryAccessCommand(GenericCommand):
                 # add "$" to resiter
                 code = code.replace(" ", "")
                 code = code.replace("#", "")
-                code = code.replace("lsl", "<<")
                 code = code.split(",")
+                shift = re.fullmatch(r"(lsl|lsr|asr|ror)(\d+)|rrx", code[-1])
+                if shift:
+                    code = code[:-1]
                 code_parts = []
                 for part in code:
+                    # e.g., [r4, -r2]
+                    sign = ""
+                    if part.startswith("-"):
+                        sign, part = "-", part[1:]
+                    # capstone shows r11 as fp, but $fp of gdb is the frame base
+                    if part == "fp":
+                        part = "r11"
                     if part.isalpha() or self.RE_MATCH_REG2.match(part):
-                        code_parts.append("$" + part)
+                        code_parts.append(sign + "$" + part)
                     else:
-                        code_parts.append(part)
+                        code_parts.append(sign + part)
                 code = code_parts
-                if "<<" in code[-1]:
-                    code = code[:-2] + ["(" + code[-2] + code[-1] + ")"]
+                if shift:
+                    # the sign of the index applies after the shift
+                    sign, index = "", code[-1]
+                    if index.startswith("-"):
+                        sign, index = "-", index[1:]
+                    if shift.group(0) == "rrx":
+                        carry = "(({:s}>>29)&1)".format(current_arch.flag_register)
+                        offset = "((({:s}&0xffffffff)>>1)|({:s}<<31))".format(index, carry)
+                    else:
+                        fmt = {
+                            "lsl": "({0:s}<<{1:d})",
+                            "lsr": "(({0:s}&0xffffffff)>>{1:d})",
+                            "asr": "({0:s}>>{1:d})", # $r0 of gdb is signed
+                            "ror": "((({0:s}&0xffffffff)>>{1:d})|(({0:s}<<{2:d})&0xffffffff))",
+                        }[shift.group(1)]
+                        amount = int(shift.group(2))
+                        offset = fmt.format(index, amount, 32 - amount)
+                    code = code[:-1] + [sign + offset]
                 code = "+".join(code)
-                if current_arch.is_thumb():
+                if mnemonic in ["tbb", "tbh"]:
+                    # the table of tbb/tbh follows the instruction without the word alignment
+                    pc_base = "($pc+4)"
+                elif current_arch.is_thumb():
                     pc_base = "(($pc+4)&~3)"
                 else:
                     pc_base = "($pc+8)"
@@ -48067,6 +48124,12 @@ class ContextMemoryAccessCommand(GenericCommand):
                     addr = AddressUtil.parse_address(code_eval)
                 except gdb.error:
                     return
+            if is_x86_16():
+                # bp and sp use ss by default
+                if re.match(r"\$e?[bs]p\b", code_orig):
+                    addr = current_arch.real2phys("$ss", addr)
+                else:
+                    addr = current_arch.real2phys("$ds", addr)
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code_orig, addr), redirect)
             self.is_context_title_written = True
             ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
@@ -48084,7 +48147,8 @@ class ContextMemoryAccessCommand(GenericCommand):
 
         if insn_here.operands == []:
             return
-        if self.RE_LEA.fullmatch(insn_here.mnemonic):
+        mnemonic, _ = X86.get_mnemonic_operands(insn_here)
+        if mnemonic == "nop" or self.RE_LEA.fullmatch(mnemonic):
             return
 
         insn = ",".join(insn_here.operands)
@@ -48095,15 +48159,19 @@ class ContextMemoryAccessCommand(GenericCommand):
         r = self.RE_FINDALL_SEG2.findall(str(insn))
         if r:
             code, fsgs, offset = r[0][0], r[0][1], r[0][2]
-            if fsgs == "fs":
-                fsgs_val = current_arch.get_fs()
-            else:
-                fsgs_val = current_arch.get_gs()
-            if fsgs_val is None:
-                return
             code_orig, offset = self.get_x86_memory_expression(offset, codesize)
             offset = AddressUtil.parse_address(offset)
-            addr = AddressUtil.normalize_address(fsgs_val + offset)
+            if is_x86_16():
+                # X86_16 has no get_fs/get_gs, and real2phys adds the base of the segment
+                addr = current_arch.real2phys("$" + fsgs, offset)
+            else:
+                if fsgs == "fs":
+                    fsgs_val = current_arch.get_fs()
+                else:
+                    fsgs_val = current_arch.get_gs()
+                if fsgs_val is None:
+                    return
+                addr = AddressUtil.normalize_address(fsgs_val + offset)
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
             self.is_context_title_written = True
             ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
@@ -48121,7 +48189,9 @@ class ContextMemoryAccessCommand(GenericCommand):
 
         if insn_here.operands == []:
             return
-        if self.RE_LEA.fullmatch(insn_here.mnemonic):
+        mnemonic, _ = X86.get_mnemonic_operands(insn_here)
+        # context_memory_access1 shows xlat, which reads [rbx+al]
+        if mnemonic in ["nop", "xlat"] or self.RE_LEA.fullmatch(mnemonic):
             return
 
         insn = ",".join(insn_here.operands)
@@ -48132,18 +48202,23 @@ class ContextMemoryAccessCommand(GenericCommand):
             code, addr = rr[0], rr[2]
             code_orig, addr = self.get_x86_memory_expression(addr, insn_here.size)
             addr = AddressUtil.parse_address(addr)
+            if is_x86_16():
+                addr = current_arch.real2phys("$" + rr[1], addr)
             ContextCommand.context_title("memory access: {:s} = {:#x}".format(code, addr), redirect)
             self.is_context_title_written = True
             ContextCommand.execute_command("dereference {:#x} 4 --no-pager".format(addr), redirect)
         return
 
     def context_memory_access(self, redirect):
-        self.context_memory_access1(redirect)
-        self.context_memory_access2(redirect) # for x86/x64 - fs/gs
-        self.context_memory_access3(redirect) # for x86/x64 - cs/ss/ds/es
+        # a frame of another language (e.g., Rust) does not accept the C casts and `~` of the expressions
+        with ContextManager.gdb_parameter("language", "c"):
+            self.context_memory_access1(redirect)
+            self.context_memory_access2(redirect) # for x86/x64 - fs/gs
+            self.context_memory_access3(redirect) # for x86/x64 - cs/ss/ds/es
         return
 
     @Decorator.parse_args
+    @Decorator.switch_to_intel_syntax
     def do_invoke(self, args):
         redirect = ContextCommand.get_redirect("mem_access", args.ignore_redirect)
         self.is_context_title_written = False
@@ -48425,7 +48500,7 @@ class ContextSourceCommand(GenericCommand):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context source` to")
         self.add_setting("show_source_code_variable_values", True, "Show extra PC context info in the source code")
-        self.add_setting("nb_lines", 6, "Number of source code after $pc")
+        self.add_setting("nb_lines", 6, "Number of source lines shown before and after the current line")
         return
 
     # Reading the whole file on every step dominates this pane when the source is large.
@@ -48438,7 +48513,8 @@ class ContextSourceCommand(GenericCommand):
         cached = ContextSourceCommand.cached_source
         if cached is not None and cached[0] == identity:
             return cached[1]
-        with open(fpath, "r") as f:
+        # do not depend on the locale (e.g., LC_ALL=C), and an undecodable byte must not drop the whole pane
+        with open(fpath, "r", encoding="utf-8", errors="backslashreplace") as f:
             lines = [x.rstrip() for x in f.readlines()]
         ContextSourceCommand.cached_source = (identity, lines)
         return lines
@@ -48449,13 +48525,9 @@ class ContextSourceCommand(GenericCommand):
             return []
         bp_locations = set()
         for b in breakpoints:
+            # gdb.decode_line returns the line before the prologue, so do not use it even for old gdb
             locations = [gdb.find_pc_line(x) for x in GefUtil.get_breakpoint_addresses(b)]
-            if not locations and b.location: # for old gdb
-                try:
-                    _, locations = gdb.decode_line(b.location)
-                except gdb.error:
-                    continue
-            for sal in locations or []:
+            for sal in locations:
                 if sal.symtab and sal.line:
                     bp_locations.add((os.path.realpath(sal.symtab.fullname()), sal.line))
         return bp_locations
@@ -48465,10 +48537,11 @@ class ContextSourceCommand(GenericCommand):
             return False
         return (os.path.realpath(file_name), line_number) in bp_locations
 
-    def get_pc_context_info(self, pc, line):
+    def get_pc_context_info(self, frame, line):
+        # gdb.block_for_pc(pc) gives the inlined block even when gdb shows the caller, which cannot evaluate it
         try:
-            current_block = gdb.block_for_pc(pc)
-        except gdb.error:
+            current_block = frame.block()
+        except RuntimeError:
             return []
 
         if not current_block or not current_block.is_valid():
@@ -48485,12 +48558,14 @@ class ContextSourceCommand(GenericCommand):
                         val = gdb.parse_and_eval(sym.name)
                     except gdb.error:
                         continue
-                    if val.type.code in (gdb.TYPE_CODE_PTR, gdb.TYPE_CODE_ARRAY):
+                    # e.g., size_t, uint32_t
+                    type_code = val.type.strip_typedefs().code
+                    if type_code in (gdb.TYPE_CODE_PTR, gdb.TYPE_CODE_ARRAY):
                         if val.address is None:
                             continue
                         addr = int(val.address)
                         val = AddressUtil.recursive_dereference_to_string(addr)
-                    elif val.type.code == gdb.TYPE_CODE_INT:
+                    elif type_code == gdb.TYPE_CODE_INT:
                         try:
                             val = hex(int(val))
                         except gdb.error:
@@ -48510,8 +48585,9 @@ class ContextSourceCommand(GenericCommand):
             return
 
         try:
-            pc = current_arch.pc
-            symtabline = gdb.find_pc_line(pc)
+            # gdb.find_pc_line(current_arch.pc) differs from gdb after `up` (no pc-1) and at the call site of inline functions
+            frame = gdb.selected_frame()
+            symtabline = frame.find_sal()
             symtab = symtabline.symtab
             line_num = symtabline.line - 1 # we subtract one because line number returned by gdb start at 1
             if not symtab.is_valid():
@@ -48529,6 +48605,9 @@ class ContextSourceCommand(GenericCommand):
             nb_lines = self.args.nb_lines
         else:
             nb_lines = Config.get("context_source.nb_lines")
+        if nb_lines < 1:
+            err("context_source.nb_lines must be positive", redirect=redirect)
+            return
         past_lines_color = Config.get("theme.context_code_past")
         cur_line_color = Config.get("theme.source_current_line")
         future_lines_color = Config.get("theme.context_code_future")
@@ -48536,13 +48615,8 @@ class ContextSourceCommand(GenericCommand):
 
         bp_locations = self.get_source_breakpoints()
 
-        for i in range(line_num - nb_lines + 1, line_num + nb_lines):
-            if i < 0:
-                continue
-
-            if len(lines) <= i:
-                break
-
+        # clip the range first, since a huge NB_LINES would spin on the lines outside the file
+        for i in range(max(0, line_num - nb_lines + 1), min(len(lines), line_num + nb_lines)):
             if self.line_has_breakpoint(fpath, i + 1, bp_locations):
                 bp_prefix = Color.redify("*")
             else:
@@ -48556,10 +48630,12 @@ class ContextSourceCommand(GenericCommand):
             elif i == line_num:
                 prefix = "{:1s}->{:4d}   ".format(bp_prefix, i + 1)
                 leading = len(lines[i]) - len(lines[i].lstrip())
+                # the prefix may have the color of `*`, and the source may be indented with tabs
+                indent = " " * len(Color.remove_color(prefix)) + lines[i][:leading]
                 if show_extra_info:
-                    extra_info = self.get_pc_context_info(pc, lines[i])
+                    extra_info = self.get_pc_context_info(frame, lines[i])
                     for ext in extra_info:
-                        gef_print("{}// {}".format(" " * (len(prefix) + leading), ext), redirect=redirect)
+                        gef_print("{}// {}".format(indent, ext), redirect=redirect)
                 gef_print(Color.colorify("{}{:s}".format(prefix, lines[i]), cur_line_color), redirect=redirect)
 
             elif i > line_num:
@@ -49008,9 +49084,16 @@ class MemoryWatchCommand(GenericCommand):
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
+
+    def parse_count(x):
+        # COUNT and UNIT are both optional, so argparse gives the UNIT of `memory watch ADDRESS UNIT` to COUNT
+        if x in ["byte", "word", "dword", "qword", "pointers"]:
+            return x
+        return AddressUtil.parse_address(x)
+
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the memory address to register for display in `context memory`.")
-    parser.add_argument("count", metavar="COUNT", nargs="?", type=AddressUtil.parse_address, default=0x10,
+                        help="the memory address to register for display in `context mem_watch`.")
+    parser.add_argument("count", metavar="COUNT", nargs="?", type=parse_count, default=0x10,
                         help="the number of pointers, or bytes for byte/word/dword/qword. (default: %(default)s)")
     parser.add_argument("unit", nargs="?", default="pointers",
                         choices=["byte", "word", "dword", "qword", "pointers"],
@@ -49032,8 +49115,26 @@ class MemoryWatchCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        MemoryWatchCommand.mem_watches[args.address] = (args.count, args.unit)
-        ok("Adding memwatch to {:#x}".format(args.address))
+        address = AddressUtil.normalize_address(args.address)
+        count, unit = args.count, args.unit
+        # e.g., `memory watch $sp byte`
+        if isinstance(count, str):
+            if unit != "pointers":
+                err("Invalid COUNT: {:s}".format(count))
+                return
+            count, unit = 0x10, count
+
+        # the pane runs `dereference` or `hexdump` on every stop, so reject what they refuse here
+        if unit == "pointers":
+            if count == 0:
+                err("COUNT must be nonzero")
+                return
+        elif count < 1 or count > 0x0100_0000:
+            err("COUNT must be 1 to 16 MiB in bytes for {:s}".format(unit))
+            return
+
+        MemoryWatchCommand.mem_watches[address] = (count, unit)
+        ok("Adding memwatch to {:#x}".format(address))
         return
 
 
@@ -49046,7 +49147,7 @@ class MemoryUnwatchCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("address", metavar="ADDRESS", type=AddressUtil.parse_address,
-                        help="the memory address to deregister for display in `context memory`.")
+                        help="the memory address to deregister for display in `context mem_watch`.")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
@@ -49060,17 +49161,18 @@ class MemoryUnwatchCommand(GenericCommand):
 
     @Decorator.parse_args
     def do_invoke(self, args):
-        res = MemoryWatchCommand.mem_watches.pop(args.address, None)
+        address = AddressUtil.normalize_address(args.address)
+        res = MemoryWatchCommand.mem_watches.pop(address, None)
         if not res:
-            warn("You weren't watching {:#x}".format(args.address))
+            warn("You weren't watching {:#x}".format(address))
         else:
-            ok("Removed memwatch of {:#x}".format(args.address))
+            ok("Removed memwatch of {:#x}".format(address))
         return
 
 
 @register_command
 class MemoryResetCommand(GenericCommand):
-    """Remove all watchpoints."""
+    """Remove all memory watches."""
 
     _cmdline_ = "memory reset"
     _category_ = "01-f. Debugging Support - Context Extension"
@@ -49087,7 +49189,7 @@ class MemoryResetCommand(GenericCommand):
 
 @register_command
 class MemoryWatchListCommand(GenericCommand):
-    """List all watchpoints to display in context layout."""
+    """List all memory watches shown in context."""
 
     _cmdline_ = "memory list"
     _category_ = "01-f. Debugging Support - Context Extension"
