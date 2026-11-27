@@ -7864,12 +7864,20 @@ def get_insn_prev(addr=None):
         if not is_alive():
             return None
         addr = current_arch.pc
+    # the variable-length ABI finds the previous one more accurately by disassembling from the 2nd previous one,
+    # but the fixed-length ABI does not need it, and the 2nd previous one may be unreadable near the start of a region
+    if current_arch.instruction_length:
+        nb_prev = 1
+    else:
+        nb_prev = 2
     try:
-        gen = Disasm.gef_disassemble(addr, 0, nb_prev=2)
-        gen.__next__()
-        return gen.__next__()
-    except (gdb.error, StopIteration):
+        insns = list(Disasm.gef_disassemble(addr, 0, nb_prev=nb_prev))
+    except gdb.error:
         return None
+    # the 2nd previous one is not found near the start of a region, so use the one just before the current one
+    if len(insns) < 2:
+        return None
+    return insns[-2]
 
 
 class Checksec:
@@ -17180,6 +17188,7 @@ class EventHandler:
             ("new_thread", EventHandler.detect_target_handler),
             ("memory_changed", EventHandler.state_changed_handler),
             ("register_changed", EventHandler.state_changed_handler),
+            ("inferior_call", ContextRegistersCommand.update_inferior_call),
         ]
         if hasattr(gdb.events, "selected_context"):
             handlers.extend([
@@ -17310,6 +17319,15 @@ class EventHandler:
             ExecAsm.queued_signals[thread] = event.stop_signal
         else:
             ExecAsm.queued_signals.pop(thread, None)
+        # GDB 16+ tells a syscall catchpoint. The return register has no result yet at the entry,
+        # and also at the return of qemu-user, whose gdbstub stops before writing it.
+        reason = getattr(event, "details", {}).get("reason")
+        if reason == "syscall-entry":
+            ContextRegistersCommand.no_syscall_result_thread = thread
+        elif reason == "syscall-return" and is_qemu_user():
+            ContextRegistersCommand.no_syscall_result_thread = thread
+        else:
+            ContextRegistersCommand.no_syscall_result_thread = None
         EventHandler.track_qemu_pipe()
 
         # There appears to be a bug on some architectures (e.g., i386) where temporary breakpoints
@@ -46306,6 +46324,13 @@ class CommandBreakCommand(GenericCommand):
         '{0:s} 0x55555555aab9 "hexdump -n $sp+0x120"',
     ]).format(_cmdline_)
 
+    _note_ = "\n".join([
+        "If COMMAND fails, it stops at the breakpoint instead of continuing.",
+        "COMMAND is executed while GDB decides whether to stop, so it cannot resume the target.",
+        "Commands that resume it (e.g., `stepi`, `continue`) fail, and calling a function of it",
+        "(e.g., `call getpid()`, `print strlen($rdi)`) may hang GDB. Use `commands` of GDB for them.",
+    ])
+
     @Decorator.parse_args
     def do_invoke(self, args):
         location = args.location
@@ -46335,12 +46360,23 @@ class RegisterDumpBreakBreakpoint(gdb.Breakpoint):
         out = []
         for r in self.regs:
             try:
-                v = get_register(r)
+                value = gdb.parse_and_eval("$" + r.lstrip("$"))
             except gdb.error:
                 continue
-            if v is None:
+            if value.type.code == gdb.TYPE_CODE_VOID:
+                # invalid register (not checked if set before running)
                 continue
-            out.append("{:s}={:#x}".format(r, v))
+            if value.type.strip_typedefs().code == gdb.TYPE_CODE_FLT:
+                # get_register truncates the float value (e.g., 3.75 to 3)
+                v = None
+            else:
+                v = get_register(r)
+            if v is None:
+                # e.g., the float value and the vector register as a union ($ymm1)
+                text = value.format_string(pretty_structs=False, pretty_arrays=False, array_indexes=False)
+                out.append("{:s}={:s}".format(r, text))
+            else:
+                out.append("{:s}={:#x}".format(r, v))
 
         if not out:
             warn("No requested registers could be read: {:s}".format(", ".join(self.regs)))
@@ -46383,6 +46419,16 @@ class RegisterDumpBreakCommand(GenericCommand):
         if not args.regs:
             self.usage()
             return
+        # the breakpoint skips the invalid registers silently, so check them if possible
+        if is_alive():
+            for r in args.regs:
+                try:
+                    value = gdb.parse_and_eval("$" + r.lstrip("$"))
+                except gdb.error:
+                    value = None
+                if value is None or value.type.code == gdb.TYPE_CODE_VOID:
+                    err("Invalid register name: {:s}".format(r))
+                    return
         location = args.location
         if location is None:
             location = current_arch.pc
@@ -46825,6 +46871,10 @@ class ContextRegistersCommand(GenericCommand):
 
     old_registers = {}
     previous_extra_regs = {}
+    redisplayed_extra_regs = {}
+    in_inferior_call = False
+    no_syscall_result_thread = None
+    resumed_pc = None
 
     def __init__(self):
         super().__init__()
@@ -46840,24 +46890,43 @@ class ContextRegistersCommand(GenericCommand):
         if current_arch is None:
             return
 
-        for reg in current_arch.all_registers:
-            try:
-                # registers compares the full width (e.g., 64-bit of n32), so do not truncate it to the pointer size
-                ContextRegistersCommand.old_registers[reg] = get_register(reg, full_width=True)
-            except Exception:
-                ContextRegistersCommand.old_registers[reg] = 0
+        # an inferior call (e.g., `print errno`) resumes the target, but the next stop is compared with this one
+        if ContextRegistersCommand.in_inferior_call:
+            return
 
-        if is_x86():
-            for reg in current_arch.virtual_registers:
+        with ContextManager.selected_thread():
+            # `up` may select an outer frame before resuming, but the next stop is compared with frame 0
+            try:
+                gdb.newest_frame().select()
+            except gdb.error:
+                pass
+
+            for reg in current_arch.all_registers:
                 try:
-                    ContextRegistersCommand.old_registers[reg] = gdb.parse_and_eval(reg)
-                except gdb.error:
+                    # registers compares the full width (e.g., 64-bit of n32), so do not truncate it to the pointer size
+                    ContextRegistersCommand.old_registers[reg] = get_register(reg, full_width=True)
+                except Exception:
                     ContextRegistersCommand.old_registers[reg] = 0
 
-        if is_x86_16():
-            for regname, (seg, reg) in current_arch.seg_extended_registers.items():
-                value = current_arch.real2phys(seg, reg)
-                ContextRegistersCommand.old_registers[regname] = value
+            if is_x86():
+                for reg in current_arch.virtual_registers:
+                    try:
+                        ContextRegistersCommand.old_registers[reg] = gdb.parse_and_eval(reg)
+                    except gdb.error:
+                        ContextRegistersCommand.old_registers[reg] = 0
+
+            if is_x86_16():
+                for regname, (seg, reg) in current_arch.seg_extended_registers.items():
+                    value = current_arch.real2phys(seg, reg)
+                    ContextRegistersCommand.old_registers[regname] = value
+
+            # to find the syscall instruction that a step of qemu-user went over
+            ContextRegistersCommand.resumed_pc = current_arch.pc
+        return
+
+    @staticmethod
+    def update_inferior_call(event):
+        ContextRegistersCommand.in_inferior_call = isinstance(event, gdb.InferiorCallPreEvent)
         return
 
     RE_SUB_OPERAND1 = re.compile(r"<.*?>")
@@ -46884,15 +46953,20 @@ class ContextRegistersCommand(GenericCommand):
         if insn is None:
             return
 
-        if insn_prev is None:
-            return
-
         operands = ", ".join(insn.operands)
         operands = self.RE_SUB_OPERAND1.sub("", operands)
         operands = self.RE_SUB_OPERAND2.sub("", operands)
 
+        # shown again at the same stop (e.g., `context`), so use the registers of the previous instruction again
+        if self.previous_extra_regs.get("pc") == current_arch.pc:
+            self.previous_extra_regs = self.redisplayed_extra_regs
+        self.redisplayed_extra_regs = self.previous_extra_regs
+
         if self.previous_extra_regs:
-            if self.previous_extra_regs["pc"] != insn_prev.address:
+            # the previous instruction is unknown at the start of a region, but the current one is shown
+            if insn_prev is None:
+                self.previous_extra_regs = {}
+            elif self.previous_extra_regs["pc"] != insn_prev.address:
                 self.previous_extra_regs = {}
 
         printed_extra_regs = {"pc": current_arch.pc}
@@ -46942,17 +47016,20 @@ class ContextRegistersCommand(GenericCommand):
         # fpu register
         if insn.mnemonic[0] == "f":
             to_save_regs = self.RE_FINDALL_FPU.findall(operands)
-            to_print_regs = to_save_regs + self.previous_extra_regs.get("fpu", [])
-            if to_print_regs:
-                to_print_regs = sorted(set(to_print_regs))
-                lines = gdb.execute("fpu", to_string=True).splitlines()
-                for reg in to_print_regs:
-                    for line in lines:
-                        if ("$" + re.sub(r"[()]", "", reg)) in line.split(":")[0]:
-                            gef_print(line, redirect=redirect)
-                            if reg in to_save_regs:
-                                printed_extra_regs.setdefault("fpu", []).append(reg)
-                            break
+        else:
+            # the registers of the previous fpu instruction are shown even if the current one is not
+            to_save_regs = []
+        to_print_regs = to_save_regs + self.previous_extra_regs.get("fpu", [])
+        if to_print_regs:
+            to_print_regs = sorted(set(to_print_regs))
+            lines = gdb.execute("fpu", to_string=True).splitlines()
+            for reg in to_print_regs:
+                for line in lines:
+                    if ("$" + re.sub(r"[()]", "", reg)) in line.split(":")[0]:
+                        gef_print(line, redirect=redirect)
+                        if reg in to_save_regs:
+                            printed_extra_regs.setdefault("fpu", []).append(reg)
+                        break
 
         self.previous_extra_regs = printed_extra_regs
         return
@@ -46982,6 +47059,24 @@ class ContextRegistersCommand(GenericCommand):
         if insn_prev is None:
             return
         if not current_arch.is_syscall(insn_prev):
+            if is_hppa32():
+                # the syscall returns after the delay slot
+                insn_prev = get_insn_prev(insn_prev.address)
+            elif ContextRegistersCommand.resumed_pc is not None:
+                # a step of qemu-user from a syscall instruction executes also the next instruction (e.g., x86, SH4, M68K)
+                try:
+                    resumed_insn = get_insn(ContextRegistersCommand.resumed_pc)
+                except gdb.error:
+                    resumed_insn = None
+                if resumed_insn and resumed_insn.address + resumed_insn.size == insn_prev.address:
+                    insn_prev = resumed_insn
+            if insn_prev is None:
+                return
+            if not current_arch.is_syscall(insn_prev):
+                return
+
+        # the return register of a syscall catchpoint may have no result yet (e.g., -ENOSYS of x86 at the entry)
+        if ContextRegistersCommand.no_syscall_result_thread == gdb.selected_thread():
             return
 
         if is_mips() or is_alpha():
@@ -47007,6 +47102,17 @@ class ContextRegistersCommand(GenericCommand):
             failed = 0 < val <= 4095
         if not failed:
             return
+
+        # x86 has -ENOSYS at the entry. GDB 15 and earlier do not tell the entry,
+        # and gdbserver may tell the entry and the return the other way around.
+        if is_x86() and val == 38:
+            if GDB_VERSION < (16, 0) or is_remote_debug():
+                try:
+                    si_code = int(gdb.parse_and_eval("$_siginfo.si_code"))
+                except gdb.error:
+                    si_code = None
+                if si_code == 0x85: # SIGTRAP | 0x80 means a syscall-stop of ptrace, the entry or the return
+                    return
 
         einfo = ErrnoCommand.get_errno_dict().get(val)
         if not einfo:
@@ -47064,15 +47170,16 @@ class ContextRegistersCommand(GenericCommand):
                 return
 
             while len(lines) % 3:
-                lines.append("")
-            first_half = lines[:len(lines) // 3]
-            second_half = lines[len(lines) // 3:][:len(lines) // 3]
-            third_half = lines[len(lines) // 3:]
+                lines.append(["", ""])
+            nb_rows = len(lines) // 3
+            first_column = lines[:nb_rows]
+            second_column = lines[nb_rows:nb_rows * 2]
+            third_column = lines[nb_rows * 2:]
 
             pipe = Color.cyanify("|")
 
             final_lines = []
-            for f, s, t in zip(first_half, second_half, third_half):
+            for f, s, t in zip(first_column, second_column, third_column):
                 final_lines.append("{:10s} {:20s} {:s}  {:10s} {:20s}  {:s} {:10s} {:20s}".format(
                     *f, pipe, *s, pipe, *t,
                 ))
@@ -47101,7 +47208,9 @@ class ContextRegistersCommand(GenericCommand):
             opt = "-s"
         else:
             opt = ""
-        ContextCommand.execute_command("registers {:s} {:s}".format(opt, target_registers), redirect)
+        # `registers` without arguments shows all registers
+        if target_registers:
+            ContextCommand.execute_command("registers {:s} {:s}".format(opt, target_registers), redirect)
 
         # for extra regs
         self.context_regs_extra(redirect) # for x86 only (xmm, ymm, ...)
@@ -119382,6 +119491,8 @@ class ExecAsm:
             self.revert_state(d)
             restore_breakpoint_stop()
             ExecAsm.stop_reasons[context] = stop_reason
+            # the continue hook saved the registers while executing, but the next stop is compared with the original ones
+            ContextRegistersCommand.old_registers = old_registers
             return
 
         with ContextManager.selected_thread():
@@ -119390,6 +119501,7 @@ class ExecAsm:
 
             # backup
             d = self.get_state()
+            old_registers = ContextRegistersCommand.old_registers.copy()
             self.thread = gdb.selected_thread()
             self.stops.clear()
             if gdb.parameter("non-stop"):
