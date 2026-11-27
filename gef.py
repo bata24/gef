@@ -17130,11 +17130,17 @@ class ProcessMap:
         lines = gdb.execute("info files", to_string=True).splitlines()
         info_files = []
         seen = set()
+        in_core = False
         for line in lines:
             line = line.strip()
             if not line:
                 break
             if not line.startswith("0x"):
+                # the sections of a core file (e.g., load1) are not of the executable, and have no filename
+                if line.endswith(":"):
+                    in_core = line == "Local core dump file:"
+                continue
+            if in_core:
                 continue
             if line in seen:
                 continue
@@ -17227,6 +17233,9 @@ class ProcessMap:
             # If FGKASLR is enabled, there are too many sections and it will take a long time, so skip them.
             return None
         for info in ProcessMap.get_info_files():
+            # .tbss occupies no memory, so the following sections (e.g., .init_array) are at the range
+            if info.name == ".tbss":
+                continue
             if info.zone_start <= addr < info.zone_end:
                 return info
         return None
@@ -17241,11 +17250,16 @@ class ProcessMap:
     def get_section_load_base_address(section):
         base_address = section.page_start
         if section.path and section.offset:
-            load_base = section.page_start - section.offset
+            # the nearest region below that maps the same file from the offset 0 is the base. The distance is not always
+            # the file offset (e.g., the RW segment of GNU ld), and the same file may be mapped more than once
+            load_bases = []
             for entry in ProcessMap.get_process_maps():
-                if entry.path == section.path and entry.offset == 0 and entry.page_start == load_base:
-                    base_address = load_base
-                    break
+                if entry.path != section.path or entry.inode != section.inode:
+                    continue
+                if entry.offset == 0 and entry.page_start < section.page_start:
+                    load_bases.append(entry.page_start)
+            if load_bases:
+                base_address = max(load_bases)
         return base_address
 
     @staticmethod
@@ -52481,13 +52495,32 @@ class CommentCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
-        "Comments are temporary only. Note that it will be deleted when GDB exits.",
+        "Comments are temporary only. Note that they will be deleted when GDB exits.",
+        "A comment is attached to the absolute address, so it stays there after re-running with ASLR,",
+        "and is also shown at the same address of another inferior.",
     ])
 
     def __init__(self, *args, **kwargs):
         prefix = kwargs.get("prefix", True)
         super().__init__(prefix=prefix)
         return
+
+    @staticmethod
+    def parse_location(location):
+        """Return the address of LOCATION as context-code looks it up, or None if invalid."""
+        # context-code shows the linear address of CS:IP on x86_16, but `$pc` is IP
+        if is_x86_16() and location == "$pc":
+            return current_arch.pc
+        try:
+            address = AddressUtil.parse_address(location)
+        except (gdb.error, ValueError):
+            return None
+        if not 0 <= address < AddressUtil.get_vmem_end():
+            return None
+        # context-code looks up the address without the Thumb bit (e.g., `$lr` or a function pointer)
+        if is_arm32() or is_arm32_cortex_m():
+            address &= ~1
+        return address
 
     @Decorator.parse_args
     @Decorator.require_arch_set
@@ -52498,7 +52531,7 @@ class CommentCommand(GenericCommand):
 
 @register_command
 class CommentAddCommand(CommentCommand):
-    """Add a comment to specific address."""
+    """Add a comment to a specific address."""
 
     _cmdline_ = "comment add"
     _category_ = "01-f. Debugging Support - Context Extension"
@@ -52506,7 +52539,8 @@ class CommentAddCommand(CommentCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION",
                         help="the address for comment.")
-    parser.add_argument("comment", metavar="COMMENT", help="the comment to print when hit.")
+    parser.add_argument("comment", metavar="COMMENT",
+                        help="the comment to display next to the instruction in the code pane.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -52524,15 +52558,24 @@ class CommentAddCommand(CommentCommand):
                 elf = None
             if elf is not None and elf.is_valid() and elf.is_pie():
                 try:
-                    int(args.location, 0)
+                    value = int(args.location, 0)
                 except ValueError:
                     warn("PIE symbols require a running process")
                     return
-        try:
-            location = AddressUtil.parse_address(args.location)
-        except (gdb.error, ValueError):
+                # the address in the file (e.g., by objdump) is relocated at runtime
+                for phdr in elf.phdrs:
+                    if phdr.p_type == Elf.Phdr.PT_LOAD and phdr.p_vaddr <= value < phdr.p_vaddr + phdr.p_memsz:
+                        warn("PIE addresses require a running process")
+                        return
+        location = CommentCommand.parse_location(args.location)
+        if location is None:
             err("Invalid address")
             return
+        if not is_alive():
+            # a function of a shared library is resolved to the PLT stub of the executable before running
+            symbol = Symbol.lookup_gdb(location)
+            if symbol and symbol[0].endswith("@plt"):
+                warn("The comment is attached to {:s}, since shared libraries are not loaded yet".format(symbol[0]))
         comms = ContextCodeCommand.context_comments.get(location, [])
         ContextCodeCommand.context_comments[location] = comms + [args.comment]
         return
@@ -52572,7 +52615,7 @@ class CommentRemoveCommand(CommentCommand):
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("location", metavar="LOCATION", type=AddressUtil.parse_address,
+    parser.add_argument("location", metavar="LOCATION",
                         help="the address for comment.")
     parser.add_argument("index", metavar="INDEX", nargs="?", type=int,
                         help="the index of comment to remove. If omitted, all comments for that address will be deleted.")
@@ -52585,18 +52628,19 @@ class CommentRemoveCommand(CommentCommand):
     @Decorator.parse_args
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        if args.location not in ContextCodeCommand.context_comments:
+        location = CommentCommand.parse_location(args.location)
+        if location not in ContextCodeCommand.context_comments:
             err("Invalid location")
             return
         if args.index is None:
-            del ContextCodeCommand.context_comments[args.location]
+            del ContextCodeCommand.context_comments[location]
         else:
-            if not 0 <= args.index < len(ContextCodeCommand.context_comments[args.location]):
+            if not 0 <= args.index < len(ContextCodeCommand.context_comments[location]):
                 err("Index out of range")
                 return
-            ContextCodeCommand.context_comments[args.location].pop(args.index)
-            if len(ContextCodeCommand.context_comments[args.location]) == 0:
-                del ContextCodeCommand.context_comments[args.location]
+            ContextCodeCommand.context_comments[location].pop(args.index)
+            if len(ContextCodeCommand.context_comments[location]) == 0:
+                del ContextCodeCommand.context_comments[location]
         return
 
 
@@ -52956,8 +53000,10 @@ class XFilesCommand(GenericCommand, BufferingOutput):
                 self.out.append(line)
                 continue
 
+            # match against the text without the escape sequences of the colored addresses
+            plain_line = Color.remove_color(line)
             for pattern in patterns:
-                if pattern.search(line):
+                if pattern.search(plain_line):
                     self.out.append(line)
                     break
 
@@ -52988,8 +53034,11 @@ class XInfoCommand(GenericCommand):
     def xinfo(self, address):
         addr = ProcessMap.lookup(address)
         if not addr.valid:
-            warn("Cannot reach {:#x} in memory space".format(address))
-            return
+            # a mapped region may not be readable (e.g., [vvar] via ptrace, or [vsyscall] of xonly)
+            if not addr.section and not addr.info:
+                warn("Cannot reach {:#x} in memory space".format(address))
+                return
+            warn("Cannot read {:#x}".format(address))
 
         gdb.execute("vmmap {:#x}".format(address))
 
@@ -53000,10 +53049,13 @@ class XInfoCommand(GenericCommand):
             ))
 
             if addr.section.path and addr.section.path.startswith("/"):
-                base_start = ProcessMap.lookup(ProcessMap.get_section_load_base_address(addr.section))
-                gef_print("Offset (from base):    {!s} + {:#x}".format(
-                    base_start, addr.value - base_start.section.page_start,
-                ))
+                base_address = ProcessMap.get_section_load_base_address(addr.section)
+                # a part of the file mapped alone (e.g., by mmap with an offset) has no base
+                if addr.section.offset == 0 or base_address != addr.section.page_start:
+                    base_start = ProcessMap.lookup(base_address)
+                    gef_print("Offset (from base):    {!s} + {:#x}".format(
+                        base_start, addr.value - base_start.section.page_start,
+                    ))
 
         if addr.info:
             zone_start = ProcessMap.lookup(addr.info.zone_start)
@@ -53046,6 +53098,24 @@ class XInfoCommand(GenericCommand):
         gef_print(ret.rstrip())
         return
 
+    def xinfo_kernel_files(self, address):
+        for zone in ProcessMap.get_info_files():
+            if zone.name == ".tbss":
+                continue
+            if zone.zone_start <= address < zone.zone_end:
+                gef_print("Offset (from segment): {:#x} ({:s}) + {:#x}".format(
+                    zone.zone_start, zone.name, address - zone.zone_start,
+                ))
+                break
+        else:
+            err("Not found")
+
+        sym = Symbol.format(address)
+        if sym:
+            msg = "Symbol:                {:s}".format(sym)
+            gef_print(msg)
+        return
+
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("kgdb",))
@@ -53058,13 +53128,22 @@ class XInfoCommand(GenericCommand):
 
         # kernel xinfo
         if is_qemu_system() or is_vmware():
-            for location in locations:
-                gef_print(titlify("xinfo (from pagewalk): {:#x}".format(location)))
-                self.xinfo_kernel_pagewalk(location)
-                gef_print(titlify("xinfo (from kvmmap): {:#x}".format(location)))
-                self.xinfo_kernel_kvmmap(location)
-                gef_print(titlify("xinfo (from slab-contains): {:#x}".format(location)))
-                self.xinfo_kernel_slab(location)
+            # `kvmmap` and `slab-contains` also work only on the architectures supported by `pagewalk`
+            if (
+                is_x86() or is_arm32() or is_arm64() or is_riscv() or is_mips() or is_ppc() or is_s390x()
+                or is_loongarch64() or is_sparc32()
+            ):
+                for location in locations:
+                    gef_print(titlify("xinfo (from pagewalk): {:#x}".format(location)))
+                    self.xinfo_kernel_pagewalk(location)
+                    gef_print(titlify("xinfo (from kvmmap): {:#x}".format(location)))
+                    self.xinfo_kernel_kvmmap(location)
+                    gef_print(titlify("xinfo (from slab-contains): {:#x}".format(location)))
+                    self.xinfo_kernel_slab(location)
+            else:
+                for location in locations:
+                    gef_print(titlify("xinfo (from xfiles): {:#x}".format(location)))
+                    self.xinfo_kernel_files(location)
             return
 
         # userland xinfo
@@ -53239,7 +53318,7 @@ class XorFileCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class PatternCommand(GenericCommand):
-    """The base command to create or search for a De Bruijn cyclic pattern (used pwntools)."""
+    """The base command to create or search for a de Bruijn cyclic pattern (compatible with pwntools)."""
 
     _cmdline_ = "pattern"
     _category_ = "07-c. Misc - Generation"
@@ -53275,8 +53354,10 @@ class PatternCreateCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-c", "--charset", help="the charset of pattern. (default: abc..z)")
+    parser.add_argument("-n", "--period", type=int,
+                        help="the length of each unique subsequence. (default: target pointer size)")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, nargs="?",
-                        help="the size of pattern. (default: 1024)")
+                        help="the size of pattern. (default: pattern.length, up to the maximum)")
     _syntax_ = parser.format_help()
 
     @staticmethod
@@ -53301,22 +53382,28 @@ class PatternCreateCommand(GenericCommand):
         return db(1, 1)
 
     @staticmethod
-    def generate_cyclic_pattern(length, charset=None):
+    def generate_cyclic_pattern(length, charset=None, period=None, truncate=False):
         """Create a `length` byte bytearray of a de Bruijn cyclic pattern."""
         if charset is None:
             charset = bytearray(b"abcdefghijklmnopqrstuvwxyz")
         elif isinstance(charset, str):
             charset = String.str2bytes(charset)
 
-        cycle = AddressUtil.get_memory_alignment()
+        if period is None:
+            period = AddressUtil.get_memory_alignment()
         if length < 0:
             raise ValueError("Pattern length must not be negative")
+        if period <= 0:
+            raise ValueError("Period must be positive")
         if not charset or len(set(charset)) != len(charset):
             raise ValueError("Charset must contain distinct bytes and must not be empty")
-        maximum = len(charset) ** cycle
+        maximum = len(charset) ** period
+        if truncate:
+            # the default length may not fit (e.g., the period 2 of x86_16 or a short charset)
+            length = min(length, maximum)
         if length > maximum:
-            raise ValueError("Pattern length exceeds the maximum of {:d} bytes for this charset".format(maximum))
-        return bytes(itertools.islice(PatternCreateCommand.de_bruijn(charset, cycle), length))
+            raise ValueError("Pattern length exceeds the maximum of {:d} bytes for this charset and period".format(maximum))
+        return bytes(itertools.islice(PatternCreateCommand.de_bruijn(charset, period), length))
 
     @Decorator.parse_args
     def do_invoke(self, args):
@@ -53325,14 +53412,21 @@ class PatternCreateCommand(GenericCommand):
         else:
             size = args.size
 
-        info("Generating a pattern of {:d} bytes".format(size))
         try:
-            pattern_str = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
+            pattern_str = PatternCreateCommand.generate_cyclic_pattern(
+                size, args.charset, period=args.period, truncate=args.size is None,
+            )
         except ValueError as e:
             err(e)
             return
+        info("Generating a pattern of {:d} bytes".format(len(pattern_str)))
         gef_print(pattern_str)
 
+        # a value larger than `max-value-size` (64KB by default) is refused, and a string has the trailing NUL
+        limit = gdb.parameter("max-value-size")
+        if 0 <= limit <= len(pattern_str):
+            warn("Not saved as a convenience variable, since it exceeds max-value-size ({:d} bytes)".format(limit))
+            return
         conv_var = GefUtil.gef_convenience(String.bytes2str(pattern_str))
         ok("Saved as '{:s}'".format(conv_var))
         return
@@ -53340,7 +53434,7 @@ class PatternCreateCommand(GenericCommand):
 
 @register_command
 class PatternSearchCommand(GenericCommand):
-    """Search for the cyclic de Bruijn pattern generated by the `pattern create`."""
+    """Search for the cyclic de Bruijn pattern generated by `pattern create`."""
 
     _cmdline_ = "pattern search"
     _category_ = "07-c. Misc - Generation"
@@ -53348,22 +53442,27 @@ class PatternSearchCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-c", "--charset", help="the charset of pattern. (default: abc..z)")
+    parser.add_argument("-n", "--period", type=int,
+                        help="the length of each unique subsequence. (default: target pointer size)")
     parser.add_argument("-w", "--width", type=int, choices=(1, 2, 4, 8),
-                        help="the integer search width in bytes. (default: target pointer size)")
+                        help="the integer search width in bytes. (default: target pointer size, or PERIOD if shorter)")
     parser.add_argument("-d", "--detect", action="store_true", help="detect patterns in registers and their targets.")
     parser.add_argument("pattern", metavar="PATTERN", nargs="?", help="the pattern to offset search.")
     parser.add_argument("size", metavar="SIZE", type=AddressUtil.parse_address, nargs="?",
-                        help="the size of pattern. (default: 0x10000)")
+                        help="the size of pattern, which comes first with --detect. "
+                             "(default: pattern.length * 64, up to the maximum)")
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
         "{0:s} $pc",
-        "{0:s} 0x61616164",
+        "{0:s} 0x61616164                # on 32-bit",
+        "{0:s} 0x6161616161616164        # on 64-bit",
+        "{0:s} -n 4 0x61616164           # on 64-bit, with `pattern create -n 4`",
         "{0:s} aaab",
     ]).format(_cmdline_)
 
-    def search(self, tag, cyclic_pattern, pattern, only_matches=False):
-        if only_matches and pattern not in cyclic_pattern and pattern[::-1] not in cyclic_pattern:
+    def search(self, tag, cyclic_pattern, pattern, only_matches=False, reverse=False):
+        if only_matches and pattern not in cyclic_pattern:
             return
         gef_print(titlify(tag))
 
@@ -53382,17 +53481,16 @@ class PatternSearchCommand(GenericCommand):
             if found == 0:
                 err("Not found")
 
-            if found == 10:
+            # only if the 11th one exists
+            if found == 10 and cyclic_pattern.find(pattern, off) != -1:
                 ok("...")
             return
 
-        # little endian
-        if not only_matches or pattern in cyclic_pattern:
-            search_pattern(pattern)
+        search_pattern(pattern)
 
-        # big endian
+        # a string may be written in the reverse order (e.g., read from the value of a register)
         inv_pattern = pattern[::-1]
-        if pattern != inv_pattern and (not only_matches or inv_pattern in cyclic_pattern):
+        if reverse and pattern != inv_pattern:
             search_pattern(inv_pattern)
         return
 
@@ -53401,12 +53499,20 @@ class PatternSearchCommand(GenericCommand):
         if args.detect and not is_alive():
             err("No debugging session active")
             return
-        if args.detect and args.pattern is not None:
+        if args.detect and args.size is not None:
             err("PATTERN cannot be used with --detect")
             return
         if not args.detect and not args.pattern:
             err("Empty pattern")
             return
+
+        if args.detect and args.pattern is not None:
+            # PATTERN is not used with --detect, so the only positional argument is SIZE
+            try:
+                args.size = AddressUtil.parse_address(args.pattern)
+            except (gdb.error, ValueError):
+                err("PATTERN cannot be used with --detect")
+                return
 
         if args.size is None:
             size = Config.get("pattern.length") * 64
@@ -53414,15 +53520,29 @@ class PatternSearchCommand(GenericCommand):
             size = args.size
 
         try:
-            cyclic_pattern = PatternCreateCommand.generate_cyclic_pattern(size, args.charset)
+            cyclic_pattern = PatternCreateCommand.generate_cyclic_pattern(
+                size, args.charset, period=args.period, truncate=args.size is None,
+            )
         except ValueError as e:
             err(e)
             return
         width = args.width or AddressUtil.get_memory_alignment()
+        if args.width is None and args.period is not None:
+            # a window as long as the period is unique (e.g., a 32-bit value with `-n 4` on 64-bit)
+            width = min(width, args.period)
         mask = (1 << (width * 8)) - 1
 
         def pack(value):
-            return (value & mask).to_bytes(width, "little")
+            return (value & mask).to_bytes(width, Endian.endian_str())
+
+        # a branch drops the low bits of the target on some architectures, so $pc may lack them
+        # (e.g., `ret` of RISC-V, `blr` of PPC, and `pop {pc}` of ARM, which takes bit 0 as the Thumb bit)
+        if is_arm32() or is_arm32_cortex_m() or is_riscv():
+            pc_low_mask = 0b1
+        elif is_ppc():
+            pc_low_mask = 0b11
+        else:
+            pc_low_mask = 0
 
         if args.detect:
             for regname in current_arch.all_registers:
@@ -53431,6 +53551,10 @@ class PatternSearchCommand(GenericCommand):
                     continue
                 value = pack(regvalue)
                 self.search("As value (without dereference): {}".format(regname), cyclic_pattern, value, only_matches=True)
+                if regname == "$pc":
+                    for low in range(1, pc_low_mask + 1):
+                        tag = "As value (without dereference): $pc | {:#x} (low bits dropped by branch)".format(low)
+                        self.search(tag, cyclic_pattern, pack(regvalue | low), only_matches=True)
                 target = read_memory(regvalue, width, safe=True)
                 if target is not None:
                     self.search("As symbol (with dereference): {}".format(regname), cyclic_pattern, target, only_matches=True)
@@ -53440,22 +53564,35 @@ class PatternSearchCommand(GenericCommand):
         if is_alive():
             try:
                 address = AddressUtil.parse_address(args.pattern)
-                value = int.from_bytes(read_memory(address, width), "little")
-                self.search("As symbol (with dereference)", cyclic_pattern, pack(value))
+                # the bytes in memory are already in the order of the pattern
+                self.search("As symbol (with dereference)", cyclic_pattern, read_memory(address, width))
             except gdb.error:
                 pass
 
         # 2. check if it's a not symbol, but value (like "0x1337")
         try:
             value = AddressUtil.parse_address(args.pattern)
-            self.search("As value (without dereference)", cyclic_pattern, pack(value))
         except (gdb.error, ValueError):
-            pass
+            value = None
+        if value is not None:
+            self.search("As value (without dereference)", cyclic_pattern, pack(value))
+            if is_alive() and args.pattern == "$pc":
+                for low in range(1, pc_low_mask + 1):
+                    tag = "As value (without dereference): $pc | {:#x} (low bits dropped by branch)".format(low)
+                    self.search(tag, cyclic_pattern, pack(value | low))
+                # the branch of AArch64 also clears the top byte by TBI, which cannot be restored
+                if is_arm64() and value >> 56 == 0 and (value >> 48) & 0xff:
+                    warn("The top byte of $pc may be dropped by the branch, so search the value before it (e.g., $x30)")
 
         # 3. plain text
+        if value is None and not is_alive() and args.pattern.startswith("$"):
+            # e.g., `$pc` before running
+            err("No debugging session active")
+            return
         pattern = String.str2bytes(args.pattern)
-        if set(pattern) - set(cyclic_pattern) == set():
-            self.search("As string", cyclic_pattern, pattern)
+        # a value (like "0x1337") is searched as a string only if all the characters are in the pattern
+        if value is None or set(pattern) - set(cyclic_pattern) == set():
+            self.search("As string", cyclic_pattern, pattern, reverse=True)
         return
 
 
@@ -55173,7 +55310,7 @@ class Ret2dlHintCommand(GenericCommand):
 
 @register_command
 class LinkMapCommand(GenericCommand, BufferingOutput):
-    """Dump useful members of link_map with iterating."""
+    """Dump useful members of each link_map by iterating over the chain."""
 
     _cmdline_ = "link-map"
     _category_ = "02-e. Process Information - Complex Structure Information"
@@ -55181,7 +55318,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("-e", dest="elf_address", type=AddressUtil.parse_address,
-                       help="the ELF address to parse.")
+                       help="the ELF header address of the executable to parse.")
     group.add_argument("-l", dest="link_map_address", type=AddressUtil.parse_address,
                        help="the link_map address to parse.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -55189,7 +55326,7 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        "{0:s}                    # dump itself",
+        "{0:s}                    # dump all loaded objects",
         "{0:s} -e 0x555555554000  # dump specified address as ELF",
         "{0:s} -l 0x7ffff7ffe2e0  # dump specified address as link_map",
     ]).format(_cmdline_)
@@ -55201,6 +55338,9 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
     def dump_link_map(self, link_map):
         if link_map is None:
             info("Could not find link_map")
+            return
+        if link_map.section is None:
+            err("link_map at {:#x} is not mapped".format(link_map.value))
             return
 
         info("link_map: {!s} [{!s}]".format(link_map, link_map.section.permission))
@@ -55252,7 +55392,11 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                     tag = 0x6fff_feff - (i - (DT_NUM + DT_THISPROCNUM + DT_VERSIONTAGNUM + DT_EXTRANUM + DT_VALNUM))
                     mb += "(={:s})".format(DT_TABLE.get(tag, "???"))
                 members.append(mb)
-            members += ["l_phdr", "l_entry", "l_ldnum || l_phnum"]
+            # l_phnum comes first, so it is the upper half of the word on big endian
+            if Endian.is_big_endian():
+                members += ["l_phdr", "l_entry", "l_phnum || l_ldnum"]
+            else:
+                members += ["l_phdr", "l_entry", "l_ldnum || l_phnum"]
 
         tag_maxlen = max(len(x) for x in members) + 1
 
@@ -55264,11 +55408,16 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                 break
             seen.add(current)
             l_name = ProcessMap.lookup(read_int_from_memory(current + current_arch.ptrsize * 1))
-            name = read_cstring_from_memory(l_name.value)
+            # a path may be longer than context.nb_max_string_length, and have non-ASCII characters
+            name = read_cstring_from_memory(l_name.value, max_length=0x1000, allow_non_ascii=True)
             l_next = ProcessMap.lookup(read_int_from_memory(current + current_arch.ptrsize * 3))
+            l_prev = ProcessMap.lookup(read_int_from_memory(current + current_arch.ptrsize * 4))
 
             if not name:
-                if Path.get_filepath():
+                # only the first one is the binary itself, and the others can also have no name (e.g., vdso of musl)
+                if l_prev.value:
+                    name = "(no name)"
+                elif Path.get_filepath():
                     name = "(binary itself: {:s})".format(Path.get_filepath())
                 else:
                     name = "(binary itself)"
@@ -55289,6 +55438,11 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
             # fast path
             try:
                 link_map = AddressUtil.parse_address("(void*) _rtld_global")
+                if link_map == 0:
+                    # ld.so has not set `_dl_ns[0]._ns_loaded` yet (e.g., at `starti`)
+                    if not silent:
+                        info("link_map is not initialized yet")
+                    return None
                 link_map = ProcessMap.lookup(link_map)
                 return link_map
             except gdb.error:
@@ -55299,6 +55453,8 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
         if dynamic is None:
             return None
 
+        dt_debug = None
+        rld_map = None
         for addr, tag, val in DynamicCommand.iter_dynamic(dynamic):
             if tag == 21: # DT_DEBUG
                 dt_debug = ProcessMap.lookup(val)
@@ -55308,18 +55464,36 @@ class LinkMapCommand(GenericCommand, BufferingOutput):
                     info("_DYNAMIC+{:#x}(=DT_DEBUG): {!s} -> {!s}".format(
                         val_addr_offset, val_addr, dt_debug,
                     ))
-                link_map_ptr = ProcessMap.lookup(dt_debug.value + current_arch.ptrsize)
-                if not is_valid_addr(link_map_ptr.value):
+                if dt_debug.value:
+                    break
+            elif is_mips() and tag == 0x70000035: # DT_MIPS_RLD_MAP_REL, relative to the entry itself
+                rld_map = ProcessMap.lookup((addr + val) & ((1 << (current_arch.ptrsize * 8)) - 1))
+            elif is_mips() and tag == 0x70000016 and rld_map is None: # DT_MIPS_RLD_MAP
+                rld_map = ProcessMap.lookup(val)
+
+        # .dynamic of MIPS is read-only, so ld.so leaves DT_DEBUG zero, and writes the address of r_debug
+        # where DT_MIPS_RLD_MAP_REL or DT_MIPS_RLD_MAP points instead (sysdeps/mips/dl-debug.h of glibc,
+        # and DT_DEBUG_INDIRECT of musl)
+        if rld_map is not None:
+            if dt_debug is None or dt_debug.value == 0:
+                if not is_valid_addr(rld_map.value):
                     return None
-                link_map = ProcessMap.lookup(read_int_from_memory(link_map_ptr.value))
+                dt_debug = ProcessMap.lookup(read_int_from_memory(rld_map.value))
                 if not silent:
-                    info("DT_DEBUG+{:#x}: {!s} -> {!s}".format(
-                        current_arch.ptrsize, link_map_ptr, link_map,
-                    ))
-                return link_map
+                    info("DT_MIPS_RLD_MAP: {!s} -> {!s}".format(rld_map, dt_debug))
+        # DT_DEBUG is only in the executable
+        if dt_debug is None:
+            return None
+
+        link_map_ptr = ProcessMap.lookup(dt_debug.value + current_arch.ptrsize)
+        if not is_valid_addr(link_map_ptr.value):
+            return None
+        link_map = ProcessMap.lookup(read_int_from_memory(link_map_ptr.value))
         if not silent:
-            info("Could not find link_map")
-        return None
+            info("r_debug+{:#x}: {!s} -> {!s}".format(
+                current_arch.ptrsize, link_map_ptr, link_map,
+            ))
+        return link_map
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -55577,7 +55751,7 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
         # Considering glibc 2.20 and later
         if is_arm64():
-            if get_libc_version() >= (2, 33):
+            if get_libc_version() >= (2, 30):
                 DT_THISPROCNUM = 6
         elif is_alpha():
             DT_THISPROCNUM = 1
@@ -55701,6 +55875,11 @@ class DynamicCommand(GenericCommand, BufferingOutput):
 
             # prepare slow path
             filename_or_addr = Path.get_filepath()
+            # the local file may be mapped as another path, or be missing (e.g., the remote path of gdbserver)
+            if filename_or_addr is None or ProcessMap.get_section_base_address(filename_or_addr) is None:
+                binary_path = Path.get_binary_map_path()
+                if binary_path is not None:
+                    filename_or_addr = ProcessMap.get_section_base_address(binary_path)
             if filename_or_addr is None:
                 if not silent:
                     err("Failed to get filename")
@@ -56295,7 +56474,8 @@ class DestructorDumpCommand(GenericCommand):
             dic = {}
             dic["load_address"] = read_int_from_memory(current)
             name_ptr = read_int_from_memory(current + current_arch.ptrsize * 1)
-            dic["name"] = dic["name_org"] = read_cstring_from_memory(name_ptr)
+            # a path may be longer than context.nb_max_string_length, and have non-ASCII characters
+            dic["name"] = dic["name_org"] = read_cstring_from_memory(name_ptr, max_length=0x1000, allow_non_ascii=True)
             if dic["name_org"] == "":
                 dic["name"] = "{:s}".format(self.local_filepath)
             dic["dynamic"] = read_int_from_memory(current + current_arch.ptrsize * 2)

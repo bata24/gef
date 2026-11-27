@@ -1101,7 +1101,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - ![](images/dwarf-exception-handler.png)
 - `dynamic`: dumps the `_DYNAMIC` area.
     - ![](images/dynamic.png)
-- `link-map`: dumps useful members of `link_map` with iterating.
+- `link-map`: dumps useful members of each `link_map` by iterating over the chain.
     - ![](images/link-map.png)
 - `dtor-dump`: dumps some destructor functions list.
     - ![](images/dtor-dump.png)
