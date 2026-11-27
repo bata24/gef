@@ -930,7 +930,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
 <details>
 <summary><code>extra</code>, <code>comment</code>, <code>highlight</code>, <code>memory</code>, <code>smart-cpp-function-name</code></summary>
 
-- `extra`: manages user specified command to execute when each step.
+- `extra`: manages user-specified commands to execute each time the context is displayed.
 - `comment`: manages user specified temporary comment.
 - `highlight`: highlights matching text in GEF output.
 - `memory`: manages memory ranges displayed in the context.

@@ -49241,6 +49241,7 @@ class ContextExtraCommand(GenericCommand):
 
     context_messages = []
     context_extra_commands = []
+    running = False
 
     def __init__(self):
         super().__init__()
@@ -49277,17 +49278,26 @@ class ContextExtraCommand(GenericCommand):
             elif level == "info":
                 info(text, redirect=redirect)
 
+        if ContextExtraCommand.running:
+            # like the hooks of GDB, a command that shows the context again (e.g., `context`, `stepi`) does not
+            # run the commands again
+            return
+
         _, tty_columns = GefUtil.get_terminal_size(redirect=redirect)
         line_color = Config.get("theme.context_title_line")
         msg_color = Config.get("theme.context_title_message")
-        for command in self.context_extra_commands:
-            gef_print(titlify(command, color=line_color, msg_color=msg_color, cols=tty_columns), redirect=redirect)
-            try:
-                # the pager runs at each stop, and in the terminal of gdb even with redirect
-                with ContextManager.config("gef.always_no_pager", True):
-                    ContextCommand.execute_command(command, redirect)
-            except Exception as e:
-                ContextCommand.report_error(e, redirect)
+        ContextExtraCommand.running = True
+        try:
+            for command in self.context_extra_commands:
+                gef_print(titlify(command, color=line_color, msg_color=msg_color, cols=tty_columns), redirect=redirect)
+                try:
+                    # the pager runs at each stop, and in the terminal of gdb even with redirect
+                    with ContextManager.config("gef.always_no_pager", True):
+                        ContextCommand.execute_command(command, redirect)
+                except Exception as e:
+                    ContextCommand.report_error(e, redirect)
+        finally:
+            ContextExtraCommand.running = False
         return
 
     @Decorator.parse_args
@@ -52324,7 +52334,7 @@ class SmartCppFunctionNameCommand(GenericCommand):
 
 @register_command
 class ExtraCommand(GenericCommand):
-    """The base command to add, remove, list or clear user specified command to `context extra`."""
+    """The base command to add, remove, list or clear user-specified commands of `context extra`."""
 
     _cmdline_ = "extra"
     _category_ = "01-f. Debugging Support - Context Extension"
@@ -52353,33 +52363,39 @@ class ExtraCommand(GenericCommand):
 
 @register_command
 class ExtraAddCommand(ExtraCommand):
-    """Add user specified command to execute when each step."""
+    """Add a user-specified command to execute each time the context is displayed."""
 
     _cmdline_ = "extra add"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("cmd", metavar="CMD", nargs="+", help="the command to execute when each step.")
+    parser.add_argument("cmd", metavar="GDB_CMD", help="gdb command.")
+    parser.add_argument("arg", metavar="ARG", nargs="*", help="arguments of gdb command.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
         super().__init__(prefix=False)
         return
 
+    # Need not @Decorator.parse_args because argparse can't stop interpreting options for user specified command.
     def do_invoke(self, argv):
         if not argv or argv in (["-h"], ["--help"]):
             self.usage()
             return
-        command = self.command_args.strip()
         if len(argv) == 1:
-            command = argv[0]
+            command = argv[0].strip()
+        else:
+            command = self.command_args.strip()
+        if not command:
+            self.usage()
+            return
         ContextExtraCommand.context_extra_commands.append(command)
         return
 
 
 @register_command
 class ExtraListCommand(ExtraCommand):
-    """List user specified command to execute when each step."""
+    """List user-specified commands to execute each time the context is displayed."""
 
     _cmdline_ = "extra list"
     _category_ = "01-f. Debugging Support - Context Extension"
@@ -52403,14 +52419,14 @@ class ExtraListCommand(ExtraCommand):
 
 @register_command
 class ExtraRemoveCommand(ExtraCommand):
-    """Remove user specified command to execute when each step."""
+    """Remove a user-specified command to execute each time the context is displayed."""
 
     _cmdline_ = "extra remove"
     _category_ = "01-f. Debugging Support - Context Extension"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("index", metavar="INDEX", type=int,
-                        help="the index of command to remove from automatically execution each step.")
+                        help="the index of the command to remove from the automatic execution.")
     _syntax_ = parser.format_help()
 
     def __init__(self):
@@ -52422,13 +52438,13 @@ class ExtraRemoveCommand(ExtraCommand):
         if 0 <= args.index < len(ContextExtraCommand.context_extra_commands):
             ContextExtraCommand.context_extra_commands.pop(args.index)
         else:
-            err("Out of index")
+            err("Index out of range")
         return
 
 
 @register_command
 class ExtraClearCommand(ExtraCommand):
-    """Clear all user specified commands to execute when each step."""
+    """Clear all user-specified commands to execute each time the context is displayed."""
 
     _cmdline_ = "extra clear"
     _category_ = "01-f. Debugging Support - Context Extension"
@@ -52576,7 +52592,7 @@ class CommentRemoveCommand(CommentCommand):
             del ContextCodeCommand.context_comments[args.location]
         else:
             if not 0 <= args.index < len(ContextCodeCommand.context_comments[args.location]):
-                err("Out of index")
+                err("Index out of range")
                 return
             ContextCodeCommand.context_comments[args.location].pop(args.index)
             if len(ContextCodeCommand.context_comments[args.location]) == 0:
@@ -53133,8 +53149,12 @@ class XorMemoryCommand(GenericCommand, BufferingOutput):
 
         xored_block = xor(block, args.key[:len(block)])
         if args.patch:
+            # `patch` writes to the virtual memory without --phys, so write in the mode that the block was read in
+            phys = ""
+            if QemuMonitor.get_current_mmu_mode() == "phys":
+                phys = "--phys "
             info("Patching {:#x}-{:#x} with XOR key {!r}".format(start_addr, end_addr, args.key))
-            gdb.execute("patch hex {:#x} {:s}".format(start_addr, xored_block.hex()))
+            gdb.execute("patch hex {:s}{:#x} {:s}".format(phys, start_addr, xored_block.hex()))
             return
 
         self.out = []
@@ -53177,7 +53197,8 @@ class XorFileCommand(GenericCommand, BufferingOutput):
         if not args.key:
             err("Empty key")
             return
-        if not os.path.isfile(args.filename):
+        # a missing or unreadable file is reported by open()
+        if os.path.exists(args.filename) and not os.path.isfile(args.filename):
             err("Not a regular file: {!r}".format(args.filename))
             return
         try:
@@ -53189,15 +53210,18 @@ class XorFileCommand(GenericCommand, BufferingOutput):
 
         xored_block = xor(block, args.key[:len(block)])
         if args.output is not None:
+            # "x" does not replace an existing destination, and needs no hard link, which vfat and exfat lack
             try:
-                output_dir = os.path.dirname(args.output) or "."
-                with tempfile.TemporaryDirectory(dir=output_dir) as tmpdir:
-                    tmp_path = os.path.join(tmpdir, "xor")
-                    with open(tmp_path, "wb") as f:
-                        f.write(xored_block)
-                    # Publish the completed file without replacing an existing destination.
-                    os.link(tmp_path, args.output)
+                f = open(args.output, "xb")
             except OSError as e:
+                err(str(e))
+                return
+            try:
+                with f:
+                    f.write(xored_block)
+            except OSError as e:
+                # do not leave an incomplete file
+                os.unlink(args.output)
                 err(str(e))
                 return
             info("Saved {:d} bytes to {!r}".format(len(xored_block), args.output))
@@ -53445,7 +53469,8 @@ class SigreturnCommand(GenericCommand):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
                         help="the address interpreted as the beginning of a sigframe, or the ucontext_t on "
-                             "architectures other than x86/arm. (default: current_arch.sp)")
+                             "architectures other than x86/arm/SPARC64. "
+                             "(default: from current_arch.sp at the handler entry or at the sigreturn syscall)")
     parser.add_argument("-r", "--rt", action="store_true",
                         help="interpret the frame as a realtime (SA_SIGINFO) frame on i386/ARM32.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -53457,7 +53482,7 @@ class SigreturnCommand(GenericCommand):
         "trapno", "err", "eip", "cs", "eflags", "esp_at_signal", "ss", "fpstate", "oldmask", "cr2"
     )
     ARM_MC = (
-        "trapno", "error_code", "oldmask",
+        "trap_no", "error_code", "oldmask",
         "arm_r0", "arm_r1", "arm_r2", "arm_r3", "arm_r4", "arm_r5", "arm_r6", "arm_r7",
         "arm_r8", "arm_r9", "arm_r10", "arm_fp", "arm_ip", "arm_sp", "arm_lr", "arm_pc",
         "arm_cpsr", "fault_address"
@@ -53484,14 +53509,25 @@ class SigreturnCommand(GenericCommand):
             base = args.location
         else:
             base = current_arch.sp
+            # the trampoline may move sp before the sigreturn syscall
+            insn = get_insn()
+            at_syscall = insn is not None and current_arch.is_syscall(insn)
 
         if not (is_x86() or is_arm()):
             # LOCATION is the ucontext_t; the default sp points at the frame start,
             # whose ucontext begins after an architecture-specific header.
             if not explicit:
-                base += self.frame_to_ucontext()
+                base += self.frame_to_ucontext(at_syscall)
             self.print_ucontext_frame(base, args)
             return
+
+        if not explicit and at_syscall:
+            # the handler has popped pretcode, and the trampoline of the non-RT frame of i386 has popped sig too
+            # (arch/x86/kernel/signal_{32,64}.c)
+            if is_x86_32() and not args.rt:
+                base -= 8
+            elif is_x86():
+                base -= current_arch.ptrsize
 
         entries = self.frame_entries(args.rt)
         if is_x86_64():
@@ -53509,12 +53545,14 @@ class SigreturnCommand(GenericCommand):
 
         out = []
         idx = 0
+        readable = True
         for entry in entries:
             if isinstance(entry, str):
                 try:
                     out.append(DereferenceCommand.pprint_dereferenced(base, idx, entry.ljust(width)))
                 except gdb.MemoryError:
                     out.append("Cannot access memory at address {:#x}".format(base + idx * ptrsize))
+                    readable = False
                     break
                 idx += 1
             else:
@@ -53525,7 +53563,7 @@ class SigreturnCommand(GenericCommand):
                     addr_colored, idx * ptrsize, idx, label.ljust(width), nwords * ptrsize))
                 idx += nwords
 
-        if is_arm64():
+        if is_arm64() and readable:
             self.append_aarch64_ext(out, base + idx * ptrsize)
 
         gef_print("\n".join(out), less=not args.no_pager)
@@ -53680,14 +53718,45 @@ class SigreturnCommand(GenericCommand):
             "rt_sigframe.uc.uc_mcontext.pstate",
         ]
 
-    def frame_to_ucontext(self):
-        # bytes from the frame start (= default sp) to the embedded ucontext_t
-        if is_riscv() or is_loongarch64():
+    def frame_to_ucontext(self, at_syscall):
+        # bytes from the default sp to the embedded ucontext_t, like uc_offset of srop-hint
+        if is_riscv() or is_loongarch64() or is_alpha():
             return 128
         if is_mips():
             return 152
         if is_s390x():
             return 296
+        if is_sh4():
+            if is_qemu_user():
+                # QEMU-user reads uc_stack and uc_mcontext 8 bytes after Linux, since tuc_link is a host pointer
+                return 136
+            return 128
+        if is_m68k():
+            if is_qemu_user():
+                # QEMU-user has no retcode
+                offset = 144
+            else:
+                offset = 152
+            if at_syscall:
+                # the handler has popped pretcode, and the kernel reads the frame at usp - 4
+                offset -= 4
+            return offset
+        if is_hppa32():
+            # the stack grows up, and the frame is below sp by its size (768, or 832 on the 64-bit kernel, like srop-hint)
+            if is_qemu_user():
+                return 136 - 640
+            return 136 - 768
+        if is_ppc64():
+            # QEMU-user reads uc at r1 + 144 like PPC32, while Linux reads it at r1, which the trampoline moves
+            # from the frame - __SIGNAL_FRAMESIZE at the handler entry
+            if is_qemu_user():
+                return 144
+            if at_syscall:
+                return 0
+            return 128
+        if is_sparc64():
+            # not uc but the frame itself, which is at sp + STACK_BIAS
+            return 0x7ff
         return 0
 
     def apply_x86_64_ss_label(self, base, entries):
@@ -53727,15 +53796,23 @@ class SigreturnCommand(GenericCommand):
 
     def print_ucontext_frame(self, base, args):
         layout = UcontextCommand.get_layout()
-        fields = UcontextCommand.frame_fields(layout)
+        if is_sparc64():
+            # rt_sigreturn reads struct rt_signal_frame, which has pt_regs instead of ucontext_t
+            fields = [x for x in SropHintCommand.get_sparc64_fields() if x[3] != "padding"]
+            prefix = "rt_signal_frame."
+            title = "rt_signal_frame @ {:#x} ({:s})".format(base, layout["name"])
+        else:
+            fields = UcontextCommand.frame_fields(layout)
+            prefix = "rt_sigframe."
+            title = "rt_sigframe.uc @ {:#x} ({:s})".format(base, layout["name"])
         data = read_memory(base, max(offset + size for offset, size, _, _ in fields), safe=True)
         if data is None:
             err("Failed to read memory")
             return
 
-        labels = ["rt_sigframe." + label for _, _, label, _ in fields]
+        labels = [prefix + label for _, _, label, _ in fields]
         width = max(len(x) for x in labels)
-        out = [titlify("rt_sigframe.uc @ {:#x} ({:s})".format(base, layout["name"]))]
+        out = [titlify(title)]
         for (offset, size, _, kind), label in zip(fields, labels):
             if kind != "sigmask":
                 value = UcontextCommand.unpack(data, offset, size)
@@ -54618,7 +54695,7 @@ class SropHintCommand(GenericCommand):
                         metavar="{" + ",".join(a for a in architectures if a) + "}",
                         help="the target architecture.")
     parser.add_argument("--abi", choices=("linux", "linux-compat", "qemu-user"),
-                        help="the signal frame ABI for SPARC64, m68k or PA-RISC32. (default: detect QEMU-user, else Linux)")
+                        help="the signal frame ABI for PPC64, SH4, m68k or PA-RISC32. (default: detect QEMU-user, else Linux)")
     _syntax_ = parser.format_help()
 
     # rt_sigreturn trigger per architecture: (syscall number, register holding it, trap instruction)
@@ -54631,6 +54708,8 @@ class SropHintCommand(GenericCommand):
         "alpha": (351, "v0", "callsys"), "hppa": (173, "r20", "ble 0x100(%sr2, %r0)"),
     }
     BIG_ENDIAN = ("mips", "mipsn32", "mips64", "ppc64", "s390x", "sparc64", "m68k", "hppa")
+    # architectures whose QEMU-user reads a frame different from Linux
+    ABI_ARCHS = ("ppc64", "sh4", "m68k", "hppa")
 
     def __init__(self):
         super().__init__(complete="use_user_complete")
@@ -54638,6 +54717,18 @@ class SropHintCommand(GenericCommand):
 
     def complete(self, text, word):
         return GefUtil.complete_candidates(self.architectures, text, word)
+
+    @staticmethod
+    def get_sparc64_fields():
+        """Return (offset, size, label, kind) of struct rt_signal_frame of SPARC64 (arch/sparc/kernel/signal_64.c)."""
+        fields = [(0, 192, "ss (register window / argument area)", "padding"), (192, 128, "info", "padding")]
+        names = ["g{:d}".format(i) for i in range(8)] + ["o{:d}".format(i) for i in range(8)]
+        fields += [(320 + i * 8, 8, "regs." + name, None) for i, name in enumerate(names)]
+        fields += [(448, 8, "regs.tstate", "raw"), (456, 8, "regs.tpc", None), (464, 8, "regs.tnpc", None)]
+        fields += [(472, 4, "regs.y", "raw"), (476, 4, "regs.magic", "raw"), (480, 8, "fpu_save", None)]
+        fields += [(488, 8, "stack.ss_sp", None), (496, 4, "stack.ss_flags", "ss_flags")]
+        fields += [(504, 8, "stack.ss_size", None), (512, 8, "mask", "sigmask"), (520, 8, "rwin_save", None)]
+        return fields
 
     def build_hint(self, mode, abi=None):
         nr, reg, insn = self.TRIGGERS[mode]
@@ -54648,7 +54739,7 @@ class SropHintCommand(GenericCommand):
         detected = next((key for key, checker in UcontextCommand.ARCH_DETECT if checker()), None)
         if mode == detected:
             endian = Endian.arrow_str()
-        if abi is None and mode in ("sparc64", "m68k", "hppa"):
+        if abi is None and mode in self.ABI_ARCHS:
             if mode == detected and is_qemu_user():
                 abi = "qemu-user"
             else:
@@ -54656,22 +54747,22 @@ class SropHintCommand(GenericCommand):
         values = {}
         if abi == "qemu-user":
             m68k_offset = 144
+            # QEMU-user reads uc at r1 + 144 like PPC32 (do_rt_sigreturn of linux-user/ppc/signal.c)
+            ppc64_offset = 144
+            # QEMU-user reads uc_stack and uc_mcontext 8 bytes after Linux, since tuc_link is a host pointer
+            sh4_offset = 136
         else:
             m68k_offset = 152
+            ppc64_offset = 0
+            sh4_offset = 128
         uc_offset = {
             "riscv32": 128, "riscv64": 128, "loongarch64": 128,
             "mips": 152, "mipsn32": 152, "mips64": 152,
-            "sh4": 128, "alpha": 128, "ppc64": 0, "s390x": 296,
+            "sh4": sh4_offset, "alpha": 128, "ppc64": ppc64_offset, "s390x": 296,
             "m68k": m68k_offset, "hppa": 136, "sparc64": None,
         }[mode]
         if mode == "sparc64":
-            fields = [(0, 192, "ss (register window / argument area)", "padding"), (192, 128, "info", "padding")]
-            names = ["g{:d}".format(i) for i in range(8)] + ["o{:d}".format(i) for i in range(8)]
-            fields += [(320 + i * 8, 8, "regs." + name, None) for i, name in enumerate(names)]
-            fields += [(448, 8, "regs.tstate", None), (456, 8, "regs.tpc", None), (464, 8, "regs.tnpc", None)]
-            fields += [(472, 4, "regs.y", None), (476, 4, "regs.magic", None), (480, 8, "fpu_save", None)]
-            fields += [(488, 8, "stack.ss_sp", None), (496, 4, "stack.ss_flags", None)]
-            fields += [(504, 8, "stack.ss_size", None), (512, 8, "mask", "sigmask"), (520, 8, "rwin_save", None)]
+            fields = self.get_sparc64_fields()
             values = {"regs.o6": 0xdeadf001, "regs.tpc": 0xdeadbeec, "regs.tnpc": 0xdeadbef0, "stack.ss_flags": 2}
         else:
             layout = UcontextCommand.get_layout(mode)
@@ -54686,6 +54777,13 @@ class SropHintCommand(GenericCommand):
                 fields.insert(0, (0, uc_offset, "frame prefix (siginfo/padding)", "padding"))
             if mode == "hppa":
                 values = {"uc.uc_mcontext.r0": 0x4000f, "uc.uc_stack.ss_flags": 2}
+            elif mode == "ppc64":
+                # sigreturn takes only MSR_LE from msr (__unsafe_restore_sigcontext of arch/powerpc/kernel/signal_64.c)
+                if endian == "<":
+                    values = {"uc.uc_mcontext.msr": 1}
+            elif mode == "s390x":
+                # sigreturn takes EA and BA from psw.mask, and 0 means the 24-bit addressing (restore_sigregs)
+                values = {"uc.uc_mcontext.psw.mask": 0x180000000}
         end = max(off + size for off, size, label, kind in fields)
         if mode in ("riscv32", "riscv64"):
             if mode == "riscv32":
@@ -54693,9 +54791,10 @@ class SropHintCommand(GenericCommand):
             else:
                 end = uc_offset + layout["mcontext"] + 256 + 528
         elif mode == "ppc64":
-            end = 1696
+            end = uc_offset + 1696
         elif mode == "s390x":
-            end = uc_offset + 512
+            # restore_sigregs_ext reads vxrs_low and vxrs_high of uc_mcontext_ext with the vector facility
+            end = uc_offset + 512 + 384
         elif mode == "loongarch64":
             end = (end + 15) & ~15
             end += 16
@@ -54703,15 +54802,19 @@ class SropHintCommand(GenericCommand):
             end = {"linux": 768, "linux-compat": 832, "qemu-user": 640}[abi]
         fields.append((end, 0, "end", "padding"))
         pack = {1: "B", 2: "H", 4: "I", 8: "Q"}
+        sp_reg = "sp"
         sp = "&exp"
-        if mode == "sparc64":
+        if mode == "alpha":
+            # sys_rt_sigreturn passes a0 to do_rt_sigreturn as the frame (sigreturn_like of arch/alpha/kernel/entry.S)
+            sp_reg = "a0"
+        elif mode == "sparc64":
             sp = "&exp - 0x7ff"
         elif mode == "m68k":
             sp = "&exp + 4"
         elif mode == "hppa":
             sp = "&exp + {:d}".format(end)
             insn += "; nop"
-        s = "# set {:s} = {:d} (rt_sigreturn), sp = {:s}, then `{:s}`\n".format(reg, nr, sp, insn)
+        s = "# set {:s} = {:d} (rt_sigreturn), {:s} = {:s}, then `{:s}`\n".format(reg, nr, sp_reg, sp, insn)
         if uc_offset is None:
             s += "# align &exp to 16 bytes; regs.o6 is the biased SP; regs.tnpc is regs.tpc + 4\n"
             s += "# restored locals/ins come from the register window at regs.o6 + 0x7ff\n"
@@ -54724,8 +54827,16 @@ class SropHintCommand(GenericCommand):
             else:
                 alignment = 16
             s += "# ucontext is at &exp + {:d}; align the frame to {:d} bytes\n".format(uc_offset, alignment)
-        if mode in ("m68k", "hppa"):
-            s += "# signal frame ABI: {:s}; use --abi to select Linux, Linux compat or QEMU-user\n".format(abi)
+        if mode in self.ABI_ARCHS:
+            if mode == "hppa":
+                abi_names = "Linux, Linux compat or QEMU-user"
+            else:
+                abi_names = "Linux or QEMU-user"
+            s += "# signal frame ABI: {:s}; use --abi to select {:s}\n".format(abi, abi_names)
+        if mode == "ppc64":
+            s += "# msr is 1 (MSR_LE) for little endian and 0 for big endian\n"
+            if abi == "qemu-user":
+                s += "# QEMU-user reads the VMX registers from v_regs, so point it to readable memory\n"
         if mode == "hppa":
             s += "# set r25 = 1 (syscall path); iaoq0/iaoq1 are PC|3 and (PC+4)|3; r30 is the restored SP\n"
             s += "# linux is a 32-bit kernel; linux-compat is a 32-bit process on a 64-bit kernel\n"
@@ -54767,8 +54878,8 @@ class SropHintCommand(GenericCommand):
             mode = args.arch
 
         if args.abi is not None:
-            if mode not in ("sparc64", "m68k", "hppa"):
-                err("--abi is only supported for SPARC64, m68k and PA-RISC")
+            if mode not in self.ABI_ARCHS:
+                err("--abi is only supported for PPC64, SH4, m68k and PA-RISC")
                 return
             if args.abi == "linux-compat" and mode != "hppa":
                 err("--abi linux-compat is only supported for PA-RISC")
@@ -54817,10 +54928,10 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.info\n'
         elif mode == "x86":
             s += 'exp  = struct.pack("<I", syscall)    # eax = 119 (sigreturn)\n'
-            s += 'exp += struct.pack("<I", 0x0)        # sigframe.sc.gs\n'
+            s += 'exp += struct.pack("<I", 0x63)       # sigframe.sc.gs # use the current $gs (TLS)\n'
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.sc.fs\n'
-            s += 'exp += struct.pack("<I", 0x0)        # sigframe.sc.es\n'
-            s += 'exp += struct.pack("<I", 0x0)        # sigframe.sc.ds\n'
+            s += 'exp += struct.pack("<I", 0x2b)       # sigframe.sc.es # use 0x7b if 32bit native machine\n'
+            s += 'exp += struct.pack("<I", 0x2b)       # sigframe.sc.ds # use 0x7b if 32bit native machine\n'
             s += 'exp += struct.pack("<I", 0x7)        # sigframe.sc.edi\n'
             s += 'exp += struct.pack("<I", 0x6)        # sigframe.sc.esi\n'
             s += 'exp += struct.pack("<I", 0x5)        # sigframe.sc.ebp\n'
@@ -54841,6 +54952,7 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.sc.cr2\n'
             s += '\n'
         elif mode == "arm":
+            s += '# sigframe.uc (= sp at svc) must be 8-byte aligned\n'
             s += 'exp += struct.pack("<I", pop_r7_pc)  # pop {r7, pc};\n'
             s += 'exp += struct.pack("<I", 119)        # r7 = 119 (sigreturn)\n'
             s += 'exp += struct.pack("<I", call_svc)   #\n'
@@ -54849,7 +54961,7 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_stack.ss_sp\n'
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_stack.ss_flags\n'
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_stack.ss_size\n'
-            s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_mcontext.trapno\n'
+            s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_mcontext.trap_no\n'
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_mcontext.error_code\n'
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_mcontext.oldmask\n'
             s += 'exp += struct.pack("<I", 0x00)       # sigframe.uc.uc_mcontext.arm_r0\n'
@@ -54868,10 +54980,16 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<I", 0xdeadface) # sigframe.uc.uc_mcontext.arm_sp\n'
             s += 'exp += struct.pack("<I", 0x0d)       # sigframe.uc.uc_mcontext.arm_lr\n'
             s += 'exp += struct.pack("<I", 0xdeadbeef) # sigframe.uc.uc_mcontext.arm_pc\n'
-            s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_mcontext.arm_cpsr\n'
+            s += 'exp += struct.pack("<I", 0x10)       # sigframe.uc.uc_mcontext.arm_cpsr # USR mode; 0x30 if pc is Thumb\n'
             s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_mcontext.fault_address\n'
-            s += 'exp += struct.pack("<I", 0x0)        # sigframe.uc.uc_sigmask\n'
+            s += 'exp += struct.pack("<Q", 0x0)        # sigframe.uc.uc_sigmask\n'
+            s += 'exp += struct.pack("<B", 0x0)*120    # sigframe.uc.__unused[30]\n'
+            # restore_vfp_context requires the VFP record with CONFIG_VFP
+            s += 'exp += struct.pack("<I", 0x56465001) # sigframe.uc.uc_regspace.vfp.magic\n'
+            s += 'exp += struct.pack("<I", 0x120)      # sigframe.uc.uc_regspace.vfp.size\n'
+            s += 'exp += struct.pack("<B", 0x0)*280    # sigframe.uc.uc_regspace.vfp.ufp, ufp_exc\n'
         elif mode == "aarch64":
+            s += '# rt_sigframe.info (= sp at svc) must be 16-byte aligned\n'
             s += 'exp += struct.pack("<Q", ldp_x8_x9)  # ldp x8, x9, [sp], #16; ret x9;\n'
             s += 'exp += struct.pack("<Q", 139)        # x8 = 139\n'
             s += 'exp += struct.pack("<Q", call_svc)   # \n'
@@ -54919,6 +55037,14 @@ class SropHintCommand(GenericCommand):
             s += 'exp += struct.pack("<Q", 0xdeadface) # rt_sigframe.uc.uc_mcontext.sp\n'
             s += 'exp += struct.pack("<Q", 0xdeadbeef) # rt_sigframe.uc.uc_mcontext.pc\n'
             s += 'exp += struct.pack("<Q", 0x00)       # rt_sigframe.uc.uc_mcontext.pstate\n'
+            # restore_sigframe requires the FPSIMD record and the terminator
+            s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.(padding)\n'
+            s += 'exp += struct.pack("<I", 0x46508001) # rt_sigframe.uc.uc_mcontext.__reserved.fpsimd.head.magic\n'
+            s += 'exp += struct.pack("<I", 0x210)      # rt_sigframe.uc.uc_mcontext.__reserved.fpsimd.head.size\n'
+            s += 'exp += struct.pack("<I", 0x0)        # rt_sigframe.uc.uc_mcontext.__reserved.fpsimd.fpsr\n'
+            s += 'exp += struct.pack("<I", 0x0)        # rt_sigframe.uc.uc_mcontext.__reserved.fpsimd.fpcr\n'
+            s += 'exp += struct.pack("<B", 0x0)*512    # rt_sigframe.uc.uc_mcontext.__reserved.fpsimd.vregs[32]\n'
+            s += 'exp += struct.pack("<Q", 0x0)        # rt_sigframe.uc.uc_mcontext.__reserved.(terminator)\n'
         lines = [line.partition("#") for line in s.rstrip().splitlines()]
         width = max(len(code.rstrip()) for code, sep, comment in lines)
         formatted_lines = []
@@ -54960,11 +55086,11 @@ class Ret2dlHintCommand(GenericCommand):
         s += "\n"
         s += "  +-_DYNAMIC @ itself--------+     +---->+-r_debug----------+\n"
         s += "  | QWORD tag                |     |     | QWORD r_version  |\n"
-        s += "  | QWORD value              |     |     | QWORD link_map   |<-- HERE\n"
+        s += "  | QWORD value              |     |     | QWORD r_map      |<-- HERE\n"
         s += "  +--------------------------+     |     | QWORD r_brk      |\n"
-        s += "  | ...                      |     |     | QWORD r_ldbase   |\n"
-        s += "  +--------------------------+     |     +------------------+\n"
-        s += "  | QWORD tag(0x15:DT_DEBUG) |     |\n"
+        s += "  | ...                      |     |     | QWORD r_state    |\n"
+        s += "  +--------------------------+     |     | QWORD r_ldbase   |\n"
+        s += "  | QWORD tag(0x15:DT_DEBUG) |     |     +------------------+\n"
         s += "  | QWORD value              |-----+\n"
         s += "  +--------------------------+\n"
         s += "\n"
@@ -54989,8 +55115,12 @@ class Ret2dlHintCommand(GenericCommand):
         s += "       | QWORD value              |---+   | ...                            |\n"
         s += "       +--------------------------+       +--------------------------------+\n"
         s += "\n"
+        s += "l_next of the binary may be linux-vdso.so.1, so find libc by l_name.\n"
+        s += "If libc is BIND_NOW, its GOT[1] and GOT[2] are also zero; then add the offset of\n"
+        s += "_dl_runtime_resolve to l_addr of ld-linux.so.\n"
         s += "\n"
-        s += "  _dl_runtime_resolve@.plt.got(link_map, reloc_arg)\n"
+        s += "\n"
+        s += "  PLT0 -> _dl_runtime_resolve@ld(link_map, reloc_arg)\n"
         s += "    -> _dl_fixup@ld(link_map, reloc_arg)\n"
         s += "                                   |\n"
         s += "                                   |\n"
