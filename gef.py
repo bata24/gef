@@ -10865,7 +10865,7 @@ class S390X(Architecture):
     }
     return_register = "$r2"
     function_parameters = ["$r2", "$r3", "$r4", "$r5", "$r6"]
-    syscall_register = [r"svc\s+(\d+)", "$r1"] # $r1 is used when NR > 127
+    syscall_register = [r"svc\s+(\d+)", "$r1"] # the 8-bit immediate of `svc NR`, or $r1 for `svc 0` (e.g., NR > 255)
     syscall_parameters = ["$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]
 
     bit_length = 64
@@ -12845,7 +12845,9 @@ class CRIS(Architecture):
     function_parameters = ["$r10", "$r11", "$r12", "$r13"]
     # As of linux 4.17, CRIS is no longer supported.
     syscall_register = "$r9"
-    syscall_parameters = ["$r10", "$r11", "$r12", "$r13", "$dcr1/mof", "$sp+0x4"]
+    # LOAD_ARGS_asm_6 of uClibc-ng libc/sysdeps/linux/cris/bits/syscalls.h moves the 5th and 6th arguments to mof and srp
+    # (gdb names mof `dcr1/mof`)
+    syscall_parameters = ["$r10", "$r11", "$r12", "$r13", "$dcr1/mof", "$srp"]
 
     bit_length = 32
     endianness = "little"
@@ -13524,10 +13526,32 @@ class CSKY(Architecture):
     flags_table = {
         0: "carry",
     }
-    return_register = "$r0"
-    function_parameters = ["$r0", "$r1", "$r2", "$r3"]
-    syscall_register = "$r7"
-    syscall_parameters = ["$r0", "$r1", "$r2", "$r3", "$r4", "$r5"]
+
+    # ABIv1 has a0-a5 at r2-r7 (e.g., `as -mcpu=ck610` assembles `mov a0, a1` into `mov r2, r3`),
+    # and passes the syscall number in r1 (syscallid of linux arch/csky/abiv1/inc/abi/regdef.h)
+    @property
+    def return_register(self):
+        if self.is_abiv1():
+            return "$r2"
+        return "$r0"
+
+    @property
+    def function_parameters(self):
+        if self.is_abiv1():
+            return ["$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]
+        return ["$r0", "$r1", "$r2", "$r3"]
+
+    @property
+    def syscall_register(self):
+        if self.is_abiv1():
+            return "$r1"
+        return "$r7"
+
+    @property
+    def syscall_parameters(self):
+        if self.is_abiv1():
+            return ["$r2", "$r3", "$r4", "$r5", "$r6", "$r7"]
+        return ["$r0", "$r1", "$r2", "$r3", "$r4", "$r5"]
 
     bit_length = 32
     endianness = "little"
@@ -27416,7 +27440,7 @@ class CallSyscallCommand(GenericCommand):
 
         values = []
         for index, (value, arg_full) in enumerate(zip(args.syscall_args, entry.args_full), 1):
-            if "*" not in arg_full and re.search(r"\b(loff_t|u64|unsigned long long)\b|\barg_u32p\(", arg_full):
+            if Syscall.is_64bit_arg(arg_full):
                 width = 64
             else:
                 width = current_arch.ptrsize * 8
@@ -48657,12 +48681,10 @@ class ContextArgumentsCommand(GenericCommand):
             return
 
         # i386 calls __kernel_vsyscall (AT_SYSINFO) for syscalls (e.g., `call DWORD PTR gs:0x10`)
-        if is_x86_32():
-            auxv = Auxv.get_auxiliary_values()
-            if auxv and "AT_SYSINFO" in auxv and ContextCodeCommand.get_branch_addr(insn) == auxv["AT_SYSINFO"]:
-                ContextCommand.context_title("arguments", redirect)
-                ContextCommand.execute_command("syscall-args", redirect)
-                return
+        if SyscallArgsCommand.is_vsyscall_call(insn):
+            ContextCommand.context_title("arguments", redirect)
+            ContextCommand.execute_command("syscall-args", redirect)
+            return
 
         # the delay slot runs before the callee, and may set the arguments
         delay_slot = current_arch.has_delay_slot
@@ -57947,19 +57969,27 @@ class GotAllCommand(GenericCommand, BufferingOutput):
 class FormatStringBreakpoint(gdb.Breakpoint):
     """Inspect stack for format string."""
 
-    def __init__(self, func_name, num_args, verbose=False):
-        super().__init__(func_name, type=gdb.BP_BREAKPOINT, internal=not verbose)
+    def __init__(self, func_address, func_name, num_args, verbose=False):
+        # A name would place the breakpoint after the prologue, where the arguments may be overwritten,
+        # and also in the functions of the same name in other scopes (e.g., C++ namespaces).
+        super().__init__("*{:#x}".format(func_address), type=gdb.BP_BREAKPOINT, internal=not verbose)
+        self.func_address = func_address
         self.func_name = func_name
         self.num_args = num_args
         self.enabled = True
         return
 
     def read_format_string(self, addr):
+        max_length = Config.get("context.nb_max_string_length")
         if "wprintf" not in self.func_name and "wscanf" not in self.func_name:
-            return read_cstring_from_memory(addr) or ""
+            # escape the raw bytes (e.g., the addresses in an attacking format string) and the newlines
+            data = read_cstring_from_memory(addr, raw=True) or b""
+            content = data.decode("utf-8", "surrogateescape")
+            if len(content) > max_length:
+                return String.repr_os_path(content[:max_length]) + "[...]"
+            return String.repr_os_path(content)
 
         width = GefUtil.type_size("wchar_t") or 4
-        max_length = Config.get("context.nb_max_string_length")
         data = bytearray()
         suffix = ""
         for index in range(max_length + 1):
@@ -57977,7 +58007,7 @@ class FormatStringBreakpoint(gdb.Breakpoint):
         else:
             encoding_suffix = "be"
         encoding = "utf-{:d}{:s}".format(width * 8, encoding_suffix)
-        return data.decode(encoding, errors="backslashreplace") + suffix
+        return String.repr_os_path(data.decode(encoding, errors="backslashreplace")) + suffix
 
     def stop(self):
         Cache.reset_gef_caches()
@@ -57988,11 +58018,15 @@ class FormatStringBreakpoint(gdb.Breakpoint):
         if not addr.valid:
             return False
 
+        # the maps may be unavailable (e.g., context.disable_vmmap)
+        if addr.section is None:
+            return False
+
         if addr.section.permission.value & Permission.WRITE:
             msg.append(Color.colorify("Format string helper", "bold yellow"))
 
             content = self.read_format_string(addr.value)
-            msg.append("Possible insecure format string: {:s}('{:s}'  ->  {:#x}: '{:s}')".format(
+            msg.append("Possible insecure format string: {:s}('{:s}'  ->  {:#x}: {:s})".format(
                 self.func_name, ptr, addr.value, content,
             ))
 
@@ -58103,6 +58137,9 @@ class FormatStringSearchCommand(GenericCommand):
         "argp_error": 1,      # void argp_error(const struct argp_state *state, const char *fmt, ...);
         "argp_failure": 3,    # void argp_failure(const struct argp_state *s, int status, int errnum, const char *fmt, ...);
 
+        "strfmon": 2,         # ssize_t strfmon(char *s, size_t max, const char *fmt, ...);
+        "strfmon_l": 3,       # ssize_t strfmon_l(char *s, size_t max, locale_t loc, const char *fmt, ...);
+
         "xasprintf": 0,       # char* xasprintf(const char *fmt, ...);
         "xvasprintf": 0,      # char* xvasprintf(const char *fmt, va_list ap);
     }
@@ -58111,21 +58148,47 @@ class FormatStringSearchCommand(GenericCommand):
         for name, num_arg in dangerous_functions.items() if name.endswith("scanf")
         for prefix in ("__isoc99_", "__isoc23_")
     })
+    # the IEEE128 long double of PPC64LE (glibc 2.32~) redirects them to __printfieee128, __printf_chkieee128, etc.
+    dangerous_functions.update({
+        "__" + name.lstrip("_") + "ieee128": num_arg for name, num_arg in dangerous_functions.items()
+    })
 
     breakpoints = []
+    verbose = False
 
     def get_function_addresses(self):
         functions = {name: set() for name in self.dangerous_functions}
+        local_functions = {name: set() for name in self.dangerous_functions}
+        elfv1 = False
+        if is_ppc64():
+            elfv1 = PPC64.is_elfv1()
         symbols = gdb.execute("maintenance print msymbols", to_string=True)
-        pattern = r"^\[\s*\d+\] [Tt] (0x[0-9a-f]+) (\w+) section "
-        for address, name in re.findall(pattern, symbols, re.MULTILINE):
-            if name in functions:
-                functions[name].add(int(address, 16))
+        pattern = r"^\[\s*\d+\] ([TtDd]) (0x[0-9a-f]+) (\w+) section (\S+)"
+        for symbol_type, address, name, section in re.findall(pattern, symbols, re.MULTILINE):
+            if name not in functions:
+                continue
+            address = int(address, 16)
+            if symbol_type in "Dd":
+                # PPC64 ELFv1 has `name` as the function descriptor in .opd, and only some functions have `.name`
+                if not elfv1:
+                    continue
+                if section != ".opd":
+                    continue
+                # .opd of a library loaded later may not be relocated yet
+                address = read_int_from_memory(address, safe=True)
+                if not is_valid_addr(address):
+                    continue
+            # the callers in the same module of PPC64 ELFv2 enter the local entry, skipping the TOC setup
+            address = Kernel.get_local_entry(address)
+            if symbol_type in "TD":
+                functions[name].add(address)
+            else:
+                local_functions[name].add(address)
+        # A static function of the program (e.g., `static void warn(char *)`) is not the libc one of the same name,
+        # but a static binary has the hidden functions of libc as the local ones (e.g., __sprintf_chk of MIPS).
         for name, addresses in functions.items():
-            try:
-                addresses.add(AddressUtil.parse_address(name))
-            except gdb.error:
-                pass
+            if not addresses:
+                addresses.update(local_functions[name])
         return functions
 
     def remove_breakpoints(self):
@@ -58140,15 +58203,11 @@ class FormatStringSearchCommand(GenericCommand):
 
     def add_breakpoints(self, verbose=False):
         functions = self.get_function_addresses()
-        existing_names = {bp.func_name for bp in FormatStringSearchCommand.breakpoints}
-        addresses = set()
-        for name in existing_names:
-            addresses.update(functions.get(name, ()))
+        # the breakpoints already set keep their addresses, so add only the new ones (e.g., in a new objfile)
+        addresses = {bp.func_address for bp in FormatStringSearchCommand.breakpoints}
 
         bp_count = 0
         for func_name, func_addresses in functions.items():
-            if func_name in existing_names:
-                continue
             num_arg = self.dangerous_functions[func_name]
             for func_address in sorted(func_addresses):
                 if func_address in addresses:
@@ -58156,20 +58215,33 @@ class FormatStringSearchCommand(GenericCommand):
                 if verbose:
                     # GDB prints breakpoint details when the breakpoint is visible.
                     gef_print(func_name + ": ", end="")
-                bp = FormatStringBreakpoint(func_name, num_arg, verbose=verbose)
+                bp = FormatStringBreakpoint(func_address, func_name, num_arg, verbose=verbose)
                 FormatStringSearchCommand.breakpoints.append(bp)
                 addresses.add(func_address)
                 bp_count += 1
-                break
         return bp_count
+
+    def on_new_objfile(self, event):
+        added = self.add_breakpoints(FormatStringSearchCommand.verbose)
+        if added:
+            info("Enabled {:d} more FormatStringBreakpoint".format(added))
+        return
+
+    def on_exit(self, event):
+        # The breakpoints at the addresses in the libraries cannot be inserted at the start of the next run,
+        # so remove them, and on_new_objfile sets them again (at the new addresses if randomized).
+        self.remove_breakpoints()
+        return
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("wine",))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.require_arch_set
     def do_invoke(self, args):
         if args.remove_breakpoint:
             self.remove_breakpoints()
+            gdb.events.new_objfile.disconnect(self.on_new_objfile)
+            EventHooking.gef_on_exit_unhook(self.on_exit)
             return
 
         FormatStringSearchCommand.breakpoints = [
@@ -58179,18 +58251,16 @@ class FormatStringSearchCommand(GenericCommand):
             err("Breakpoints have been set already")
             return
 
+        FormatStringSearchCommand.verbose = args.verbose
         try:
             bp_count = self.add_breakpoints(args.verbose)
             ok("Enabled {:d}/{:d} FormatStringBreakpoint".format(bp_count, len(self.dangerous_functions)))
-            if not args.setup_only:
-
-                def on_new_objfile(event):
-                    added = self.add_breakpoints(args.verbose)
-                    if added:
-                        info("Enabled {:d} more FormatStringBreakpoint".format(added))
-                    return
-
-                with EventHooking.temporary("new_objfile", on_new_objfile):
+            if args.setup_only:
+                # keep them for the libraries loaded later and the next runs
+                gdb.events.new_objfile.connect(self.on_new_objfile)
+                EventHooking.gef_on_exit_hook(self.on_exit)
+            else:
+                with EventHooking.temporary("new_objfile", self.on_new_objfile):
                     gdb.execute("continue")
         finally:
             if not args.setup_only:
@@ -68251,19 +68321,21 @@ class Syscall:
             syscall_list = SyscallARC.make_syscall_list("64")
 
         elif arch == "CSKY" and mode == "CSKY":
-            return_register = CSKY.return_register
-            args_register = CSKY.syscall_parameters
+            # the registers depend on the ABI of the debuggee (CSKY.is_abiv1)
+            return_register = CSKY().return_register
+            args_register = CSKY().syscall_parameters
             syscall_list = SyscallCSKY.make_syscall_list()
 
         else:
             return None
 
-        Table = collections.namedtuple("Table", "arch mode nr_table name_table")
-        syscall_table = Table(arch, mode, {}, {})
+        Table = collections.namedtuple("Table", "arch mode args_register nr_table name_table")
+        syscall_table = Table(arch, mode, args_register, {}, {})
 
         # example:
         #   syscall_table.arch: 'X86'
         #   syscall_table.mode: '64'
+        #   syscall_table.args_register: ['$rdi', '$rsi', ...]
         #   syscall_table.nr_table[0].nr: 0
         #   syscall_table.nr_table[0].name: 'read'
         #   syscall_table.nr_table[0].ret_regs: ['$rax']
@@ -68345,6 +68417,13 @@ class Syscall:
         except gdb.error:
             return False
         return insn is not None and X86.get_mnemonic_operands(insn)[0] == "int" and current_arch.is_syscall(insn)
+
+    @staticmethod
+    def is_64bit_arg(arg_full):
+        """Return True if the argument is a 64-bit integer, which the 32-bit ABIs pass in two registers."""
+        if "*" in arg_full:
+            return False
+        return re.search(r"\b(loff_t|u64|unsigned long long)\b|\barg_u32p\(", arg_full) is not None
 
 
 class SyscallX86_64(Syscall):
@@ -70213,9 +70292,21 @@ class SyscallArgsCommand(GenericCommand):
     _category_ = "01-a. Debugging Support - Context"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("nr", metavar="SYSCALL_NUM", nargs="?", type=AddressUtil.parse_address,
-                        help="syscall number to search.")
+    parser.add_argument("nr", metavar="SYSCALL_NUM", nargs="?",
+                        help="syscall number or name to use instead of the syscall number register.")
     _syntax_ = parser.format_help()
+
+    @staticmethod
+    def is_vsyscall_call(insn):
+        """Return True if `insn` calls __kernel_vsyscall (AT_SYSINFO) of i386 (e.g., `call DWORD PTR gs:0x10`)."""
+        if not is_x86_32():
+            return False
+        if not current_arch.is_call(insn):
+            return False
+        auxv = Auxv.get_auxiliary_values()
+        if not auxv or "AT_SYSINFO" not in auxv:
+            return False
+        return ContextCodeCommand.get_branch_addr(insn) == auxv["AT_SYSINFO"]
 
     @staticmethod
     def get_nr():
@@ -70245,7 +70336,7 @@ class SyscallArgsCommand(GenericCommand):
                 syscall_register = syscall_register[1] # use $r1
                 nr = get_register(syscall_register)
             else:
-                syscall_register = syscall_register[0]
+                syscall_register = "svc {:d}".format(nr)
 
         # normal pattern
         else:
@@ -70270,7 +70361,7 @@ class SyscallArgsCommand(GenericCommand):
                 values.append(get_register(reg))
         return values
 
-    def print_syscall(self, syscall_table, syscall_register, nr):
+    def print_syscall(self, syscall_table, syscall_register, nr, insn):
         if syscall_table:
             entry = syscall_table.nr_table[nr]
             syscall_name = entry.name
@@ -70307,14 +70398,61 @@ class SyscallArgsCommand(GenericCommand):
         # syscall number
         gef_print("    {:<20} {:<20} {:#x}".format("NR", syscall_register, nr))
 
+        # The 32-bit ABIs (also int 0x80 of x86_64) pass a 64-bit argument in two registers (the upper one first on
+        # big-endian), and ARM32 EABI, MIPS o32, PPC32 and Xtensa align them to an even/odd pair, as call-syscall does.
+        # n32 passes it in one 64-bit register, and x86_16 (DOS) has no 64-bit argument.
+        registers = arg_regs
+        split_64bit = False
+        if is_mipsn32() or is_x86_16():
+            pass
+        elif args_full is not None and (current_arch.ptrsize == 4 or mode == "Emulated-32"):
+            registers = syscall_table.args_register
+            split_64bit = True
+
+        # i386 enters __kernel_vsyscall by `movl %esp, %ebp; sysenter` or `movl %ecx, %ebp; syscall` (AMD),
+        # then the kernel reads the 6th argument from the user stack, and the 2nd one of syscall from ebp
+        # (arch/x86/entry/entry_64_compat.S)
+        if is_x86_32() and insn is not None and len(registers) == 6:
+            mnemo, _ = X86.get_mnemonic_operands(insn)
+            if mnemo == "sysenter":
+                registers = registers[:5] + ["$ebp+0x0"] # ebp has the user stack
+            elif mnemo == "syscall":
+                registers = registers[:1] + ["$ebp"] + registers[2:5] + ["$esp+0x0"]
+
         # syscall args
-        values = self.get_values(arg_regs)
-        for name, register, value in zip(args, arg_regs, values):
-            line = "    {:<20} {:<20} ".format(name, register)
-            if value is not None:
-                line += AddressUtil.recursive_dereference_to_string(value)
+        index = 0
+        for i, name in enumerate(args):
+            width = 1
+            if split_64bit and Syscall.is_64bit_arg(args_full[i]):
+                if is_arm32() or is_mips32() or is_ppc32() or is_xtensa():
+                    index += index % 2
+                width = 2
+            regs = registers[index:index + width]
+            index += width
+            values = self.get_values(regs)
+            if len(regs) == 2:
+                if Endian.is_big_endian():
+                    high_reg, low_reg = regs
+                    high, low = values
+                else:
+                    low_reg, high_reg = regs
+                    low, high = values
+                register = "{:s}:{:s}".format(high_reg, low_reg)
+                if high is not None and low is not None:
+                    value = ((high & 0xffff_ffff) << 32) | (low & 0xffff_ffff)
+                else:
+                    value = None
+            elif len(regs) == width:
+                register, value = regs[0], values[0]
             else:
+                register, value = "-", None
+            line = "    {:<20} {:<20} ".format(name, register)
+            if value is None:
                 line += "<unavailable>"
+            elif width == 2:
+                line += "{:#018x}".format(value) # not an address, which recursive_dereference_to_string truncates
+            else:
+                line += AddressUtil.recursive_dereference_to_string(value)
             gef_print(line)
         return
 
@@ -70323,21 +70461,55 @@ class SyscallArgsCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("wine",))
     @Decorator.require_arch_set
     def do_invoke(self, args):
-        if args.nr is not None:
-            syscall_register, nr = "-", args.nr
+        syscall_table = Syscall.get_syscall_table(current_insn=True)
+        syscall_register, nr = SyscallArgsCommand.get_nr()
+
+        try:
+            insn = get_insn()
+        except gdb.MemoryError:
+            insn = None
+        if insn is None or current_arch.is_syscall(insn):
+            pass
+        elif SyscallArgsCommand.is_vsyscall_call(insn):
+            pass
         else:
-            syscall_register, nr = SyscallArgsCommand.get_nr()
+            prev_insn = get_insn_prev()
+            if prev_insn is None or not current_arch.is_syscall(prev_insn):
+                warn("The current instruction is not a syscall instruction")
+            elif is_x86_64() or is_x86_32():
+                # After the syscall instruction (e.g., stopped by `catch syscall`), rax has -ENOSYS or the return value.
+                # int 0x80 of x86_64 uses the table of i386.
+                if is_x86_64():
+                    syscall_register = "$orig_rax"
+                else:
+                    syscall_register = "$orig_eax"
+                nr = get_register(syscall_register)
+                if is_x86_64() and X86.get_mnemonic_operands(prev_insn)[0] == "int":
+                    syscall_table = Syscall.get_syscall_table("X86", "Emulated-32")
+            else:
+                warn("Stopped after the syscall instruction, so the registers may be overwritten (e.g., by the return value)")
+
+        if args.nr is not None:
+            syscall_register = "-"
+            # a name is also accepted, as syscall-search does
+            if syscall_table and args.nr in syscall_table.name_table:
+                nr = syscall_table.name_table[args.nr].nr
+            else:
+                try:
+                    nr = AddressUtil.parse_address(args.nr)
+                except gdb.error:
+                    err("Invalid SYSCALL_NUM: {:s}".format(args.nr))
+                    return
 
         if nr is None:
             err("Could not read the syscall number; specify SYSCALL_NUM")
             return
 
-        syscall_table = Syscall.get_syscall_table(current_insn=True)
         if syscall_table and nr not in syscall_table.nr_table:
             warn("There is no system call for {:#x}".format(nr))
             return
 
-        self.print_syscall(syscall_table, syscall_register, nr)
+        self.print_syscall(syscall_table, syscall_register, nr, insn)
         return
 
 
@@ -70350,14 +70522,16 @@ class CodeBaseCommand(GenericCommand):
     _aliases_ = ["base"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
-    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address,
+                        help="set a user-specified base address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset the user-specified base address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
     def define_section_variable(self, elf, code_base, section_name):
         sec = elf.get_shdr(section_name)
         if not sec:
+            self.quiet_warn("Could not find the {:s} section".format(section_name))
             return
 
         if elf.is_pie():
@@ -70375,7 +70549,7 @@ class CodeBaseCommand(GenericCommand):
     @Decorator.only_if_gdb_running
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     def do_invoke(self, args):
-        # user specific
+        # user-specified
         if args.reset:
             GefUtil.set_user_base("codebase", None)
         elif args.set is not None:
@@ -70385,6 +70559,10 @@ class CodeBaseCommand(GenericCommand):
             GefUtil.set_user_base("codebase", args.set)
 
         code_base = GefUtil.get_user_base("codebase")
+
+        # do not leave the values of the previous run if the following fails
+        for var_name in ("codebase", "text", "rodata", "data", "bss"):
+            gdb.set_convenience_variable(var_name, None)
 
         # auto estimation
         if not is_valid_addr(code_base):
@@ -70423,8 +70601,9 @@ class HeapBaseCommand(GenericCommand):
     _category_ = "02-b. Process Information - Base Address"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
-    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address,
+                        help="set a user-specified base address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset the user-specified base address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -70447,8 +70626,13 @@ class HeapBaseCommand(GenericCommand):
     @staticmethod
     def heap_base_from_noncontiguous_main_arena():
         # If brk fails (e.g., memory tagging on ARM64, some qemu-user runs), glibc allocates the main heap
-        # with mmap and sets NONCONTIGUOUS_BIT. Then the heap is not in `[heap]`, so use the mapping of top.
+        # with mmap and sets NONCONTIGUOUS_BIT. Then the heap is not in `[heap]`, so use mp_.sbrk_base or the mapping of top.
         if get_libc_version(silent=True) is None:
+            return None
+
+        # brk can also fail after the heap starts in `[heap]` (e.g., the next page is mapped), and the bit is set.
+        # Then top moves to a mmapped region, but the heap still starts in `[heap]`, which the other ways find.
+        if ProcessMap.get_section_base_address("[heap]") is not None:
             return None
 
         try:
@@ -70462,6 +70646,15 @@ class HeapBaseCommand(GenericCommand):
         if (main_arena.flags & 2) == 0: # NONCONTIGUOUS_BIT
             return None
 
+        # top is in the latest mmapped region, which may be merged with the adjacent ones,
+        # while mp_.sbrk_base is the start of the first one
+        mp = Symbol.resolve_address("mp_")
+        if mp is not None:
+            return int(GlibcHeap.MallocPar(mp).sbrk_base)
+        heap_base = HeapBaseCommand.heap_base_from_mp() # mp_ is just before main_arena in a static binary
+        if heap_base is not None:
+            return heap_base
+
         sect = ProcessMap.process_lookup_address(main_arena.top)
         if sect is None or sect.path == "[heap]":
             return None
@@ -70473,10 +70666,12 @@ class HeapBaseCommand(GenericCommand):
         if force_heuristic:
             return None
 
-        try:
-            codebase = ProcessMap.get_codebase()
-            elf = Elf(codebase)
-        except Exception:
+        # `[heap]` cannot be found without the maps either (e.g., context.disable_vmmap)
+        codebase = ProcessMap.get_codebase()
+        if codebase is None:
+            return None
+        elf = Elf.get_elf(codebase)
+        if elf is None or not elf.is_valid():
             return None
 
         # In the case of dynamic linking
@@ -70553,10 +70748,10 @@ class HeapBaseCommand(GenericCommand):
         if main_arena_addr is None:
             return None
 
-        try:
-            codebase = ProcessMap.get_codebase()
-            elf = Elf(codebase)
-        except Exception:
+        # Elf.get_elf(None) uses the local file, since the codebase is unknown without the maps
+        codebase = ProcessMap.get_codebase()
+        elf = Elf.get_elf(codebase)
+        if elf is None or not elf.is_valid():
             return None
 
         if not elf.is_static():
@@ -70638,8 +70833,11 @@ class HeapBaseCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
-        # user specific
+        # user-specified
         if args.set is not None:
+            if not is_valid_addr(args.set):
+                err("Invalid heap base address: {:#x}".format(args.set))
+                return
             GefUtil.set_user_base("heapbase", args.set)
             Cache.reset_gef_caches(all=True)
 
@@ -70652,6 +70850,9 @@ class HeapBaseCommand(GenericCommand):
         if heap_base is None:
             gdb.set_convenience_variable("heapbase", None)
             err("Could not find the heap")
+            # musl and uClibc have no glibc version to specify
+            if GefUtil.get_libc() == "musl" or Symbol.resolve_address("__uClibc_main") is not None:
+                return
             if is_remote_debug() and get_libc_version(silent=True) is None:
                 filepath = Path.get_filepath()
                 if filepath is not None:
@@ -70678,8 +70879,9 @@ class LibcBaseCommand(GenericCommand):
     _category_ = "02-b. Process Information - Base Address"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
-    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address,
+                        help="set a user-specified base address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset the user-specified base address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -70713,8 +70915,14 @@ class LibcBaseCommand(GenericCommand):
             gef_print("ver:\t{:s}".format(String.bytes2str(pos.group(0))))
         return
 
-    def show_libc_assume_version(self):
+    def show_libc_assume_version(self, libc_base=None):
         self.quiet_print(titlify("GEF libc info"))
+        # get_libc_version falls back to the host glibc if the found libc has no glibc version (e.g., musl, uClibc).
+        # The remote target has no fallback, and its libc may be just unreadable.
+        if libc_base is not None and not is_remote_debug():
+            if get_libc_version(silent=True, use_system=False) is None:
+                gef_print("GEF recognized: None (not glibc)")
+                return
         try:
             v = get_libc_version(verbose=True)
             gef_print("GEF recognized: {}".format(v))
@@ -70728,7 +70936,7 @@ class LibcBaseCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
-        # user specific
+        # user-specified
         if args.set is not None:
             if not is_valid_addr(args.set):
                 err("Invalid libc base address: {:#x}".format(args.set))
@@ -70747,10 +70955,11 @@ class LibcBaseCommand(GenericCommand):
             libc_targets = "|".join([
                 r"libc-2\.\d+\.so", r"libc\.so\.6(\.1)?", # glibc (libc.so.6.1 is for Alpha)
                 r"libuClibc-[\d.]+\.so", r"libc\.so\.0", # uClibc
-                r"libc\.so", # musl
+                r"libc\.so", r"ld-musl-[-\w]+\.so\.1", # musl (Alpine maps only ld-musl, which libc.musl links to)
             ])
             libc_base = ProcessMap.get_section_base_address_by_basename(libc_targets)
             if libc_base is None:
+                gdb.set_convenience_variable("libc", None)
                 err("Could not find the libc")
                 if not args.quiet:
                     self.show_libc_assume_version()
@@ -70763,7 +70972,7 @@ class LibcBaseCommand(GenericCommand):
 
         if not args.quiet:
             self.libc_calc_hash(libc_base)
-            self.show_libc_assume_version()
+            self.show_libc_assume_version(libc_base)
         return
 
 
@@ -70775,8 +70984,9 @@ class LdBaseCommand(GenericCommand):
     _category_ = "02-b. Process Information - Base Address"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address, help="user specific address.")
-    parser.add_argument("-r", "--reset", action="store_true", help="reset user specific address.")
+    parser.add_argument("-s", "--set", metavar="ADDR", type=AddressUtil.parse_address,
+                        help="set a user-specified base address.")
+    parser.add_argument("-r", "--reset", action="store_true", help="reset the user-specified base address.")
     parser.add_argument("-q", "--quiet", action="store_true", help="quiet execution.")
     _syntax_ = parser.format_help()
 
@@ -70810,7 +71020,7 @@ class LdBaseCommand(GenericCommand):
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware"))
     @Decorator.exclude_specific_arch(arch=("x86_16", "ARM32M"))
     def do_invoke(self, args):
-        # user specific
+        # user-specified
         if args.set is not None:
             if not is_valid_addr(args.set):
                 err("Invalid ld base address: {:#x}".format(args.set))
@@ -70841,6 +71051,7 @@ class LdBaseCommand(GenericCommand):
                     if section and section.path:
                         ld_base = section.page_start
             if ld_base is None:
+                gdb.set_convenience_variable("ld", None)
                 err("Could not find the ld")
                 return
 
@@ -187270,7 +187481,7 @@ class PartitionAllocDumpCommand(GenericCommand, BufferingOutput):
             return []
 
         roots = []
-        # user specific
+        # user-specified
         if self.args.root:
             Root = collections.namedtuple("Root", ["name", "address"])
             roots += [Root(self.args.target_buffer_root + "_root_", self.args.root)]
