@@ -10528,7 +10528,8 @@ class MIPS(Architecture):
     nop_insn = b"\x00\x00\x00\x00" # nop
     infloop_insn = b"\xff\xff\x00\x10" # b self
     trap_insn = b"\x0d\x00\x00\x00" # break
-    ret_insn = b"\x08\x00\xe0\x03" # jr $ra
+    # R6 removes `jr`, and older ones run `jalr $zero, $ra` as `jr $ra`
+    ret_insn = b"\x09\x00\xe0\x03" # jalr $zero, $ra
     syscall_insn = b"\x0c\x00\x00\x00" # syscall
 
     def is_syscall(self, insn):
@@ -11367,7 +11368,8 @@ class M68K(Architecture):
 
     nop_insn = b"\x71\x4e" # nop
     infloop_insn = b"\xfe\x60" # bras self
-    trap_insn = b"\x48\x48" # bkpt 0
+    # bkpt is an illegal instruction without the debug hardware, and Linux sends SIGTRAP only for trap #15 (and trace)
+    trap_insn = b"\x4f\x4e" # trap #15
     ret_insn = b"\x75\x4e" # rts
     syscall_insn = b"\x40\x4e" # trap #0
 
@@ -13514,11 +13516,43 @@ class CSKY(Architecture):
     capstone_support = False
     unicorn_support = False
 
-    nop_insn = b"\x03\x6c" # mov r0, r0
-    infloop_insn = b"\x00\x04" # br self
-    trap_insn = b"\x00\x00" # bkpt
-    ret_insn = b"\x3c\x78" # rts
-    syscall_insn = b"\x00\xc0\x20\x20" # trap 0
+    @staticmethod
+    def is_abiv1():
+        """Return True if the debuggee is ABIv1 (e.g., CK610), whose instructions are encoded differently."""
+        codebase = ProcessMap.get_codebase()
+        if codebase is None:
+            elf = None
+        else:
+            elf = Elf.get_elf(codebase) # from memory, since the file may be only on the remote target
+        if elf and elf.is_valid():
+            return elf.e_flags >> 28 == 1 # EF_CSKY_ABIV1 (gdb names both ABIs `csky`)
+        return False
+
+    @property
+    def nop_insn(self):
+        if self.is_abiv1():
+            return b"\x00\x12" # mov r0, r0
+        return b"\x03\x6c" # mov r0, r0
+
+    @property
+    def infloop_insn(self):
+        if self.is_abiv1():
+            return b"\xff\xf7" # br self
+        return b"\x00\x04" # br self
+
+    trap_insn = b"\x00\x00" # bkpt (the same in ABIv1)
+
+    @property
+    def ret_insn(self):
+        if self.is_abiv1():
+            return b"\xcf\x00" # jmp r15 (rts)
+        return b"\x3c\x78" # rts
+
+    @property
+    def syscall_insn(self):
+        if self.is_abiv1():
+            return b"\x08\x00" # trap 0
+        return b"\x00\xc0\x20\x20" # trap 0
 
     def is_syscall(self, insn):
         try:
@@ -50862,10 +50896,15 @@ class PatchInfloopCommand(PatchCommand):
 
     def patch_infloop(self, addr):
         addr, insn = self.get_patch_insn(addr, "infloop")
-        if (is_arc32() or is_arc64()) and addr % 4 == 2:
-            insn = current_arch.infloop_insn2
-            if Endian.is_big_endian():
-                insn = insn[::-1]
+        if is_arc32() or is_arc64():
+            # b_s has no delay slot (b_s.d has)
+            if addr % 4 == 2:
+                insn = current_arch.infloop_insn2
+                if Endian.is_big_endian():
+                    insn = insn[::-1]
+        elif is_microblaze():
+            # bri has no delay slot (brid has)
+            pass
         elif current_arch.has_delay_slot:
             nop = current_arch.nop_insn
             if Endian.is_big_endian():
@@ -50898,6 +50937,9 @@ class PatchInfloopCommand(PatchCommand):
             location = current_arch.pc
         else:
             location = args.location
+            if not args.phys:
+                # the callers in the same module of PPC64 ELFv2 enter the local entry, skipping the TOC setup
+                location = Kernel.get_local_entry(location)
 
         try:
             self.patch_infloop(location)
@@ -50908,7 +50950,7 @@ class PatchInfloopCommand(PatchCommand):
 
 @register_command
 class PatchTrapCommand(PatchCommand):
-    """Patch the instruction(s) at the given address with breakpoint or trap (if available)."""
+    """Patch the instruction(s) at the given address with a breakpoint or trap instruction (if available)."""
 
     _cmdline_ = "patch trap"
     _category_ = "03-d. Memory - Patch"
@@ -50964,6 +51006,9 @@ class PatchTrapCommand(PatchCommand):
             location = current_arch.pc
         else:
             location = args.location
+            if not args.phys:
+                # the callers in the same module of PPC64 ELFv2 enter the local entry, skipping the TOC setup
+                location = Kernel.get_local_entry(location)
 
         try:
             self.patch_trap(location)
@@ -50974,7 +51019,7 @@ class PatchTrapCommand(PatchCommand):
 
 @register_command
 class PatchRetCommand(PatchCommand):
-    """Patch the instruction(s) at the given address with return."""
+    """Patch the instruction(s) at the given address with a return instruction."""
 
     _cmdline_ = "patch ret"
     _category_ = "03-d. Memory - Patch"
@@ -50986,8 +51031,9 @@ class PatchRetCommand(PatchCommand):
                         help="treat LOCATION as a physical address (qemu-system only).")
     parser.add_argument("location", metavar="LOCATION", nargs="?", type=AddressUtil.parse_address,
                         help="the memory address to patch. (default: current_arch.pc)")
-    parser.add_argument("--return-mode", choices=("leaf", "windowed"),
-                        help="select the SPARC return form: retl/nop or ret/restore.")
+    parser.add_argument("--return-mode", choices=("leaf", "windowed", "call0"),
+                        help="select the return form: retl/nop (leaf) or ret/restore (windowed) of SPARC, "
+                        "retw.n (windowed) or ret.n (call0) of Xtensa.")
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--interworking", action="store_const", const=True, dest="interworking",
                        help="use BX LR when ARM interworking support cannot be detected.")
@@ -51009,6 +51055,8 @@ class PatchRetCommand(PatchCommand):
         addr, insn = self.get_patch_insn(addr, "ret")
         if isinstance(current_arch, SPARC):
             return_mode = self.args.return_mode
+            if return_mode == "call0":
+                raise gdb.error("--return-mode call0 is only supported on Xtensa")
             if return_mode is None:
                 if self.args.phys:
                     target_mode = "phys"
@@ -51033,10 +51081,39 @@ class PatchRetCommand(PatchCommand):
                 insn = bytes.fromhex("81c7e00881e80000")
             if Endian.is_little_endian():
                 insn = insn[:4][::-1] + insn[4:][::-1]
+        elif is_xtensa():
+            if self.args.return_mode == "leaf":
+                raise gdb.error("--return-mode leaf is only supported on SPARC")
+            if self.args.return_mode == "call0":
+                # the functions of the call0 ABI return by `ret.n`, which does not rotate back the window
+                if Endian.is_big_endian():
+                    insn = b"\xd0\x0f" # ret.n (the fields of big endian are placed in the mirrored positions)
+                else:
+                    insn = b"\x0d\xf0" # ret.n
+            else:
+                # Until `entry` rotates the window, a0 is the return address of the caller, and retw.n returns
+                # from the caller. So patch the next instruction instead.
+                if self.args.phys:
+                    target_mode = "phys"
+                else:
+                    target_mode = "virt"
+                with QemuMonitor.use_mmu_mode(target_mode) as available:
+                    if not available:
+                        raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+                    data = read_memory(addr, 1)
+                if Endian.is_big_endian():
+                    entry = 0x6c # op0=6, n=3 and m=0 of `entry` in the mirrored positions
+                else:
+                    entry = 0x36 # op0=6, n=3 and m=0 of `entry`
+                if data[0] == entry:
+                    addr += 3
         else:
             if self.args.return_mode is not None:
-                raise gdb.error("--return-mode is only supported on SPARC")
-            if current_arch.has_ret_delay_slot:
+                raise gdb.error("--return-mode is only supported on SPARC and Xtensa")
+            if is_arc32() or is_arc64():
+                # j_s has no delay slot (j_s.d has)
+                pass
+            elif current_arch.has_ret_delay_slot:
                 nop = current_arch.nop_insn
                 if Endian.is_big_endian():
                     insn += nop[::-1]
@@ -51068,6 +51145,9 @@ class PatchRetCommand(PatchCommand):
             location = current_arch.pc
         else:
             location = args.location
+            if not args.phys:
+                # the callers in the same module of PPC64 ELFv2 enter the local entry, skipping the TOC setup
+                location = Kernel.get_local_entry(location)
 
         try:
             self.patch_ret(location)
@@ -51078,7 +51158,7 @@ class PatchRetCommand(PatchCommand):
 
 @register_command
 class PatchSyscallCommand(PatchCommand):
-    """Patch the instruction(s) at the given address with syscall instruction."""
+    """Patch the instruction(s) at the given address with a syscall instruction."""
 
     _cmdline_ = "patch syscall"
     _category_ = "03-d. Memory - Patch"
@@ -51102,7 +51182,9 @@ class PatchSyscallCommand(PatchCommand):
 
     def patch_syscall(self, addr):
         addr, insn = self.get_patch_insn(addr, "syscall")
-        if current_arch.has_syscall_delay_slot:
+        # has_syscall_delay_slot is kept for the other users (e.g., ExecUntil), but only `be,l` of HPPA has a delay slot.
+        # The kernel returns right after `ta` of SPARC, `brki` of MicroBlaze, `trap #0` of m68k, etc.
+        if is_hppa32():
             nop = current_arch.nop_insn
             if Endian.is_big_endian():
                 insn += nop[::-1]
@@ -51134,6 +51216,9 @@ class PatchSyscallCommand(PatchCommand):
             location = current_arch.pc
         else:
             location = args.location
+            if not args.phys:
+                # the callers in the same module of PPC64 ELFv2 enter the local entry, skipping the TOC setup
+                location = Kernel.get_local_entry(location)
 
         try:
             self.patch_syscall(location)
@@ -51350,7 +51435,7 @@ class PatchRangeReplaceCommand(PatchCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("--phys", action="store_true",
-                        help="treat LOCATION as a physical address (qemu-system only).")
+                        help="treat START_ADDR and END_ADDR as physical addresses (qemu-system only).")
     parser.add_argument("range_start", metavar="START_ADDR", type=AddressUtil.parse_address,
                         help="start address to search.")
     parser.add_argument("range_end", metavar="END_ADDR", type=AddressUtil.parse_address,
@@ -51373,42 +51458,80 @@ class PatchRangeReplaceCommand(PatchCommand):
         if not self.args.hstr_from:
             err("Search pattern must not be empty")
             return
+        if not self.args.hstr_to:
+            err("Replacement must not be empty")
+            return
         if self.args.range_end < self.args.range_start:
             err("END_ADDR must not precede START_ADDR")
             return
-        try:
-            if self.args.phys:
-                target_mode = "phys"
-            else:
-                target_mode = "virt"
-            with QemuMonitor.use_mmu_mode(target_mode) as available:
-                if not available:
-                    raise gdb.error("Could not select {:s} memory mode".format(target_mode))
-                data = read_memory(self.args.range_start, self.args.range_end - self.args.range_start)
-        except gdb.MemoryError:
-            err("Memory read error")
-            return
+
+        # A process reads only the readable mappings, since the range may be huge (e.g., 0x400000-0x7ffffffff000).
+        # Others (e.g., qemu-system) read the range in chunks, and the unreadable pages of a chunk are skipped.
+        areas = [(self.args.range_start, self.args.range_end)]
+        if not self.args.phys:
+            maps = ProcessMap.get_process_maps()
+            if maps:
+                areas = []
+                for m in maps:
+                    if not m.is_readable():
+                        continue
+                    if m.page_end <= self.args.range_start or self.args.range_end <= m.page_start:
+                        continue
+                    areas.append((max(m.page_start, self.args.range_start), min(m.page_end, self.args.range_end)))
+
+        if self.args.phys:
+            target_mode = "phys"
+        else:
+            target_mode = "virt"
+        reader = functools.partial(read_memory, safe=True)
+        regions = [] # [(address, contiguous readable bytes), ...]
+        with QemuMonitor.use_mmu_mode(target_mode) as available:
+            if not available:
+                raise gdb.error("Could not select {:s} memory mode".format(target_mode))
+            for area_start, area_end in areas:
+                chunks = GefUtil.iter_readable_chunks(area_start, area_end, 0x400 * get_pagesize(), reader, merge_adjacent=True)
+                for addr, data in chunks:
+                    if data is None:
+                        continue
+                    # adjacent mappings are joined, so that an occurrence across them is found
+                    if regions and regions[-1][0] + len(regions[-1][1]) == addr:
+                        regions[-1][1].extend(data)
+                    else:
+                        regions.append((addr, bytearray(data)))
+
+        current = self.args.range_start
+        for addr, data in regions:
+            if current < addr:
+                warn("Skipped unreadable memory: {:#x}-{:#x}".format(current, addr))
+            current = addr + len(data)
+        if current < self.args.range_end:
+            warn("Skipped unreadable memory: {:#x}-{:#x}".format(current, self.args.range_end))
 
         positions = []
-        pos = 0
-        while True:
-            found_pos = data.find(self.args.hstr_from, pos)
-            if found_pos == -1:
-                break
-            if found_pos + len(self.args.hstr_to) > len(data):
-                err("Replacement at {:#x} would exceed END_ADDR; no patches applied".format(
-                    self.args.range_start + found_pos))
-                return
-            if positions and found_pos < positions[-1] + len(self.args.hstr_to):
-                err("Replacement at {:#x} would overlap a previous replacement; no patches applied".format(
-                    self.args.range_start + found_pos))
-                return
-            positions.append(found_pos)
-            pos = found_pos + len(self.args.hstr_from)
+        for addr, data in regions:
+            pos = 0
+            while True:
+                found_pos = data.find(self.args.hstr_from, pos)
+                if found_pos == -1:
+                    break
+                if found_pos + len(self.args.hstr_to) > len(data):
+                    err("Replacement at {:#x} would exceed END_ADDR or the readable memory; no patches applied".format(
+                        addr + found_pos))
+                    return
+                if positions and addr + found_pos < positions[-1] + len(self.args.hstr_to):
+                    err("Replacement at {:#x} would overlap a previous replacement; no patches applied".format(
+                        addr + found_pos))
+                    return
+                positions.append(addr + found_pos)
+                pos = found_pos + len(self.args.hstr_from)
+
+        if not positions:
+            info("No occurrences found")
+            return
 
         tag = PatchCommand.PatchInfo.get_unique_tag()
-        for found_pos in positions:
-            self.PatchInfo(self.args.range_start + found_pos, self.args.hstr_to, phys=self.args.phys, tag=tag).patch()
+        for position in positions:
+            self.PatchInfo(position, self.args.hstr_to, phys=self.args.phys, tag=tag).patch()
         return
 
     @Decorator.parse_args
@@ -86638,7 +86761,8 @@ class Kernel:
         if is_ppc64():
             code = read_memory(addr, 8, safe=True)
             if code is not None:
-                if u32(code[:4]) >> 16 == 0x3c4c and u32(code[4:]) >> 16 == 0x3842:
+                # non-PIC code (e.g., a static binary) sets the TOC by `lis r2,hi` instead of `addis r2,r12,hi`
+                if u32(code[:4]) >> 16 in (0x3c4c, 0x3c40) and u32(code[4:]) >> 16 == 0x3842:
                     return addr + 8
         return addr
 
