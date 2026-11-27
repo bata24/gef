@@ -52270,22 +52270,40 @@ class ASLRCommand(GenericCommand):
     @Decorator.only_if_gdb_target_local
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        if is_attach() or is_remote_debug():
-            warn("ASLR setting is ignored because it is remote or attached process")
+        if is_attach() or is_remote_debug() or is_core_file():
+            warn("ASLR setting is ignored because it is remote, attached process or core file")
+        elif "unsupported" in gdb.execute("show disable-randomization", to_string=True):
+            # gdb without the native target (e.g., a cross gdb) cannot set it, but keeps the value
+            err("Disabling randomization is unsupported on this platform")
+            return
 
         if args.command is None:
             aslr = gdb.parameter("disable-randomization")
             if aslr:
-                msg = "ASLR is currently " + Color.redify("disabled")
+                msg = "ASLR setting of GDB is currently " + Color.redify("disabled")
             else:
-                msg = "ASLR is currently " + Color.greenify("enabled")
+                msg = "ASLR setting of GDB is currently " + Color.greenify("enabled")
             gef_print(msg)
+
+            # the setting takes effect from the next run, so show the state of the running process too
+            pid = Pid.get_pid()
+            if pid is not None:
+                personality = int(open("/proc/{:d}/personality".format(pid)).read(), 16)
+                system_aslr = int(open("/proc/sys/kernel/randomize_va_space").read())
+                if personality & 0x0040000 or system_aslr == 0: # ADDR_NO_RANDOMIZE
+                    msg = "ASLR of the current process is " + Color.redify("disabled")
+                else:
+                    msg = "ASLR of the current process is " + Color.greenify("enabled")
+                gef_print("{:s} (personality: {:#x}, randomize_va_space: {:d})".format(msg, personality, system_aslr))
         elif args.command == "on":
             info("Enabling ASLR")
             gdb.execute("set disable-randomization off")
         elif args.command == "off":
             info("Disabling ASLR")
             gdb.execute("set disable-randomization on")
+
+        if args.command is not None and is_alive():
+            info("It takes effect from the next run")
         return
 
 
@@ -57003,7 +57021,7 @@ class GotCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-f", "--file", help="the filename to parse.")
     parser.add_argument("-e", "--elf-address", type=AddressUtil.parse_address,
-                        help="the ELF address to parse.")
+                        help="the base address where the file of -f is loaded.")
     parser.add_argument("-r", "--remote", action="store_true",
                         help="parse remote binary if download feature is available.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -57015,8 +57033,8 @@ class GotCommand(GenericCommand, BufferingOutput):
     _syntax_ = parser.format_help()
 
     _example_ = "\n".join([
-        "{0:s} read print                              # filter specified keyword",
-        "{0:s} -f /usr/lib/x86_64-linux-gnu/libc.so.6  # specified target binary",
+        "{0:s} read print                              # filter by the specified keywords",
+        "{0:s} -f /usr/lib/x86_64-linux-gnu/libc.so.6  # specify the target binary",
         "{0:s} -f /bin/ls -e 0x4000000000              # use specified address, it is useful under qemu",
     ]).format(_cmdline_)
 
@@ -57037,6 +57055,12 @@ class GotCommand(GenericCommand, BufferingOutput):
             return []
 
         elf = Elf.get_elf(self.filename)
+
+        # the sections where the GOT entries are
+        got_ranges = []
+        for shdr in elf.shdrs:
+            if shdr.sh_name in [".got", ".got.plt", ".plt"]:
+                got_ranges.append([shdr.sh_addr, shdr.sh_addr + shdr.sh_size])
 
         output = {}
         section_name = None
@@ -57079,6 +57103,15 @@ class GotCommand(GenericCommand, BufferingOutput):
                     address, _, _, addend = line.split()[:4]
                     address = int(address, 16)
                     name = "*ABS*+{:#x}".format(int(addend, 16))
+            # GOT entry pattern 4: a relocation with a symbol to the GOT, e.g., R_RISCV_64 and R_LARCH_64 (no GLOB_DAT),
+            # R_PPC64_ADDR64 of GNU ld, and R_PARISC_IPLT (the function descriptor in .plt)
+            elif re.search(r"\sR_[A-Z0-9]+_(64|32|ADDR64|ADDR32|IPLT)\s", line) and len(line.split()) >= 5:
+                address, _, type, _, name = line.split()[:5]
+                address = int(address, 16)
+                if not any(start <= address < end for start, end in got_ranges):
+                    continue
+                type = type.split("_", 2)[-1]
+                name = name.split("@")[0]
             # Not GOT entry
             else:
                 continue
@@ -57093,7 +57126,7 @@ class GotCommand(GenericCommand, BufferingOutput):
             elif section and section.sh_entsize and elf.e_machine in (
                 Elf.EM_386, Elf.EM_ARM, Elf.EM_AARCH64, Elf.EM_RISCV, Elf.EM_PPC, Elf.EM_PPC64,
                 Elf.EM_SPARC, Elf.EM_SPARC32PLUS, Elf.EM_SPARCV9, Elf.EM_S390, Elf.EM_68K,
-                Elf.EM_SH, Elf.EM_ALPHA, Elf.EM_LOONGARCH,
+                Elf.EM_SH, Elf.EM_ALPHA, Elf.EM_ALPHA_UNOFFICIAL, Elf.EM_LOONGARCH,
             ):
                 reloc_arg = reloc_index * section.sh_entsize
             else:
@@ -57101,16 +57134,16 @@ class GotCommand(GenericCommand, BufferingOutput):
 
             # fix address
             if elf.is_pie():
-                address += self.base_address
+                address += self.load_bias
 
             # save
             output.setdefault(type, []).append([address, name, section_name, type, reloc_arg])
 
-        # flatten
-        a = output.get("JUMP_SLOT", [])
-        b = output.get("IRELATIVE", [])
-        c = output.get("GLOB_DAT", [])
-        return a + b + c
+        # flatten (the pattern 4 follows the others)
+        jmpslots = output.pop("JUMP_SLOT", []) + output.pop("IRELATIVE", []) + output.pop("GLOB_DAT", [])
+        for entries in output.values():
+            jmpslots += entries
+        return jmpslots
 
     def get_jmp_slots_arch_specific(self):
         try:
@@ -57124,10 +57157,13 @@ class GotCommand(GenericCommand, BufferingOutput):
 
         output = []
         ncol = -1
+        has_purpose = False
         for line in lines:
             r = re.search(r"^\s+Address\s+.*\s+Initial\s+", line)
             if r:
                 ncol = len(line.split())
+                # the reserved entries of PLT GOT (-mplt) have no Access column
+                has_purpose = "Purpose" in line
                 continue
 
             r = re.search(r"^\s+[0-9a-f]+", line)
@@ -57139,9 +57175,11 @@ class GotCommand(GenericCommand, BufferingOutput):
             address = int(ls[0], 16)
             # fix address
             if elf.is_pie():
-                address += self.base_address
+                address += self.load_bias
 
-            if ncol == 3:
+            if has_purpose:
+                name = " ".join(ls[ncol - 1:])
+            elif ncol == 3:
                 name = ""
             elif ncol == 4:
                 name = " ".join(ls[3:])
@@ -57152,26 +57190,32 @@ class GotCommand(GenericCommand, BufferingOutput):
         return output
 
     def get_plt_addresses(self):
+        elf = Elf.get_elf(self.filename)
+
         try:
             objdump = GefUtil.which(Config.get("gef.objdump_command"))
             cmd = [objdump, "-j", ".plt", "-j", ".plt.sec", "-j", ".plt.got", "-d", self.filename]
+            if elf.e_machine in (Elf.EM_PPC, Elf.EM_PPC64):
+                # the call stubs of PPC are in .text
+                cmd += ["-j", ".text"]
             lines = GefUtil.gef_execute_external(cmd, as_list=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
             return {}
-
-        elf = Elf.get_elf(self.filename)
 
         output = {}
         for line in lines:
             # get function name
             r = re.findall(r"^([0-9a-f]+) <(.+)@plt>:", line)
             if not r:
+                # e.g., `00000018.plt_call.puts@@GLIBC_2.3` of PPC64
+                r = re.findall(r"^([0-9a-f]+) <[0-9a-f]+\.plt_call\.([^@>]+)", line)
+            if not r:
                 continue
             address, func_name = int(r[0][0], 16), r[0][1]
 
             # fix address
             if elf.is_pie():
-                address += self.base_address
+                address += self.load_bias
 
             # save
             # Since DT_REL (used at i386) has no r_addend, the information of identification does not exist.
@@ -57188,18 +57232,24 @@ class GotCommand(GenericCommand, BufferingOutput):
             return []
 
         elf = Elf.get_elf(self.filename)
+        plt_begin, plt_end = self.get_plt_range()
 
         output = {}
         ncol = -1
+        is_global = False
         for line in lines:
             r = re.search(r"^\s+Address\s+.*\s+Initial\s+", line)
             if r:
                 initial_idx = line.split().index("Initial")
                 ncol = len(line.split())
+                # only the global entries can point to PLT (the reserved and local entries do not)
+                is_global = "Sym.Val." in line
                 continue
 
             r = re.search(r"^\s+[0-9a-f]+", line)
             if not r:
+                continue
+            if not is_global:
                 continue
 
             ls = line.split()
@@ -57207,8 +57257,9 @@ class GotCommand(GenericCommand, BufferingOutput):
             plt_address = int(ls[initial_idx], 16)
             # fix address
             if elf.is_pie():
-                plt_address += self.base_address
-            if not is_valid_addr(plt_address):
+                plt_address += self.load_bias
+            # the initial value of a data symbol (or 0 of PIE, which becomes the ELF header) is not PLT
+            if not plt_begin <= plt_address < plt_end:
                 plt_address = 0
 
             if ncol == 3:
@@ -57224,16 +57275,32 @@ class GotCommand(GenericCommand, BufferingOutput):
     def get_plt_range(self):
         # The PLT range is required to determine whether the information in the GOT is resolved or not.
         elf = Elf.get_elf(self.filename)
-        sections = [x for x in elf.shdrs if x.sh_name in [".plt", ".plt.got", ".plt.sec", ".MIPS.stubs"]]
-        if len(sections) == 0:
-            return 0, 0
-        plt_begin = min([x.sh_addr for x in sections])
-        plt_end = max([x.sh_addr + x.sh_size for x in sections])
+        if elf.e_machine == Elf.EM_PPC64 and elf.get_dynamic_value(0x70000000) is not None: # DT_PPC64_GLINK
+            # .plt is a table of addresses, and the unresolved entries point to the lazy stubs of glink,
+            # which follow 32 bytes after DT_PPC64_GLINK, 4 bytes each (sysdeps/powerpc/powerpc64/dl-machine.h)
+            plt_begin = elf.get_dynamic_value(0x70000000) # DT_PPC64_GLINK
+            # each Elf64_Rela is 24 bytes, and a stub is up to 12 bytes (ELFv1)
+            plt_end = plt_begin + 32 + (elf.get_dynamic_value(0x2) or 0) // 24 * 12 # DT_PLTRELSZ
+        elif elf.e_machine == Elf.EM_PPC and elf.get_dynamic_value(0x70000000) is not None: # DT_PPC_GOT
+            # .plt of the secure-plt is a table of addresses, and the unresolved entries keep the addresses
+            # of the lazy stubs of glink in the file (sysdeps/powerpc/powerpc32/dl-machine.h)
+            data = elf.read_shdr(".plt")
+            if not data:
+                return 0, 0
+            stubs = [int.from_bytes(data[i:i + 4], Endian.endian_str()) for i in range(0, len(data) - 3, 4)]
+            plt_begin = min(stubs)
+            plt_end = max(stubs) + 4
+        else:
+            sections = [x for x in elf.shdrs if x.sh_name in [".plt", ".plt.got", ".plt.sec", ".MIPS.stubs"]]
+            if len(sections) == 0:
+                return 0, 0
+            plt_begin = min([x.sh_addr for x in sections])
+            plt_end = max([x.sh_addr + x.sh_size for x in sections])
 
         # fix address
         if elf.is_pie():
-            plt_begin += self.base_address
-            plt_end += self.base_address
+            plt_begin += self.load_bias
+            plt_end += self.load_bias
         return plt_begin, plt_end
 
     def perm(self, addr):
@@ -57247,11 +57314,17 @@ class GotCommand(GenericCommand, BufferingOutput):
         elf = Elf.get_elf(self.filename)
         ranges = []
         for shdr in elf.shdrs:
+            # a section that is not loaded (e.g., .comment) has no address
+            if not shdr.sh_flags & Elf.Shdr.SHF_ALLOC:
+                continue
+            # .tbss occupies no memory, so the following sections (e.g., .init_array) are at the range
+            if shdr.sh_flags & Elf.Shdr.SHF_TLS and shdr.sh_type == Elf.Shdr.SHT_NOBITS:
+                continue
             sh_start = shdr.sh_addr
             sh_end = shdr.sh_addr + shdr.sh_size
             if elf.is_pie():
-                sh_start += self.base_address
-                sh_end += self.base_address
+                sh_start += self.load_bias
+                sh_end += self.load_bias
             ranges.append([shdr.sh_name, sh_start, sh_end])
         return ranges
 
@@ -57269,6 +57342,52 @@ class GotCommand(GenericCommand, BufferingOutput):
                 return " <{:s}+{:#x}>".format(name, addr - start)
         return ""
 
+    def get_sparc_plt_target(self, plt_address):
+        # ld.so rewrites the PLT entry into `ba,a f`, `ba,a,pt %icc, f`, `sethi %hi(f), %g1; jmpl %g1 + %lo(f), %g0`,
+        # `mov %o7, %g1; call f; mov %g1, %o7`, or the sequence building the 64-bit f in %g1 and %g5
+        # (sysdeps/sparc/sparc{32,64}/dl-plt.h). The unresolved one branches to .PLT1 by `ba,a` or `ba,a,pt %xcc`.
+        if is_sparc64():
+            count = 8
+        else:
+            count = 3
+        data = read_memory(plt_address, count * 4, safe=True)
+        if data is None:
+            return None
+        mask = (1 << (current_arch.ptrsize * 8)) - 1
+
+        regs = {}
+        for i in range(count):
+            insn = int.from_bytes(data[i * 4:i * 4 + 4], "big")
+            pc = plt_address + i * 4
+            rd = (insn >> 25) & 0x1f
+            rs1 = (insn >> 14) & 0x1f
+            if insn & 0xffc00000 == 0x30800000: # ba,a disp22
+                disp = insn & 0x3fffff
+                if disp & 0x200000:
+                    disp -= 0x400000
+                return (pc + disp * 4) & mask
+            if insn & 0xfff80000 in (0x30480000, 0x30680000): # ba,a,pt %icc/%xcc, disp19
+                disp = insn & 0x7ffff
+                if disp & 0x40000:
+                    disp -= 0x80000
+                return (pc + disp * 4) & mask
+            if insn & 0xc0000000 == 0x40000000: # call disp30
+                disp = insn & 0x3fffffff
+                if disp & 0x20000000:
+                    disp -= 0x40000000
+                return (pc + disp * 4) & mask
+            if insn & 0xc1c00000 == 0x01000000: # sethi %hi(imm22), rd
+                regs[rd] = (insn & 0x3fffff) << 10
+            elif insn & 0xc1f82000 == 0x80102000: # or rs1, simm13, rd
+                regs[rd] = regs.get(rs1, 0) | (insn & 0x1fff)
+            elif insn & 0xc1f83fff == 0x81283020: # sllx rs1, 32, rd
+                regs[rd] = (regs.get(rs1, 0) << 32) & mask
+            elif insn & 0xfff82000 == 0x81c02000: # jmpl rs1 + simm13, %g0
+                return (regs.get(rs1, 0) + (insn & 0x1fff)) & mask
+            elif insn & 0xfff82000 == 0x81c00000: # jmpl rs1 + rs2, %g0
+                return (regs.get(rs1, 0) + regs.get(insn & 0x1f, 0)) & mask
+        return None
+
     def parse_plt_got(self):
         # retrieve jump slots using readelf
         jmpslots = self.get_jmp_slots()
@@ -57276,12 +57395,21 @@ class GotCommand(GenericCommand, BufferingOutput):
             # On some architectures, such as mips, the GOT detection fails.
             # Some information will be lost, but detection will still be performed in such cases.
             jmpslots = self.get_jmp_slots_arch_specific()
+        elif is_mips():
+            # the primary GOT is also used with .rel.plt of -mplt (e.g., calls via .MIPS.stubs)
+            got_addresses = [x[0] for x in jmpslots]
+            for entry in self.get_jmp_slots_arch_specific():
+                if entry[0] not in got_addresses:
+                    jmpslots.append(entry)
 
         # retrieve plt address using objdump
         plts = self.get_plt_addresses()
         if plts == {}:
             # On some architectures, such as mips, the PLT detection fails.
             plts = self.get_plt_addresses_arch_specific()
+        elif is_mips():
+            for name, plt_addresses in self.get_plt_addresses_arch_specific().items():
+                plts.setdefault(name, plt_addresses)
 
         # retrieve the end of plt from elf parsing
         plt_begin, plt_end = self.get_plt_range()
@@ -57323,12 +57451,18 @@ class GotCommand(GenericCommand, BufferingOutput):
                 self.quiet_err("Cannot read GOT entry at {:#x}".format(got_address))
                 continue
 
+            # the GOT entry of SPARC is the PLT entry itself, so use the branch target of the instructions
+            if is_sparc():
+                target = self.get_sparc_plt_target(got_address)
+                if target is not None:
+                    got_value = target
+
             # resolve got value's symbol
             if got_value == 0:
                 got_value_sym = ""
             elif plt_begin <= got_value < plt_end: # Non-PIE
                 got_value_sym = self.get_section_sym(got_value)
-            elif plt_begin - self.base_address <= got_value < plt_end - self.base_address: # PIE
+            elif plt_begin - self.load_bias <= got_value < plt_end - self.load_bias: # PIE
                 got_value_sym = self.get_section_sym(got_value)
             else:
                 got_value_sym = Symbol.format(got_value)
@@ -57342,7 +57476,7 @@ class GotCommand(GenericCommand, BufferingOutput):
                 got_value_color = Config.get("got.function_resolved") # .rela.dyn && uninitialized, etc.
             elif plt_begin <= got_value < plt_end: # Non-PIE
                 got_value_color = Config.get("got.function_not_resolved")
-            elif plt_begin - self.base_address <= got_value < plt_end - self.base_address: # PIE
+            elif plt_begin - self.load_bias <= got_value < plt_end - self.load_bias: # PIE
                 got_value_color = Config.get("got.function_not_resolved")
             else:
                 got_value_color = Config.get("got.function_resolved")
@@ -57486,7 +57620,9 @@ class GotCommand(GenericCommand, BufferingOutput):
                     if not any(pattern == info.name for pattern in self.args.filter):
                         continue
                 else:
-                    if not any(pattern in line for pattern in self.args.filter):
+                    # match against the text without the escape sequences of the colors
+                    plain_line = Color.remove_color(line)
+                    if not any(pattern in plain_line for pattern in self.args.filter):
                         continue
             # print section name
             if prev_section != info.section_name:
@@ -57541,6 +57677,11 @@ class GotCommand(GenericCommand, BufferingOutput):
                         relro_status = "Full RELRO"
                     else:
                         relro_status = "Partial RELRO"
+                    # PT_GNU_RELRO may not cover .got (e.g., MIPS)
+                    got = elf.get_shdr(".got")
+                    relro = elf.get_phdr(Elf.Phdr.PT_GNU_RELRO)
+                    if got is not None and not relro.p_vaddr <= got.sh_addr < relro.p_vaddr + relro.p_memsz:
+                        relro_status += " (.got is not covered)"
                 else:
                     relro_status = "No RELRO"
                 self.out.append(titlify("PLT / GOT - {:s} - {:s}".format(print_filename, relro_status)))
@@ -57583,12 +57724,17 @@ class GotCommand(GenericCommand, BufferingOutput):
                     if path_match_end:
                         base_address = min(path_match_end)
                     else:
-                        self.quiet_err("Could not find {:s} in memory (Use -e option)".format(target_filepath))
+                        self.quiet_err("Could not find {:s} in memory (Use -f and -e options)".format(target_filepath))
                         return
 
             # get the filtering parameter
             self.filename = local_filepath
             self.base_address = base_address
+            # the first PT_LOAD of ET_DYN is not always at 0 (e.g., prelinked or linked with -Ttext-segment)
+            self.load_bias = 0
+            if elf.is_pie():
+                first_vaddr = min(x.p_vaddr for x in elf.phdrs if x.p_type == Elf.Phdr.PT_LOAD)
+                self.load_bias = base_address - (first_vaddr & get_pagesize_mask_high())
 
             # doit
             resolved_info = self.parse_plt_got()
@@ -57650,7 +57796,11 @@ class GotAllCommand(GenericCommand, BufferingOutput):
             if x != b"\x7fELF":
                 continue
 
-            argv = ["-f", m.path, "-n"] + extra_args
+            # the path is in the container under the container attach (like GefUtil.read_mapped_file)
+            filepath = m.path
+            if is_container_attach():
+                filepath = Path.append_proc_root(m.path)
+            argv = ["-f", filepath, "-n"] + extra_args
             command_args = " ".join('"' + arg.replace("\\", "\\\\").replace('"', '\\"') + '"' for arg in argv)
             ret = gdb.execute("got " + command_args, to_string=True)
             self.out.extend(ret.splitlines())
@@ -58739,7 +58889,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-a", dest="arch", help="specify the architecture. (default: current_arch.arch)")
-    parser.add_argument("-m", dest="mode", help="specify the mode. (default: current_arch.mode)")
+    parser.add_argument("-m", dest="mode", help="specify the mode. (default: the mode of the current process)")
     parser.add_argument("search_pattern", metavar="SYSCALL_NAME|SYSCALL_NUM", nargs="?", default=".",
                         help="syscall name or number to search. Regex is available.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
@@ -58781,7 +58931,18 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
     ]).format(_cmdline_)
 
     def make_output(self, syscall_table, syscall_num, syscall_name_pattern, skip_x32):
-        self.out.append(titlify("arch={:s}, mode={:s}".format(syscall_table.arch, syscall_table.mode)))
+        if syscall_table.arch == "X86" and syscall_table.mode == "64" and syscall_num is not None:
+            # the numbers of x32 have __X32_SYSCALL_BIT
+            if syscall_num & 0x4000_0000:
+                skip_x32 = False
+            elif not skip_x32:
+                syscall_num |= 0x4000_0000
+
+        if skip_x32:
+            mode = syscall_table.mode
+        else:
+            mode = "x32"
+        self.out.append(titlify("arch={:s}, mode={:s}".format(syscall_table.arch, mode)))
 
         fmt = "{:<17}{:s}"
         legend = ["Syscall Num", "Syscall Name"]
@@ -58818,6 +58979,10 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
             target_arch = current_arch.arch
         if target_arch and target_mode is not None:
             target_arch = target_arch.upper()
+        # the current architecture without the mode is determined as no arguments (e.g., Emulated-32, x86_16, Secure-World)
+        if target_arch and target_mode is None and current_arch is not None:
+            if target_arch.upper() == current_arch.arch:
+                target_arch = None
         # force fixing
         if target_arch and target_mode is None:
             arch_need_not_mode = ["SH4", "ALPHA", "OR1K", "NIOS2", "MICROBLAZE", "XTENSA", "CRIS", "CSKY"]
@@ -58876,10 +59041,6 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
                 target_arch = "M68K"
                 target_mode = "32"
 
-        if target_arch and target_mode is None and current_arch is not None:
-            if target_arch.upper() == current_arch.arch:
-                target_arch, target_mode = current_arch.arch, current_arch.mode
-
         if target_arch == "X86" and target_mode == "x32":
             target_mode = "64"
             skip_x32 = False
@@ -58906,7 +59067,7 @@ class SyscallSearchCommand(GenericCommand, BufferingOutput):
         return
 
 
-# System call table (linux-7.0-rc7; How to make: see dev/update-syscalls/update-syscalls.py)
+# System call table (linux-7.3.4; How to make: see dev/update-syscalls/update-syscalls.py)
 # include/linux/syscalls.h
 syscall_defs = """
 asmlinkage long sys_io_setup(unsigned nr_reqs, aio_context_t __user* ctx);
@@ -67130,8 +67291,10 @@ xtensa_syscall_tbl = """
 # CRIS
 # [How to make]
 # cd /path/to/linux-4.16.18/
-# awk '/sys_call_table:/,/^$/' arch/cris/arch-v10/kernel/entry.S \
-# | grep -o "\.long \w*" | nl -v0 | awk '{print $1" cris "substr($3,5)" "$3}' |column -t
+# awk '/sys_call_table:/,/^$/' arch/cris/arch-v10/kernel/entry.S | grep -oP "\.long \K\w+" | awk '{print NR-1" "$1}' > /tmp/a
+# grep -oP "^#define __NR_\K\w+" arch/cris/include/uapi/asm/unistd.h | grep -vx syscalls | sed "s/.*/& __NR_&/" > /tmp/b
+# gcc -E -P -x c -include arch/cris/include/uapi/asm/unistd.h /tmp/b | tr -d "()" | awk '{print $2+$3" "$1}' > /tmp/c
+# awk 'NR==FNR{n[$1]=$2; next} {print $1" cris "(($1 in n) ? n[$1] : substr($2,5))" "$2}' /tmp/c /tmp/a | column -t
 cris_syscall_tbl = """
 0    cris  restart_syscall         sys_restart_syscall
 1    cris  exit                    sys_exit
@@ -67149,26 +67312,26 @@ cris_syscall_tbl = """
 13   cris  time                    sys_time
 14   cris  mknod                   sys_mknod
 15   cris  chmod                   sys_chmod
-16   cris  lchown16                sys_lchown16
-17   cris  ni_syscall              sys_ni_syscall
-18   cris  stat                    sys_stat
+16   cris  lchown                  sys_lchown16
+17   cris  break                   sys_ni_syscall
+18   cris  oldstat                 sys_stat
 19   cris  lseek                   sys_lseek
 20   cris  getpid                  sys_getpid
 21   cris  mount                   sys_mount
-22   cris  oldumount               sys_oldumount
-23   cris  setuid16                sys_setuid16
-24   cris  getuid16                sys_getuid16
+22   cris  umount                  sys_oldumount
+23   cris  setuid                  sys_setuid16
+24   cris  getuid                  sys_getuid16
 25   cris  stime                   sys_stime
 26   cris  ptrace                  sys_ptrace
 27   cris  alarm                   sys_alarm
-28   cris  fstat                   sys_fstat
+28   cris  oldfstat                sys_fstat
 29   cris  pause                   sys_pause
 30   cris  utime                   sys_utime
-31   cris  ni_syscall              sys_ni_syscall
-32   cris  ni_syscall              sys_ni_syscall
+31   cris  stty                    sys_ni_syscall
+32   cris  gtty                    sys_ni_syscall
 33   cris  access                  sys_access
 34   cris  nice                    sys_nice
-35   cris  ni_syscall              sys_ni_syscall
+35   cris  ftime                   sys_ni_syscall
 36   cris  sync                    sys_sync
 37   cris  kill                    sys_kill
 38   cris  rename                  sys_rename
@@ -67177,22 +67340,22 @@ cris_syscall_tbl = """
 41   cris  dup                     sys_dup
 42   cris  pipe                    sys_pipe
 43   cris  times                   sys_times
-44   cris  ni_syscall              sys_ni_syscall
+44   cris  prof                    sys_ni_syscall
 45   cris  brk                     sys_brk
-46   cris  setgid16                sys_setgid16
-47   cris  getgid16                sys_getgid16
+46   cris  setgid                  sys_setgid16
+47   cris  getgid                  sys_getgid16
 48   cris  signal                  sys_signal
-49   cris  geteuid16               sys_geteuid16
-50   cris  getegid16               sys_getegid16
+49   cris  geteuid                 sys_geteuid16
+50   cris  getegid                 sys_getegid16
 51   cris  acct                    sys_acct
-52   cris  umount                  sys_umount
-53   cris  ni_syscall              sys_ni_syscall
+52   cris  umount2                 sys_umount
+53   cris  lock                    sys_ni_syscall
 54   cris  ioctl                   sys_ioctl
 55   cris  fcntl                   sys_fcntl
-56   cris  ni_syscall              sys_ni_syscall
+56   cris  mpx                     sys_ni_syscall
 57   cris  setpgid                 sys_setpgid
-58   cris  ni_syscall              sys_ni_syscall
-59   cris  ni_syscall              sys_ni_syscall
+58   cris  ulimit                  sys_ni_syscall
+59   cris  oldolduname             sys_ni_syscall
 60   cris  umask                   sys_umask
 61   cris  chroot                  sys_chroot
 62   cris  ustat                   sys_ustat
@@ -67203,50 +67366,50 @@ cris_syscall_tbl = """
 67   cris  sigaction               sys_sigaction
 68   cris  sgetmask                sys_sgetmask
 69   cris  ssetmask                sys_ssetmask
-70   cris  setreuid16              sys_setreuid16
-71   cris  setregid16              sys_setregid16
+70   cris  setreuid                sys_setreuid16
+71   cris  setregid                sys_setregid16
 72   cris  sigsuspend              sys_sigsuspend
 73   cris  sigpending              sys_sigpending
 74   cris  sethostname             sys_sethostname
 75   cris  setrlimit               sys_setrlimit
-76   cris  old_getrlimit           sys_old_getrlimit
+76   cris  getrlimit               sys_old_getrlimit
 77   cris  getrusage               sys_getrusage
 78   cris  gettimeofday            sys_gettimeofday
 79   cris  settimeofday            sys_settimeofday
-80   cris  getgroups16             sys_getgroups16
-81   cris  setgroups16             sys_setgroups16
+80   cris  getgroups               sys_getgroups16
+81   cris  setgroups               sys_setgroups16
 82   cris  select                  sys_select
 83   cris  symlink                 sys_symlink
-84   cris  lstat                   sys_lstat
+84   cris  oldlstat                sys_lstat
 85   cris  readlink                sys_readlink
 86   cris  uselib                  sys_uselib
 87   cris  swapon                  sys_swapon
 88   cris  reboot                  sys_reboot
-89   cris  old_readdir             sys_old_readdir
-90   cris  old_mmap                sys_old_mmap
+89   cris  readdir                 sys_old_readdir
+90   cris  mmap                    sys_old_mmap
 91   cris  munmap                  sys_munmap
 92   cris  truncate                sys_truncate
 93   cris  ftruncate               sys_ftruncate
 94   cris  fchmod                  sys_fchmod
-95   cris  fchown16                sys_fchown16
+95   cris  fchown                  sys_fchown16
 96   cris  getpriority             sys_getpriority
 97   cris  setpriority             sys_setpriority
-98   cris  ni_syscall              sys_ni_syscall
+98   cris  profil                  sys_ni_syscall
 99   cris  statfs                  sys_statfs
 100  cris  fstatfs                 sys_fstatfs
-101  cris  ni_syscall              sys_ni_syscall
+101  cris  ioperm                  sys_ni_syscall
 102  cris  socketcall              sys_socketcall
 103  cris  syslog                  sys_syslog
 104  cris  setitimer               sys_setitimer
 105  cris  getitimer               sys_getitimer
-106  cris  newstat                 sys_newstat
-107  cris  newlstat                sys_newlstat
-108  cris  newfstat                sys_newfstat
-109  cris  ni_syscall              sys_ni_syscall
-110  cris  ni_syscall              sys_ni_syscall
+106  cris  stat                    sys_newstat
+107  cris  lstat                   sys_newlstat
+108  cris  fstat                   sys_newfstat
+109  cris  olduname                sys_ni_syscall
+110  cris  iopl                    sys_ni_syscall
 111  cris  vhangup                 sys_vhangup
-112  cris  ni_syscall              sys_ni_syscall
-113  cris  ni_syscall              sys_ni_syscall
+112  cris  idle                    sys_ni_syscall
+113  cris  vm86                    sys_ni_syscall
 114  cris  wait4                   sys_wait4
 115  cris  swapoff                 sys_swapoff
 116  cris  sysinfo                 sys_sysinfo
@@ -67255,34 +67418,34 @@ cris_syscall_tbl = """
 119  cris  sigreturn               sys_sigreturn
 120  cris  clone                   sys_clone
 121  cris  setdomainname           sys_setdomainname
-122  cris  newuname                sys_newuname
-123  cris  ni_syscall              sys_ni_syscall
+122  cris  uname                   sys_newuname
+123  cris  modify_ldt              sys_ni_syscall
 124  cris  adjtimex                sys_adjtimex
 125  cris  mprotect                sys_mprotect
 126  cris  sigprocmask             sys_sigprocmask
-127  cris  ni_syscall              sys_ni_syscall
+127  cris  create_module           sys_ni_syscall
 128  cris  init_module             sys_init_module
 129  cris  delete_module           sys_delete_module
-130  cris  ni_syscall              sys_ni_syscall
+130  cris  get_kernel_syms         sys_ni_syscall
 131  cris  quotactl                sys_quotactl
 132  cris  getpgid                 sys_getpgid
 133  cris  fchdir                  sys_fchdir
 134  cris  bdflush                 sys_bdflush
 135  cris  sysfs                   sys_sysfs
 136  cris  personality             sys_personality
-137  cris  ni_syscall              sys_ni_syscall
-138  cris  setfsuid16              sys_setfsuid16
-139  cris  setfsgid16              sys_setfsgid16
-140  cris  llseek                  sys_llseek
+137  cris  afs_syscall             sys_ni_syscall
+138  cris  setfsuid                sys_setfsuid16
+139  cris  setfsgid                sys_setfsgid16
+140  cris  _llseek                 sys_llseek
 141  cris  getdents                sys_getdents
-142  cris  select                  sys_select
+142  cris  _newselect              sys_select
 143  cris  flock                   sys_flock
 144  cris  msync                   sys_msync
 145  cris  readv                   sys_readv
 146  cris  writev                  sys_writev
 147  cris  getsid                  sys_getsid
 148  cris  fdatasync               sys_fdatasync
-149  cris  sysctl                  sys_sysctl
+149  cris  _sysctl                 sys_sysctl
 150  cris  mlock                   sys_mlock
 151  cris  munlock                 sys_munlock
 152  cris  mlockall                sys_mlockall
@@ -67297,14 +67460,14 @@ cris_syscall_tbl = """
 161  cris  sched_rr_get_interval   sys_sched_rr_get_interval
 162  cris  nanosleep               sys_nanosleep
 163  cris  mremap                  sys_mremap
-164  cris  setresuid16             sys_setresuid16
-165  cris  getresuid16             sys_getresuid16
+164  cris  setresuid               sys_setresuid16
+165  cris  getresuid               sys_getresuid16
 166  cris  ni_syscall              sys_ni_syscall
-167  cris  ni_syscall              sys_ni_syscall
+167  cris  query_module            sys_ni_syscall
 168  cris  poll                    sys_poll
-169  cris  ni_syscall              sys_ni_syscall
-170  cris  setresgid16             sys_setresgid16
-171  cris  getresgid16             sys_getresgid16
+169  cris  nfsservctl              sys_ni_syscall
+170  cris  setresgid               sys_setresgid16
+171  cris  getresgid               sys_getresgid16
 172  cris  prctl                   sys_prctl
 173  cris  rt_sigreturn            sys_rt_sigreturn
 174  cris  rt_sigaction            sys_rt_sigaction
@@ -67315,41 +67478,41 @@ cris_syscall_tbl = """
 179  cris  rt_sigsuspend           sys_rt_sigsuspend
 180  cris  pread64                 sys_pread64
 181  cris  pwrite64                sys_pwrite64
-182  cris  chown16                 sys_chown16
+182  cris  chown                   sys_chown16
 183  cris  getcwd                  sys_getcwd
 184  cris  capget                  sys_capget
 185  cris  capset                  sys_capset
 186  cris  sigaltstack             sys_sigaltstack
 187  cris  sendfile                sys_sendfile
-188  cris  ni_syscall              sys_ni_syscall
-189  cris  ni_syscall              sys_ni_syscall
+188  cris  getpmsg                 sys_ni_syscall
+189  cris  putpmsg                 sys_ni_syscall
 190  cris  vfork                   sys_vfork
-191  cris  getrlimit               sys_getrlimit
+191  cris  ugetrlimit              sys_getrlimit
 192  cris  mmap2                   sys_mmap2
 193  cris  truncate64              sys_truncate64
 194  cris  ftruncate64             sys_ftruncate64
 195  cris  stat64                  sys_stat64
 196  cris  lstat64                 sys_lstat64
 197  cris  fstat64                 sys_fstat64
-198  cris  lchown                  sys_lchown
-199  cris  getuid                  sys_getuid
-200  cris  getgid                  sys_getgid
-201  cris  geteuid                 sys_geteuid
-202  cris  getegid                 sys_getegid
-203  cris  setreuid                sys_setreuid
-204  cris  setregid                sys_setregid
-205  cris  getgroups               sys_getgroups
-206  cris  setgroups               sys_setgroups
-207  cris  fchown                  sys_fchown
-208  cris  setresuid               sys_setresuid
-209  cris  getresuid               sys_getresuid
-210  cris  setresgid               sys_setresgid
-211  cris  getresgid               sys_getresgid
-212  cris  chown                   sys_chown
-213  cris  setuid                  sys_setuid
-214  cris  setgid                  sys_setgid
-215  cris  setfsuid                sys_setfsuid
-216  cris  setfsgid                sys_setfsgid
+198  cris  lchown32                sys_lchown
+199  cris  getuid32                sys_getuid
+200  cris  getgid32                sys_getgid
+201  cris  geteuid32               sys_geteuid
+202  cris  getegid32               sys_getegid
+203  cris  setreuid32              sys_setreuid
+204  cris  setregid32              sys_setregid
+205  cris  getgroups32             sys_getgroups
+206  cris  setgroups32             sys_setgroups
+207  cris  fchown32                sys_fchown
+208  cris  setresuid32             sys_setresuid
+209  cris  getresuid32             sys_getresuid
+210  cris  setresgid32             sys_setresgid
+211  cris  getresgid32             sys_getresgid
+212  cris  chown32                 sys_chown
+213  cris  setuid32                sys_setuid
+214  cris  setgid32                sys_setgid
+215  cris  setfsuid32              sys_setfsuid
+216  cris  setfsgid32              sys_setfsgid
 217  cris  pivot_root              sys_pivot_root
 218  cris  mincore                 sys_mincore
 219  cris  madvise                 sys_madvise
@@ -67376,8 +67539,8 @@ cris_syscall_tbl = """
 240  cris  futex                   sys_futex
 241  cris  sched_setaffinity       sys_sched_setaffinity
 242  cris  sched_getaffinity       sys_sched_getaffinity
-243  cris  ni_syscall              sys_ni_syscall
-244  cris  ni_syscall              sys_ni_syscall
+243  cris  set_thread_area         sys_ni_syscall
+244  cris  get_thread_area         sys_ni_syscall
 245  cris  io_setup                sys_io_setup
 246  cris  io_destroy              sys_io_destroy
 247  cris  io_getevents            sys_io_getevents
@@ -67406,17 +67569,17 @@ cris_syscall_tbl = """
 270  cris  tgkill                  sys_tgkill
 271  cris  utimes                  sys_utimes
 272  cris  fadvise64_64            sys_fadvise64_64
-273  cris  ni_syscall              sys_ni_syscall
-274  cris  ni_syscall              sys_ni_syscall
-275  cris  ni_syscall              sys_ni_syscall
-276  cris  ni_syscall              sys_ni_syscall
+273  cris  vserver                 sys_ni_syscall
+274  cris  mbind                   sys_ni_syscall
+275  cris  get_mempolicy           sys_ni_syscall
+276  cris  set_mempolicy           sys_ni_syscall
 277  cris  mq_open                 sys_mq_open
 278  cris  mq_unlink               sys_mq_unlink
 279  cris  mq_timedsend            sys_mq_timedsend
 280  cris  mq_timedreceive         sys_mq_timedreceive
 281  cris  mq_notify               sys_mq_notify
 282  cris  mq_getsetattr           sys_mq_getsetattr
-283  cris  ni_syscall              sys_ni_syscall
+283  cris  kexec_load              sys_ni_syscall
 284  cris  waitid                  sys_waitid
 285  cris  ni_syscall              sys_ni_syscall
 286  cris  add_key                 sys_add_key
@@ -67496,333 +67659,8 @@ cris_syscall_tbl = """
 """
 
 
-# Loongarch
-#
-# [How to make for 6.10.14]
-# cd /path/to/linux-6.10.14/
-# gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/loongarch/include/uapi/asm/unistd.h | grep ^SYSCALL \
-# | sed -e 's/SYSCALL(//;s/[,)]//g' > /tmp/a
-# grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > /tmp/b
-# join -2 2 -o 1.1,1.10,2.1,1.2 -e loongarch /tmp/a /tmp/b | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-loongarch_syscall_tbl = """
-0    loongarch  io_setup                 sys_io_setup
-1    loongarch  io_destroy               sys_io_destroy
-2    loongarch  io_submit                sys_io_submit
-3    loongarch  io_cancel                sys_io_cancel
-4    loongarch  io_getevents             sys_io_getevents
-5    loongarch  setxattr                 sys_setxattr
-6    loongarch  lsetxattr                sys_lsetxattr
-7    loongarch  fsetxattr                sys_fsetxattr
-8    loongarch  getxattr                 sys_getxattr
-9    loongarch  lgetxattr                sys_lgetxattr
-10   loongarch  fgetxattr                sys_fgetxattr
-11   loongarch  listxattr                sys_listxattr
-12   loongarch  llistxattr               sys_llistxattr
-13   loongarch  flistxattr               sys_flistxattr
-14   loongarch  removexattr              sys_removexattr
-15   loongarch  lremovexattr             sys_lremovexattr
-16   loongarch  fremovexattr             sys_fremovexattr
-17   loongarch  getcwd                   sys_getcwd
-18   loongarch  lookup_dcookie           sys_ni_syscall
-19   loongarch  eventfd2                 sys_eventfd2
-20   loongarch  epoll_create1            sys_epoll_create1
-21   loongarch  epoll_ctl                sys_epoll_ctl
-22   loongarch  epoll_pwait              sys_epoll_pwait
-23   loongarch  dup                      sys_dup
-24   loongarch  dup3                     sys_dup3
-25   loongarch  fcntl                    sys_fcntl
-26   loongarch  inotify_init1            sys_inotify_init1
-27   loongarch  inotify_add_watch        sys_inotify_add_watch
-28   loongarch  inotify_rm_watch         sys_inotify_rm_watch
-29   loongarch  ioctl                    sys_ioctl
-30   loongarch  ioprio_set               sys_ioprio_set
-31   loongarch  ioprio_get               sys_ioprio_get
-32   loongarch  flock                    sys_flock
-33   loongarch  mknodat                  sys_mknodat
-34   loongarch  mkdirat                  sys_mkdirat
-35   loongarch  unlinkat                 sys_unlinkat
-36   loongarch  symlinkat                sys_symlinkat
-37   loongarch  linkat                   sys_linkat
-39   loongarch  umount2                  sys_umount
-40   loongarch  mount                    sys_mount
-41   loongarch  pivot_root               sys_pivot_root
-42   loongarch  nfsservctl               sys_ni_syscall
-43   loongarch  statfs                   sys_statfs
-44   loongarch  fstatfs                  sys_fstatfs
-45   loongarch  truncate                 sys_truncate
-46   loongarch  ftruncate                sys_ftruncate
-47   loongarch  fallocate                sys_fallocate
-48   loongarch  faccessat                sys_faccessat
-49   loongarch  chdir                    sys_chdir
-50   loongarch  fchdir                   sys_fchdir
-51   loongarch  chroot                   sys_chroot
-52   loongarch  fchmod                   sys_fchmod
-53   loongarch  fchmodat                 sys_fchmodat
-54   loongarch  fchownat                 sys_fchownat
-55   loongarch  fchown                   sys_fchown
-56   loongarch  openat                   sys_openat
-57   loongarch  close                    sys_close
-58   loongarch  vhangup                  sys_vhangup
-59   loongarch  pipe2                    sys_pipe2
-60   loongarch  quotactl                 sys_quotactl
-61   loongarch  getdents64               sys_getdents64
-62   loongarch  lseek                    sys_lseek
-63   loongarch  read                     sys_read
-64   loongarch  write                    sys_write
-65   loongarch  readv                    sys_readv
-66   loongarch  writev                   sys_writev
-67   loongarch  pread64                  sys_pread64
-68   loongarch  pwrite64                 sys_pwrite64
-69   loongarch  preadv                   sys_preadv
-70   loongarch  pwritev                  sys_pwritev
-71   loongarch  sendfile                 sys_sendfile64
-72   loongarch  pselect6                 sys_pselect6
-73   loongarch  ppoll                    sys_ppoll
-74   loongarch  signalfd4                sys_signalfd4
-75   loongarch  vmsplice                 sys_vmsplice
-76   loongarch  splice                   sys_splice
-77   loongarch  tee                      sys_tee
-78   loongarch  readlinkat               sys_readlinkat
-81   loongarch  sync                     sys_sync
-82   loongarch  fsync                    sys_fsync
-83   loongarch  fdatasync                sys_fdatasync
-84   loongarch  sync_file_range          sys_sync_file_range
-85   loongarch  timerfd_create           sys_timerfd_create
-86   loongarch  timerfd_settime          sys_timerfd_settime
-87   loongarch  timerfd_gettime          sys_timerfd_gettime
-88   loongarch  utimensat                sys_utimensat
-89   loongarch  acct                     sys_acct
-90   loongarch  capget                   sys_capget
-91   loongarch  capset                   sys_capset
-92   loongarch  personality              sys_personality
-93   loongarch  exit                     sys_exit
-94   loongarch  exit_group               sys_exit_group
-95   loongarch  waitid                   sys_waitid
-96   loongarch  set_tid_address          sys_set_tid_address
-97   loongarch  unshare                  sys_unshare
-98   loongarch  futex                    sys_futex
-99   loongarch  set_robust_list          sys_set_robust_list
-100  loongarch  get_robust_list          sys_get_robust_list
-101  loongarch  nanosleep                sys_nanosleep
-102  loongarch  getitimer                sys_getitimer
-103  loongarch  setitimer                sys_setitimer
-104  loongarch  kexec_load               sys_kexec_load
-105  loongarch  init_module              sys_init_module
-106  loongarch  delete_module            sys_delete_module
-107  loongarch  timer_create             sys_timer_create
-108  loongarch  timer_gettime            sys_timer_gettime
-109  loongarch  timer_getoverrun         sys_timer_getoverrun
-110  loongarch  timer_settime            sys_timer_settime
-111  loongarch  timer_delete             sys_timer_delete
-112  loongarch  clock_settime            sys_clock_settime
-113  loongarch  clock_gettime            sys_clock_gettime
-114  loongarch  clock_getres             sys_clock_getres
-115  loongarch  clock_nanosleep          sys_clock_nanosleep
-116  loongarch  syslog                   sys_syslog
-117  loongarch  ptrace                   sys_ptrace
-118  loongarch  sched_setparam           sys_sched_setparam
-119  loongarch  sched_setscheduler       sys_sched_setscheduler
-120  loongarch  sched_getscheduler       sys_sched_getscheduler
-121  loongarch  sched_getparam           sys_sched_getparam
-122  loongarch  sched_setaffinity        sys_sched_setaffinity
-123  loongarch  sched_getaffinity        sys_sched_getaffinity
-124  loongarch  sched_yield              sys_sched_yield
-125  loongarch  sched_get_priority_max   sys_sched_get_priority_max
-126  loongarch  sched_get_priority_min   sys_sched_get_priority_min
-127  loongarch  sched_rr_get_interval    sys_sched_rr_get_interval
-128  loongarch  restart_syscall          sys_restart_syscall
-129  loongarch  kill                     sys_kill
-130  loongarch  tkill                    sys_tkill
-131  loongarch  tgkill                   sys_tgkill
-132  loongarch  sigaltstack              sys_sigaltstack
-133  loongarch  rt_sigsuspend            sys_rt_sigsuspend
-134  loongarch  rt_sigaction             sys_rt_sigaction
-135  loongarch  rt_sigprocmask           sys_rt_sigprocmask
-136  loongarch  rt_sigpending            sys_rt_sigpending
-137  loongarch  rt_sigtimedwait          sys_rt_sigtimedwait
-138  loongarch  rt_sigqueueinfo          sys_rt_sigqueueinfo
-139  loongarch  rt_sigreturn             sys_rt_sigreturn
-140  loongarch  setpriority              sys_setpriority
-141  loongarch  getpriority              sys_getpriority
-142  loongarch  reboot                   sys_reboot
-143  loongarch  setregid                 sys_setregid
-144  loongarch  setgid                   sys_setgid
-145  loongarch  setreuid                 sys_setreuid
-146  loongarch  setuid                   sys_setuid
-147  loongarch  setresuid                sys_setresuid
-148  loongarch  getresuid                sys_getresuid
-149  loongarch  setresgid                sys_setresgid
-150  loongarch  getresgid                sys_getresgid
-151  loongarch  setfsuid                 sys_setfsuid
-152  loongarch  setfsgid                 sys_setfsgid
-153  loongarch  times                    sys_times
-154  loongarch  setpgid                  sys_setpgid
-155  loongarch  getpgid                  sys_getpgid
-156  loongarch  getsid                   sys_getsid
-157  loongarch  setsid                   sys_setsid
-158  loongarch  getgroups                sys_getgroups
-159  loongarch  setgroups                sys_setgroups
-160  loongarch  uname                    sys_newuname
-161  loongarch  sethostname              sys_sethostname
-162  loongarch  setdomainname            sys_setdomainname
-165  loongarch  getrusage                sys_getrusage
-166  loongarch  umask                    sys_umask
-167  loongarch  prctl                    sys_prctl
-168  loongarch  getcpu                   sys_getcpu
-169  loongarch  gettimeofday             sys_gettimeofday
-170  loongarch  settimeofday             sys_settimeofday
-171  loongarch  adjtimex                 sys_adjtimex
-172  loongarch  getpid                   sys_getpid
-173  loongarch  getppid                  sys_getppid
-174  loongarch  getuid                   sys_getuid
-175  loongarch  geteuid                  sys_geteuid
-176  loongarch  getgid                   sys_getgid
-177  loongarch  getegid                  sys_getegid
-178  loongarch  gettid                   sys_gettid
-179  loongarch  sysinfo                  sys_sysinfo
-180  loongarch  mq_open                  sys_mq_open
-181  loongarch  mq_unlink                sys_mq_unlink
-182  loongarch  mq_timedsend             sys_mq_timedsend
-183  loongarch  mq_timedreceive          sys_mq_timedreceive
-184  loongarch  mq_notify                sys_mq_notify
-185  loongarch  mq_getsetattr            sys_mq_getsetattr
-186  loongarch  msgget                   sys_msgget
-187  loongarch  msgctl                   sys_msgctl
-188  loongarch  msgrcv                   sys_msgrcv
-189  loongarch  msgsnd                   sys_msgsnd
-190  loongarch  semget                   sys_semget
-191  loongarch  semctl                   sys_semctl
-192  loongarch  semtimedop               sys_semtimedop
-193  loongarch  semop                    sys_semop
-194  loongarch  shmget                   sys_shmget
-195  loongarch  shmctl                   sys_shmctl
-196  loongarch  shmat                    sys_shmat
-197  loongarch  shmdt                    sys_shmdt
-198  loongarch  socket                   sys_socket
-199  loongarch  socketpair               sys_socketpair
-200  loongarch  bind                     sys_bind
-201  loongarch  listen                   sys_listen
-202  loongarch  accept                   sys_accept
-203  loongarch  connect                  sys_connect
-204  loongarch  getsockname              sys_getsockname
-205  loongarch  getpeername              sys_getpeername
-206  loongarch  sendto                   sys_sendto
-207  loongarch  recvfrom                 sys_recvfrom
-208  loongarch  setsockopt               sys_setsockopt
-209  loongarch  getsockopt               sys_getsockopt
-210  loongarch  shutdown                 sys_shutdown
-211  loongarch  sendmsg                  sys_sendmsg
-212  loongarch  recvmsg                  sys_recvmsg
-213  loongarch  readahead                sys_readahead
-214  loongarch  brk                      sys_brk
-215  loongarch  munmap                   sys_munmap
-216  loongarch  mremap                   sys_mremap
-217  loongarch  add_key                  sys_add_key
-218  loongarch  request_key              sys_request_key
-219  loongarch  keyctl                   sys_keyctl
-220  loongarch  clone                    sys_clone
-221  loongarch  execve                   sys_execve
-222  loongarch  mmap                     sys_mmap
-223  loongarch  fadvise64                sys_fadvise64_64
-224  loongarch  swapon                   sys_swapon
-225  loongarch  swapoff                  sys_swapoff
-226  loongarch  mprotect                 sys_mprotect
-227  loongarch  msync                    sys_msync
-228  loongarch  mlock                    sys_mlock
-229  loongarch  munlock                  sys_munlock
-230  loongarch  mlockall                 sys_mlockall
-231  loongarch  munlockall               sys_munlockall
-232  loongarch  mincore                  sys_mincore
-233  loongarch  madvise                  sys_madvise
-234  loongarch  remap_file_pages         sys_remap_file_pages
-235  loongarch  mbind                    sys_mbind
-236  loongarch  get_mempolicy            sys_get_mempolicy
-237  loongarch  set_mempolicy            sys_set_mempolicy
-238  loongarch  migrate_pages            sys_migrate_pages
-239  loongarch  move_pages               sys_move_pages
-240  loongarch  rt_tgsigqueueinfo        sys_rt_tgsigqueueinfo
-241  loongarch  perf_event_open          sys_perf_event_open
-242  loongarch  accept4                  sys_accept4
-243  loongarch  recvmmsg                 sys_recvmmsg
-260  loongarch  wait4                    sys_wait4
-261  loongarch  prlimit64                sys_prlimit64
-262  loongarch  fanotify_init            sys_fanotify_init
-263  loongarch  fanotify_mark            sys_fanotify_mark
-264  loongarch  name_to_handle_at        sys_name_to_handle_at
-265  loongarch  open_by_handle_at        sys_open_by_handle_at
-266  loongarch  clock_adjtime            sys_clock_adjtime
-267  loongarch  syncfs                   sys_syncfs
-268  loongarch  setns                    sys_setns
-269  loongarch  sendmmsg                 sys_sendmmsg
-270  loongarch  process_vm_readv         sys_process_vm_readv
-271  loongarch  process_vm_writev        sys_process_vm_writev
-272  loongarch  kcmp                     sys_kcmp
-273  loongarch  finit_module             sys_finit_module
-274  loongarch  sched_setattr            sys_sched_setattr
-275  loongarch  sched_getattr            sys_sched_getattr
-276  loongarch  renameat2                sys_renameat2
-277  loongarch  seccomp                  sys_seccomp
-278  loongarch  getrandom                sys_getrandom
-279  loongarch  memfd_create             sys_memfd_create
-280  loongarch  bpf                      sys_bpf
-281  loongarch  execveat                 sys_execveat
-282  loongarch  userfaultfd              sys_userfaultfd
-283  loongarch  membarrier               sys_membarrier
-284  loongarch  mlock2                   sys_mlock2
-285  loongarch  copy_file_range          sys_copy_file_range
-286  loongarch  preadv2                  sys_preadv2
-287  loongarch  pwritev2                 sys_pwritev2
-288  loongarch  pkey_mprotect            sys_pkey_mprotect
-289  loongarch  pkey_alloc               sys_pkey_alloc
-290  loongarch  pkey_free                sys_pkey_free
-291  loongarch  statx                    sys_statx
-292  loongarch  io_pgetevents            sys_io_pgetevents
-293  loongarch  rseq                     sys_rseq
-294  loongarch  kexec_file_load          sys_kexec_file_load
-424  loongarch  pidfd_send_signal        sys_pidfd_send_signal
-425  loongarch  io_uring_setup           sys_io_uring_setup
-426  loongarch  io_uring_enter           sys_io_uring_enter
-427  loongarch  io_uring_register        sys_io_uring_register
-428  loongarch  open_tree                sys_open_tree
-429  loongarch  move_mount               sys_move_mount
-430  loongarch  fsopen                   sys_fsopen
-431  loongarch  fsconfig                 sys_fsconfig
-432  loongarch  fsmount                  sys_fsmount
-433  loongarch  fspick                   sys_fspick
-434  loongarch  pidfd_open               sys_pidfd_open
-435  loongarch  clone3                   sys_clone3
-436  loongarch  close_range              sys_close_range
-437  loongarch  openat2                  sys_openat2
-438  loongarch  pidfd_getfd              sys_pidfd_getfd
-439  loongarch  faccessat2               sys_faccessat2
-440  loongarch  process_madvise          sys_process_madvise
-441  loongarch  epoll_pwait2             sys_epoll_pwait2
-442  loongarch  mount_setattr            sys_mount_setattr
-443  loongarch  quotactl_fd              sys_quotactl_fd
-444  loongarch  landlock_create_ruleset  sys_landlock_create_ruleset
-445  loongarch  landlock_add_rule        sys_landlock_add_rule
-446  loongarch  landlock_restrict_self   sys_landlock_restrict_self
-448  loongarch  process_mrelease         sys_process_mrelease
-449  loongarch  futex_waitv              sys_futex_waitv
-450  loongarch  set_mempolicy_home_node  sys_set_mempolicy_home_node
-451  loongarch  cachestat                sys_cachestat
-452  loongarch  fchmodat2                sys_fchmodat2
-453  loongarch  map_shadow_stack         sys_map_shadow_stack
-454  loongarch  futex_wake               sys_futex_wake
-455  loongarch  futex_wait               sys_futex_wait
-456  loongarch  futex_requeue            sys_futex_requeue
-457  loongarch  statmount                sys_statmount
-458  loongarch  listmount                sys_listmount
-459  loongarch  lsm_get_self_attr        sys_lsm_get_self_attr
-460  loongarch  lsm_set_self_attr        sys_lsm_set_self_attr
-461  loongarch  lsm_list_modules         sys_lsm_list_modules
-462  loongarch  mseal                    sys_mseal
-463  loongarch  setxattrat               sys_setxattrat
-464  loongarch  getxattrat               sys_getxattrat
-465  loongarch  listxattrat              sys_listxattrat
-466  loongarch  removexattrat            sys_removexattrat
-467  loongarch  open_tree_attr           sys_open_tree_attr
-"""
+# LoongArch
+loongarch_syscall_tbl = arm64_syscall_tbl
 
 
 # arc
@@ -68347,6 +68185,9 @@ class Syscall:
                     arch, mode = "ARM", "Emulated-32"
                 else:
                     arch, mode = "ARM", "Native-32"
+            elif is_arm32_cortex_m():
+                # no 64-bit kernel runs it, and current_arch.mode is THUMB
+                arch, mode = "ARM", "Native-32"
             elif current_arch:
                 arch = current_arch.arch
                 mode = current_arch.mode
@@ -68849,7 +68690,7 @@ class SyscallMIPS32(Syscall):
             "sigset_t __user *uset",
         ], # arch/mips/kernel/signal.c
         "sys_sigaction": [
-            "int sig2", "const struct sigaction __user *act", "struct sigaction __user *oact",
+            "int sig", "const struct sigaction __user *act", "struct sigaction __user *oact",
         ], # arch/mips/kernel/signal.c
         "sys_fanotify_mark": [
             "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
@@ -69178,7 +69019,7 @@ class SyscallSPARC32(Syscall):
             "unsigned long pgoff", "unsigned long flags",
         ], # kernel/sys_sparc_32.c
         "sys_sparc_sigaction": [
-            "int, sig", "struct old_sigaction __user *act", "struct old_sigaction __user *oact",
+            "int sig", "struct old_sigaction __user *act", "struct old_sigaction __user *oact",
         ], # arch/sparc/kernel/sys_sparc_32.c
         "sys_rt_sigaction": [
             "int sig", "const struct sigaction __user *act", "struct sigaction __user *oact",
@@ -69188,8 +69029,8 @@ class SyscallSPARC32(Syscall):
         "sys_rt_sigreturn": [], # arch/sparc/kernel/syscalls.S
         "sys_clone": [
             "unsigned long clone_flags", "unsigned long newsp", "int __user *parent_tidptr",
-            "int __user *child_tidptr", "unsigned long tls",
-        ], # kernel/fork.c
+            "unsigned long tls", "int __user *child_tidptr",
+        ], # arch/sparc/kernel/process.c (sparc_clone reads tls from %i3 and child_tid from %i4)
         "sys_fanotify_mark": [
             "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
             "const char __user *pathname",
@@ -69258,8 +69099,8 @@ class SyscallSPARC64(Syscall):
         ], # arch/sparc/kernel/sys_sparc_64.c
         "sys_clone": [
             "unsigned long clone_flags", "unsigned long newsp", "int __user *parent_tidptr",
-            "int __user *child_tidptr", "unsigned long tls",
-        ], # kernel/fork.c
+            "unsigned long tls", "int __user *child_tidptr",
+        ], # arch/sparc/kernel/process.c (sparc_clone reads tls from %i3 and child_tid from %i4)
         "sys_sparc_adjtimex": [
             "struct __kernel_timex __user *txc_p",
         ], # arch/sparc/kernel/sys_sparc_64.c
@@ -69417,20 +69258,20 @@ class SyscallRISCV64(Syscall):
 class SyscallS390X(Syscall):
     arch_specific_dic = {
         "sys_s390_ipc": [
-            "uint, call", "int first", "unsigned long second",
+            "uint call", "int first", "unsigned long second",
             "unsigned long third", "void __user *ptr",
         ], # arch/s390/kernel/syscall.c
         "sys_sigreturn": [], # arch/s390/kernel/signal.c
         "sys_clone": [
-            "unsigned long clone_flags", "unsigned long newsp", "int stack_size",
-            "int __user *parent_tidptr", "int __user *child_tidptr", "unsigned long tls",
+            "unsigned long newsp", "unsigned long clone_flags", "int __user *parent_tidptr",
+            "int __user *child_tidptr", "unsigned long tls",
         ], # kernel/fork.c (CONFIG_CLONE_BACKWARDS2)
         "sys_s390_personality": [
             "unsigned int personality",
         ], # arch/s390/kernel/syscall.c
         "sys_rt_sigreturn": [], # arch/s390/kernel/signal.c
         "sys_s390_runtime_instr": [
-            "int, command", "int signum",
+            "int command", "int signum",
         ], # arch/s390/kernel/runtime_instr.c
         "sys_s390_pci_mmio_write": [
             "unsigned long mmio_addr", "const void __user *user_buffer", "size_t length",
@@ -69649,7 +69490,7 @@ class SyscallALPHA(Syscall):
             "const char __user *filename", "struct timeval32 __user *tvs",
         ], # arch/alpha/kernel/osf_sys.c
         "sys_osf_sigaction": [
-            "int, sig", "const struct osf_sigaction __user *act", "struct osf_sigaction __user *oact",
+            "int sig", "const struct osf_sigaction __user *act", "struct osf_sigaction __user *oact",
         ], # arch/alpha/kernel/signal.c
         "sys_osf_getdirentries": [
             "unsigned int fd", "struct osf_dirent __user *dirent",
@@ -70030,8 +69871,8 @@ class SyscallCRIS(Syscall):
     arch_specific_dic = {
         "sys_sigreturn": [], # arch/cris/arch-v10/kernel/signal.c
         "sys_clone": [
-            "unsigned long clone_flags", "unsigned long newsp", "int stack_size",
-            "int __user *parent_tidptr", "int __user *child_tidptr", "unsigned long tls",
+            "unsigned long newsp", "unsigned long clone_flags", "int __user *parent_tidptr",
+            "int __user *child_tidptr", "unsigned long tls",
         ], # kernel/fork.c (CONFIG_CLONE_BACKWARDS2)
         "sys_bdflush": [
             "int func", "long data",
@@ -70045,7 +69886,7 @@ class SyscallCRIS(Syscall):
             "unsigned long flags", "unsigned long fd", "unsigned long pgoff",
         ], # arch/cris/kernel/sys_cris.c
         "sys_lookup_dcookie": [
-            "u64 cookie64", "char __user *buf", "size_t, len",
+            "u64 cookie64", "char __user *buf", "size_t len",
         ], # fs/dcookies.c
         "sys_fanotify_mark": [
             "int fanotify_fd", "unsigned int flags", "u64 mask", "int fd",
@@ -70099,8 +69940,9 @@ class SyscallLOONGARCH64(Syscall):
         tbl = cls.parse_syscall_table_defs(loongarch_syscall_tbl)
         syscall_list = []
         for entry in tbl:
-            nr, abi, name, func = entry
-            if abi != "loongarch":
+            nr, abi, name, func = entry[:4]
+            # arch/loongarch/kernel/Makefile.syscalls
+            if abi not in ["common", "64", "memfd_secret"]:
                 continue
             # special case
             if func in cls.arch_specific_dic:
@@ -72113,7 +71955,7 @@ class Avx512Command(GenericCommand):
 
 @register_command
 class FpuCommand(GenericCommand):
-    """Display fpu registers (x86/x64:x87-fpu, ARM/ARM64:vfp-d16)."""
+    """Display fpu registers (x86/x64: x87 FPU, ARM/ARM64: VFP/NEON)."""
 
     _cmdline_ = "fpu"
     _category_ = "04-a. Register - View"
@@ -72140,8 +71982,14 @@ class FpuCommand(GenericCommand):
                 return int.from_bytes(value.bytes, Endian.endian_str())
             if value.type.code == gdb.TYPE_CODE_UNION:
                 if is_arm64():
-                    return int(value["u"])
+                    # `int()` of uint128 fails before gdb 14, so go through the string like get_register
+                    return int(str(value["u"]), 0)
                 return int(value["u64"])
+            # `/x` of a float converts the value to an integer before gdb 12, so restore the raw bits
+            if value.type.code == gdb.TYPE_CODE_FLT:
+                if value.type.sizeof == 4:
+                    return GefUtil.f2u(float(value))
+                return GefUtil.d2u(float(value))
             return int(value.format_string(format="x"), 16)
         except (gdb.error, ValueError):
             return None
@@ -72166,18 +72014,25 @@ class FpuCommand(GenericCommand):
             regname3 = "$q{:d}".format(i)
             reg1 = FpuCommand.get_arm_value(regname1)
             reg2 = FpuCommand.get_arm_value(regname2)
-            reg3 = FpuCommand.get_arm_value(regname3)
 
+            # a missing register is void (e.g., d16-d31 of VFP-D16), so pad N/A to the width of the column
             if reg1 is None:
-                fmt1 = "{:s}: {:s}".format(red(regname1), "Access denied")
+                fmt1 = "{:s}: {:26s}".format(red(regname1), "N/A")
             else:
                 fmt1 = "{:s}: {:15s} {:<#10x}".format(red(regname1), "{:<+.8e}".format(GefUtil.u2f(reg1)), reg1)
             if reg2 is None:
-                fmt2 = "{:s}: {:s}".format(red(regname2), "Access denied")
+                fmt2 = "{:s}: {:47s}".format(red(regname2), "N/A")
             else:
                 fmt2 = "{:s}: {:28s} {:<#18x}".format(red(regname2), "{:<+.20e}".format(GefUtil.u2d(reg2)), reg2)
+
+            # ARM32 has only q0-q15
+            if is_arm32() and i >= 16:
+                gef_print("{:s} | {:s}".format(fmt1, fmt2))
+                continue
+
+            reg3 = FpuCommand.get_arm_value(regname3)
             if reg3 is None:
-                fmt3 = "{:s}: {:s}".format(red(regname3), "Access denied")
+                fmt3 = "{:s}: {:s}".format(red(regname3), "N/A")
             else:
                 fmt3 = "{:s}: {:<#34x}".format(red(regname3), reg3)
             gef_print("{:s} | {:s} | {:s}".format(fmt1, fmt2, fmt3))
@@ -72189,14 +72044,15 @@ class FpuCommand(GenericCommand):
         # st0-7
         gef_print(titlify("FPU Data Register"))
 
-        fmt = "{:9s} : {:27s}\t{:24s} {:18s} {:10s}"
-        legend = ["Name", "Value", "80-bit hex(TWORD/XWORD)", "64-bit hex(QWORD)", "32-bit Hex(DWORD)"]
+        # the value of gdb is up to 29 characters (e.g., -1.18973149535723176502e+4932)
+        fmt = "{:9s} : {:29s} {:24s} {:18s} {:10s}"
+        legend = ["Name", "Value", "80-bit hex(TWORD/XWORD)", "64-bit hex(QWORD)", "32-bit hex(DWORD)"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
 
         fstat = get_register("$fstat")
         if fstat is None:
             err("Could not read x87 status register")
-            return
+            return False
         top_of_stack = (fstat >> 11) & 0b111
         regs = ["mm{:d}".format(i) for i in range(8)]
         regs = regs[top_of_stack:] + regs[:top_of_stack] # need rotate. because mmx0 != st(0)
@@ -72219,19 +72075,21 @@ class FpuCommand(GenericCommand):
                         u64, u32 = "<overflow>", "<overflow>"
                     else:
                         u64 = "{:#x}".format(GefUtil.d2u(reg))
-                        try:
-                            u32 = "{:#x}".format(GefUtil.f2u(reg))
-                        except OverflowError:
+                        # convert from the 80-bit value directly, since rounding to double first can differ
+                        reg32 = float(gdb.parse_and_eval("(float){:s}".format(regname)))
+                        if math.isinf(reg32):
                             u32 = "<overflow>"
+                        else:
+                            u32 = "{:#x}".format(GefUtil.f2u(reg32))
             except gdb.error:
                 gef_print("{:4s}({:3s}) : <unavailable>".format(red(regname), regs[i]))
                 continue
-            gef_print("{:4s}({:3s}) : {:<27s}\t{:<#24x} {:<18s} {:<10s}".format(
-                red(regname), regs[i], value, u80, u64, u32,
+            gef_print("{:4s}({:3s}) : {:<29s} {:<24s} {:<18s} {:<10s}".format(
+                red(regname), regs[i], value, "0x{:020x}".format(u80), u64, u32,
             ))
         info("XWORD: Raw 80-bit register value.")
         info("QWORD/DWORD: Converted to float64/float32 with round-to-nearest; overflow is marked.")
-        return
+        return True
 
     def print_fpu_arm_other(self):
         # fpscr
@@ -72276,11 +72134,10 @@ class FpuCommand(GenericCommand):
             [range(16, 23), "Subarchitecture", "Subarchitecture version number"],
             [range(8, 16), "PartNum", "Part number", "IMPLEMENTATION DEFINED"],
             [[4, 5, 6, 7], "Variant", "Variant number", "IMPLEMENTATION DEFINED"],
-            [[0, 1, 2, 3], "Revision", "Revisino number", "IMPLEMENTATION DEFINED"],
+            [[0, 1, 2, 3], "Revision", "Revision number", "IMPLEMENTATION DEFINED"],
         ]
         impl = {
             0x00: "Reserved for software use",
-            0xc0: "Ampere Computing",
             0x41: "Arm Limited",
             0x42: "Broadcom Corporation",
             0x43: "Cavium Inc.",
@@ -72293,13 +72150,12 @@ class FpuCommand(GenericCommand):
             0x51: "Qualcomm Inc.",
             0x56: "Marvell International Ltd.",
             0x69: "Intel Corporation",
+            0xc0: "Ampere Computing",
         }
         reg = get_register("$fpsid")
         if reg is not None:
+            bit_info[0].append(impl.get(reg >> 24, "Unknown"))
             BitInfo("$fpsid", 32, bit_info).print(reg)
-            gef_print("Implementer code")
-            for k, v in impl.items():
-                gef_print("  {:#02x}: {:s}".format(k, v))
         else:
             warn("Failed to get the value")
 
@@ -72348,9 +72204,11 @@ class FpuCommand(GenericCommand):
         reg = get_register("$fpcr")
         if reg is not None:
             BitInfo("$fpcr", 32, bit_info).print(reg)
+        else:
+            warn("Failed to get the value")
 
         # fpsr
-        gef_print(titlify("FPCR (Floating-Point Status Register)"))
+        gef_print(titlify("FPSR (Floating-Point Status Register)"))
         bit_info = [
             [31, "N", "", "Unused, see $cpsr"],
             [30, "Z", "", "Unused, see $cpsr"],
@@ -72367,6 +72225,8 @@ class FpuCommand(GenericCommand):
         reg = get_register("$fpsr")
         if reg is not None:
             BitInfo("$fpsr", 32, bit_info).print(reg)
+        else:
+            warn("Failed to get the value")
         return
 
     def print_fpu_x86_other(self):
@@ -72380,11 +72240,14 @@ class FpuCommand(GenericCommand):
             [4, "UM", "Underflow Exception Mask"],
             [3, "OM", "Overflow Exception Mask"],
             [2, "ZM", "Zero Divide Exception Mask"],
-            [1, "DM", "Denormalized Opernd Exception Mask"],
+            [1, "DM", "Denormalized Operand Exception Mask"],
             [0, "IM", "Invalid Operation Exception Mask"],
         ]
         reg = get_register("$fctrl")
-        BitInfo("$fctrl", 16, bit_info).print(reg)
+        if reg is not None:
+            BitInfo("$fctrl", 16, bit_info).print(reg)
+        else:
+            warn("Failed to get the value")
 
         # fstat
         gef_print(titlify("FSTAT (x87 FPU Status Word)"))
@@ -72405,7 +72268,14 @@ class FpuCommand(GenericCommand):
             [0, "IE", "Invalid Operation Exception"],
         ]
         reg = get_register("$fstat")
-        BitInfo("$fstat", 16, bit_info).print(reg)
+        if reg is not None:
+            BitInfo("$fstat", 16, bit_info).print(reg)
+        else:
+            warn("Failed to get the value")
+
+        # the x86 gdbstub of QEMU returns 0 for them (x86_cpu_gdb_read_register of target/i386/gdbstub.c)
+        if is_qemu():
+            warn("QEMU always returns 0 for FTAG, the last instruction/data pointers and FOP")
 
         # ftag
         gef_print(titlify("FTAG (x87 FPU Tag Word)"))
@@ -72420,26 +72290,64 @@ class FpuCommand(GenericCommand):
             [[0, 1], "TAG(0)", "Reg0 Tag", "00: Valid, 01: Zero, 10: Invalid/Nan/Inf/Denormal, 11: Blank"],
         ]
         reg = get_register("$ftag")
-        BitInfo("$ftag", 16, bit_info).print(reg)
+        if reg is not None:
+            BitInfo("$ftag", 16, bit_info).print(reg)
+        else:
+            warn("Failed to get the value")
 
-        # $fiseg, $fioff
-        gef_print(titlify("FCS:FIP (x87 FPU Last Instruction Pointer)"))
-        reg = get_register("$fiseg")
-        BitInfo("$fiseg(FCS)", 16).print(reg)
-        reg = get_register("$fioff")
-        BitInfo("$fioff(FIP)", 32).print(reg)
+        # $fioff and $fooff are signed int of tdesc, so read them without the sign extension
+        if is_x86_64():
+            # the 64-bit format of FXSAVE/XSAVE has 64-bit FIP and FDP without FCS and FDS,
+            # and gdb puts the upper 32 bits in $fiseg and $foseg (amd64_supply_fxsave)
+            gef_print(titlify("FIP (x87 FPU Last Instruction Pointer)"))
+            reg_high = get_register("$fiseg", full_width=True)
+            reg_low = get_register("$fioff", full_width=True)
+            if reg_high is not None and reg_low is not None:
+                BitInfo("$fiseg:$fioff(FIP)", 64).print((reg_high << 32) | reg_low)
+            else:
+                warn("Failed to get the value")
 
-        # $foseg, $fooff
-        gef_print(titlify("FDS:FDP (x87 FPU Last Data(Operand) Pointer)"))
-        reg = get_register("$foseg")
-        BitInfo("$foseg(FDS)", 16).print(reg)
-        reg = get_register("$fooff")
-        BitInfo("$fooff(FDP)", 32).print(reg)
+            gef_print(titlify("FDP (x87 FPU Last Data(Operand) Pointer)"))
+            reg_high = get_register("$foseg", full_width=True)
+            reg_low = get_register("$fooff", full_width=True)
+            if reg_high is not None and reg_low is not None:
+                BitInfo("$foseg:$fooff(FDP)", 64).print((reg_high << 32) | reg_low)
+            else:
+                warn("Failed to get the value")
+        else:
+            # $fiseg, $fioff
+            gef_print(titlify("FCS:FIP (x87 FPU Last Instruction Pointer)"))
+            reg = get_register("$fiseg", full_width=True)
+            if reg is not None:
+                BitInfo("$fiseg(FCS)", 16).print(reg)
+            else:
+                warn("Failed to get the value")
+            reg = get_register("$fioff", full_width=True)
+            if reg is not None:
+                BitInfo("$fioff(FIP)", 32).print(reg)
+            else:
+                warn("Failed to get the value")
+
+            # $foseg, $fooff
+            gef_print(titlify("FDS:FDP (x87 FPU Last Data(Operand) Pointer)"))
+            reg = get_register("$foseg", full_width=True)
+            if reg is not None:
+                BitInfo("$foseg(FDS)", 16).print(reg)
+            else:
+                warn("Failed to get the value")
+            reg = get_register("$fooff", full_width=True)
+            if reg is not None:
+                BitInfo("$fooff(FDP)", 32).print(reg)
+            else:
+                warn("Failed to get the value")
 
         # $fop
         gef_print(titlify("FOP (x87 FPU Last Instruction Opcode)"))
         reg = get_register("$fop")
-        BitInfo("$fop", 11).print(reg)
+        if reg is not None:
+            BitInfo("$fop", 11).print(reg)
+        else:
+            warn("Failed to get the value")
         return
 
     @Decorator.parse_args
@@ -72448,7 +72356,9 @@ class FpuCommand(GenericCommand):
     @Decorator.only_if_specific_arch(arch=("x86_32", "x86_64", "ARM32", "ARM64"))
     def do_invoke(self, args):
         if is_x86():
-            self.print_fpu_x86()
+            # the control registers are also unavailable then (e.g., a core without NT_FPREGSET)
+            if not self.print_fpu_x86():
+                return
         elif is_arm():
             self.print_fpu_arm()
 
@@ -72460,7 +72370,7 @@ class FpuCommand(GenericCommand):
             elif is_arm64():
                 self.print_fpu_arm64_other()
         else:
-            info("for fpu other register's flags description, use `-v`")
+            info("for fpu other registers' flags description, use `-v`")
         return
 
 
@@ -73077,10 +72987,19 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
             if not is_alive():
                 warn("No debugging session active")
                 return
+            # SH4 gdb drops the leading underscore of symbols, and bionic and newlib have `__errno`
+            for func_name in ["__errno_location", "_errno_location", "__errno"]:
+                if Symbol.resolve_address(func_name) is not None:
+                    break
+            else:
+                func_name = "__errno_location"
+            # do not stay in the call on a signal (e.g., TLS is not set yet at `starti`), nor resume other threads
             try:
-                val = AddressUtil.parse_address("*(int *)__errno_location()")
-            except gdb.error:
-                err("Failed to get *__errno_location()")
+                with ContextManager.gdb_parameter("unwindonsignal", "on"):
+                    with ContextManager.gdb_parameter("scheduler-locking", "on", ignore_error=True):
+                        val = AddressUtil.parse_address("*(int *){:s}()".format(func_name))
+            except gdb.error as e:
+                err("Failed to get *{:s}(): {!s}".format(func_name, e))
                 return
         else:
             val = args.errno
@@ -73089,7 +73008,11 @@ class ErrnoCommand(GenericCommand, BufferingOutput):
             if current_arch and current_arch.ptrsize == 4:
                 val = u2i(val, 32)
             elif current_arch and current_arch.ptrsize == 8:
-                val = u2i(val)
+                # an int in a 64-bit register (e.g., $rax after `finish`) is not sign-extended
+                if val < 1 << 32:
+                    val = u2i(val, 32)
+                else:
+                    val = u2i(val)
             elif current_arch is None:
                 val = u2i(val)
             else:

@@ -528,6 +528,22 @@ def syscall_defs_update(context):
     return
 
 
+def syscall_version_update(context):
+    print(titlify("syscall table version"))
+    gef = read_text(context.gef_tmp_path).splitlines()
+    prefix = "# System call table (linux-"
+    for i, line in enumerate(gef):
+        if line.startswith(prefix):
+            new_line = "{:s}{:s}; How to make: see dev/update-syscalls/update-syscalls.py)".format(
+                prefix, context.kernel.version_name(),
+            )
+            print_diff([line], [new_line])
+            gef[i] = new_line
+            write_text(context.gef_tmp_path, "\n".join(gef) + "\n")
+            return
+    raise RuntimeError("Failed to find gef.py line: {:s}".format(prefix))
+
+
 def syscall_defs_compat_update(context):
     print(titlify("syscall_defs_compat"))
 
@@ -763,13 +779,21 @@ def xtensa_syscall_tbl_update(context):
 
 def cris_syscall_tbl_update(context):
     print(titlify("cris_syscall_tbl"))
+    # the names come from __NR_* of unistd.h, since the function names differ (e.g., sys_newstat for stat)
     new_tbl = get_new_tbl_by_cmds(
         context,
         r"""
-        cd {:s}
-        awk '/sys_call_table:/,/^$/' arch/cris/arch-v10/kernel/entry.S | grep -o "\.long \w*" | nl -v0 | awk '{{print $1" cris "substr($3,5)" "$3}}' |column -t
-        """.format(context.kernel.source_dir()),
-        ["arch/cris/arch-v10/kernel/entry.S"],
+        cd {0:s}
+        awk '/sys_call_table:/,/^$/' arch/cris/arch-v10/kernel/entry.S > {1:s}.S
+        grep -oP "\.long \K\w+" {1:s}.S | awk '{{print NR-1" "$1}}' > {1:s}
+        grep -oP "^#define __NR_\K\w+" arch/cris/include/uapi/asm/unistd.h | grep -vx syscalls | sed "s/.*/& __NR_&/" > {2:s}
+        gcc -E -P -x c -include arch/cris/include/uapi/asm/unistd.h {2:s} | tr -d "()" | awk '{{print $2+$3" "$1}}' > {2:s}.nr
+        awk 'NR==FNR{{n[$1]=$2; next}} {{print $1" cris "(($1 in n) ? n[$1] : substr($2,5))" "$2}}' {2:s}.nr {1:s} | column -t
+        """.format(context.kernel.source_dir(), context.tmp_a, context.tmp_b),
+        [
+            "arch/cris/arch-v10/kernel/entry.S",
+            "arch/cris/include/uapi/asm/unistd.h",
+        ],
     )
     old_tbl, s, e = get_gef_defs(context, 'cris_syscall_tbl = """', '"""')
     print_diff(old_tbl, new_tbl)
@@ -779,25 +803,7 @@ def cris_syscall_tbl_update(context):
 
 def loongarch_syscall_tbl_update(context):
     print(titlify("loongarch_syscall_tbl"))
-    print("\033[1m" + "[!] skip loongarch_syscall_tbl. need fix manually." + "\033[0m")
-    return
-
-    new_tbl = get_new_tbl_by_cmds(
-        context,
-        r"""
-        cd {:s}
-        gcc -I `pwd`/include/uapi/ -E -D__SYSCALL=SYSCALL arch/loongarch/include/uapi/asm/unistd.h | grep ^SYSCALL | sed -e 's/SYSCALL(//;s/[,)]//g' > {:s}
-        grep -oP "__NR\S+\s+\d+$" include/uapi/asm-generic/unistd.h | grep -v __NR_sync_file_range2 > {:s}
-        join -2 2 -o 1.1,1.10,2.1,1.2 -e loongarch {:s} {:s} 2>/dev/null | sed -e 's/\(__NR_\|__NR3264_\)//g' | column -t
-        """.format(context.kernel.source_dir(), context.tmp_a, context.tmp_b, context.tmp_a, context.tmp_b),
-        [
-            "arch/loongarch/include/uapi/asm/unistd.h",
-            "include/uapi/asm-generic/unistd.h",
-        ],
-    )
-    old_tbl, s, e = get_gef_defs(context, 'loongarch_syscall_tbl = """', '"""')
-    print_diff(old_tbl, new_tbl)
-    write_back(context, new_tbl, s, e)
+    print("\033[1m" + "[!] same with arm64 \033[0m")
     return
 
 
@@ -824,6 +830,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="gef-update-syscalls-") as work_dir:
             context = init_context(args, work_dir)
 
+            syscall_version_update(context)
             syscall_defs_update(context)
             syscall_defs_compat_update(context)
 
@@ -849,7 +856,7 @@ def main():
             microblaze_syscall_tbl_update(context)
             xtensa_syscall_tbl_update(context)
             #cris_syscall_tbl_update(context) # cris is removed at current linux
-            loongarch_syscall_tbl_update(context) # skip
+            loongarch_syscall_tbl_update(context)
             arc_syscall_tbl_update(context)
             csky_syscall_tbl_update(context)
 
