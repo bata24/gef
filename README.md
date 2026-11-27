@@ -864,7 +864,7 @@ For the supported architectures, see [docs/QEMU-USER-SUPPORTED-ARCH.md](docs/QEM
     - ![](images/command-break.png)
 - `main-break`: sets a breakpoint at `main` with or without symbols, then continue.
     - This is useful when you just want to run to `main` using `qemu-user` or `pin`, or debugging no-symbol ELF.
-- `entry-break`: finds a suitable entry point and sets a temporary breakpoint there.
+- `entry-break`: runs the program (kills it first if running) and stops at a suitable entry point.
 - `load-break`: breaks if something is loaded.
 - `regdump-break`: sets a breakpoint which dumps specified registers if hit.
 - `multi-break`: sets multiple breakpoints easily.

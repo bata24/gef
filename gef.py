@@ -2580,14 +2580,26 @@ class Elf:
     e_shstrndx               = None
 
     @staticmethod
-    @Cache.cache_until_next
     def get_elf(filepath=None):
         """Return an Elf object with caching."""
-        try:
-            elf = Elf(filepath)
-        except Exception:
-            elf = None
-        return elf
+
+        # a file replaced at the same path (e.g., rebuilt) is read again, since its identity is a part of the key
+        @Cache.cache_until_next
+        def get_elf_of(filepath, file_id): # file_id is only for the cache key
+            try:
+                elf = Elf(filepath)
+            except Exception:
+                elf = None
+            return elf
+
+        file_id = None
+        if isinstance(filepath, str):
+            try:
+                stat = os.stat(filepath)
+                file_id = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            except OSError:
+                pass
+        return get_elf_of(filepath, file_id)
 
     def __init__(self, elf=None, file_offset=0):
         """Instantiate an ELF object."""
@@ -10030,6 +10042,18 @@ class PPC64(PPC):
 
     unicorn_support = False
 
+    @staticmethod
+    def is_elfv1():
+        """Return True if the debuggee is ELFv1, which uses the function descriptors."""
+        codebase = ProcessMap.get_codebase()
+        if codebase is None:
+            elf = None
+        else:
+            elf = Elf.get_elf(codebase) # from memory, since the file may be only on the remote target
+        if elf and elf.is_valid() and elf.e_flags & 3: # EF_PPC64_ABI
+            return (elf.e_flags & 3) == 1
+        return Endian.is_big_endian() # the default when unspecified
+
     def get_ith_parameter(self, i, in_func=True, sp=None):
         if i < len(self.function_parameters):
             reg = self.function_parameters[i]
@@ -10038,16 +10062,7 @@ class PPC64(PPC):
             return key, val
         else:
             # the parameter save area follows the frame header, which is 48 bytes in ELFv1 and 32 bytes in ELFv2
-            codebase = ProcessMap.get_codebase()
-            if codebase is None:
-                elf = None
-            else:
-                elf = Elf.get_elf(codebase) # from memory, since the file may be only on the remote target
-            if elf and elf.is_valid() and elf.e_flags & 3: # EF_PPC64_ABI
-                is_elfv1 = (elf.e_flags & 3) == 1
-            else:
-                is_elfv1 = Endian.is_big_endian() # the default when unspecified
-            if is_elfv1:
+            if PPC64.is_elfv1():
                 i += 6
             else:
                 i += 4
@@ -17227,6 +17242,8 @@ class EventHandler:
     @staticmethod
     def selected_context_handler(_event):
         """Enable continue handlers only when the selected inferior has a thread."""
+        # the CPUs may be in different modes (e.g., the APs in the real mode while the BSP boots)
+        ContextCommand.i386_auto_switch()
         return EventHandler.update_continue_hooks()
 
     @staticmethod
@@ -17321,6 +17338,9 @@ class EventHandler:
         if current_arch is None or current_arch_context != get_arch_context():
             set_arch()
 
+        # before the context, and also when the context is not shown (e.g., `context off` and a silent breakpoint)
+        ContextCommand.i386_auto_switch()
+
         kpti_transition = is_in_kpti_transition()
         if kpti_transition and not EventHandler.kpti_transition_active:
             warn("Stopped during a KPTI page-table transition; continue briefly and retry.")
@@ -17364,12 +17384,18 @@ class EventHandler:
     def should_show_stop_context(event):
         if EventHandler.kpti_transition_active:
             return False
-        # A silent breakpoint suppresses automatic context output.
+        # Silent breakpoints suppress automatic context output, but gdb shows the stop if any hit one is not silent.
+        # `enabled` is not checked, since `enable once` and `enable count N` have already disabled the hit one here.
         if isinstance(event, gdb.BreakpointEvent):
-            bp = event.breakpoint
-            if bp.is_valid() and bp.enabled:
-                if bp.commands and bp.commands.startswith("silent"):
-                    return False
+            for bp in event.breakpoints:
+                # e.g., a temporary breakpoint that has been deleted
+                if not bp.is_valid():
+                    return True
+                if not bp.commands:
+                    return True
+                if not bp.commands.startswith("silent"):
+                    return True
+            return False
         return True
 
     @staticmethod
@@ -43022,8 +43048,10 @@ class ExploitableCommand(GenericCommand):
 class DwarfExceptionHandler:
     """Parse the DWARF exception handler sections (.eh_frame_hdr, .eh_frame and .gcc_except_table)."""
 
-    def __init__(self, elf):
+    def __init__(self, elf, load_bias=0, is_main=False):
         self.elf = elf
+        self.load_bias = load_bias # added to the vma for the runtime address (e.g., unwind-info)
+        self.is_main = is_main # $codebase is the base of the main binary, not of a library
         if elf.e_endianness == Elf.LITTLE_ENDIAN:
             self.endian = "little"
         else:
@@ -43080,10 +43108,10 @@ class DwarfExceptionHandler:
             self.pos = args[0]
             self.raw_data = args[1]
             self.name = args[2]
-            if len(args) >= 4 and args[3] is not None:
+            if len(args) >= 4:
                 self.value = args[3]
             else:
-                self.value = ""
+                self.value = None # the line without a value has no colon
             if len(args) == 5 and args[4] is not None:
                 self.extra = args[4]
             else:
@@ -43102,7 +43130,9 @@ class DwarfExceptionHandler:
             else:
                 raise TypeError("unsupported raw_data type: {!s}".format(type(self.raw_data)))
 
-            if isinstance(self.value, str):
+            if self.value is None:
+                value_s = ""
+            elif isinstance(self.value, str):
                 value_s = self.value
             elif isinstance(self.value, int):
                 value_s = "{:#018x}".format(self.value)
@@ -43298,12 +43328,12 @@ class DwarfExceptionHandler:
         err("Unsupported pointer encoding: {:#x}, assuming pointer size of {:d}".format(
             encoding, ptr_size,
         ))
-        return 0
+        return ptr_size
 
     def format_vma(self, offset):
-        if self.elf.is_pie():
+        if self.is_main and self.elf.is_pie():
             return "$codebase+{:#x}".format(self.load_base + offset)
-        return "{:#x}".format(self.load_base + offset)
+        return "{:#x}".format(self.load_bias + self.load_base + offset)
 
     def section_offset(self, section_name):
         shdr = self.elf.get_shdr(section_name)
@@ -43853,7 +43883,7 @@ class DwarfExceptionHandler:
         ptr_size = cie.address_size
         code_align = cie.code_alignment_factor
         data_align = cie.data_alignment_factor
-        pc = vma_base
+        pc = self.load_bias + vma_base
         indent = " " * 4
 
         entries = []
@@ -43870,9 +43900,9 @@ class DwarfExceptionHandler:
                         func_off = vma_base - self.load_base
                         loc_off = self.encoded_offset(encoding, op1, sec_off + pos + 1, func_off=func_off)
                         if loc_off is None:
-                            pc = op1
+                            pc = self.load_bias + op1
                         else:
-                            pc = self.load_base + loc_off
+                            pc = self.load_bias + self.load_base + loc_off
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos],
                             indent + "set_loc {:#x} to {:#x}".format(op1, pc),
@@ -44247,7 +44277,11 @@ class DwarfExceptionHandler:
                 continue
             if primary == self.DW_CFA_restore:
                 reg = opcode & 0x3f
-                registers[reg] = initial_rules.get(reg, ("undefined",))
+                # the column without a rule in CIE becomes unspecified, not undefined
+                if reg in initial_rules:
+                    registers[reg] = initial_rules[reg]
+                else:
+                    registers.pop(reg, None)
                 continue
 
             if opcode == self.DW_CFA_nop:
@@ -44304,7 +44338,10 @@ class DwarfExceptionHandler:
             ):
                 pos, reg = self.get_uleb128(data, pos)
                 if opcode == self.DW_CFA_restore_extended:
-                    registers[reg] = initial_rules.get(reg, ("undefined",))
+                    if reg in initial_rules:
+                        registers[reg] = initial_rules[reg]
+                    else:
+                        registers.pop(reg, None)
                 elif opcode == self.DW_CFA_undefined:
                     registers[reg] = ("undefined",)
                 else:
@@ -45386,6 +45423,7 @@ class DwarfExceptionHandler:
 
                 # parse action_table
                 max_ar_filter = 0
+                spec_positions = set()
                 table_cnt = 0
                 if max_action:
                     action_table_end_pos = action_table_pos + max_action + 1
@@ -45395,9 +45433,15 @@ class DwarfExceptionHandler:
                         new_pos, ar_filter = self.get_sleb128(data, pos)
                         if ar_filter == 0:
                             extra_s = "cleanup"
-                        else:
+                        elif ar_filter > 0:
                             enc_size = self.encoded_ptr_size(ttype_encoding, self.ptr_size)
                             extra_s = "catch typeinfo: {:#x}".format(ttype_base - ar_filter * enc_size)
+                        else:
+                            # the exception specification of throw(...): a list of TType indices at ttype_base
+                            if ttype_base is None:
+                                raise ValueError("exception specification without TType table")
+                            spec_positions.add(ttype_base - ar_filter - 1)
+                            extra_s = "exception spec: {:#x}".format(ttype_base - ar_filter - 1)
                         entries.append(self.DataEntry(
                             pos, data[pos:new_pos], "action_record_filter", ar_filter, extra_s,
                         ))
@@ -45417,6 +45461,28 @@ class DwarfExceptionHandler:
                         pos = new_pos
 
                         table_cnt += 1
+
+                # parse the exception specifications, which are stored after ttype_base and also refer to TType
+                spec_entries = []
+                spec_end = ttype_base
+                for spec_pos in sorted(spec_positions):
+                    if spec_pos < spec_end:
+                        continue # shared by another list
+                    spec_entries.append(self.SeparatorEntry(spec_pos, "Exception spec[{:#x}]".format(spec_pos)))
+                    while True:
+                        new_spec_pos, ttype_index = self.get_uleb128(data, spec_pos)
+                        if ttype_index == 0:
+                            extra_s = "list end"
+                        else:
+                            extra_s = "-> TType table[{:4d}]".format(ttype_index)
+                        spec_entries.append(self.DataEntry(
+                            spec_pos, data[spec_pos:new_spec_pos], "ttype_index", ttype_index, extra_s,
+                        ))
+                        max_ar_filter = max(ttype_index, max_ar_filter)
+                        spec_pos = new_spec_pos
+                        if ttype_index == 0:
+                            break
+                    spec_end = spec_pos
 
                 # parse ttype_table
                 if max_ar_filter > 0 and ttype_base is not None:
@@ -45442,12 +45508,13 @@ class DwarfExceptionHandler:
                         current_ar_filter -= 1
                 if ttype_base is not None:
                     entries.append(self.SeparatorEntry(ttype_base, "TType table base (Stored upwards)"))
+                entries.extend(spec_entries)
 
                 # next LSDA
                 if ttype_base is None:
                     pass
                 else:
-                    pos = ttype_base
+                    pos = spec_end
                 lsda_table_cnt += 1
 
             if lsda_pos_padding:
@@ -45528,14 +45595,14 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         "+-----------------------+      +-->+----------------+",
         "| ...                   |      |   | p_type         |",
         "| frame_hdr_cache_head  |---+  |   | p_flags        |",
-        "+-frame_hdr_cache_entry-+<--+  |   | p_offset       |",
+        "+frame_hdr_cache_element+<--+  |   | p_offset       |",
         "| pc_low                |      |   | p_vaddr        |----+",
         "| pc_high               |      |   | p_paddr        |    |",
         "| load_base             |      |   | p_filesz       |    |",
         "| p_eh_frame_hdr        |------+   | p_memsz        |    |",
         "| p_dynamic             |          | p_align        |    |         [NEW IMPLEMENTATION]",
-        "| link                  |---+      +----------------+    |          _dlfo_main@ld.so rodata area",
-        "+-frame_hdr_cache_entry-+<--+                            |          _dlfo_nodelete_mappings@ld.so rodata area",
+        "| link                  |---+      +----------------+    |          _dlfo_main@ld.so relro area",
+        "+frame_hdr_cache_element+<--+                            |          _dlfo_nodelete_mappings[]@heap (pointer in relro)",
         "| pc_low                |                                |         +-------------+",
         "| pc_high               |                                |         | map_start   |",
         "| load_base             |                                |         | map_end     |",
@@ -45543,8 +45610,8 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
         "| p_dynamic             |                                |<--------| eh_frame    |",
         "| link                  |                                |         | (eh_dbase)  |",
         "+-----------------------+                                |         | (eh_count)  |",
-        "The frame_hdr_cache_head and frame_hdr_cache_entry are   |         +-------------+",
-        "initialized the first time they are called.              |",
+        "The frame_hdr_cache_head and frame_hdr_cache[] are       |         +-------------+",
+        "initialized the first time they are used.                |",
         "                                                         |",
         "                           +-----------------------------+",
         "                           |",
@@ -45594,7 +45661,7 @@ class DwarfExceptionHandlerInfoCommand(GenericCommand, BufferingOutput):
             if elf is None or not elf.is_valid():
                 err("Failed to parse ELF")
                 return
-            self.out = DwarfExceptionHandler(elf).dump(with_hexdump=args.hexdump)
+            self.out = DwarfExceptionHandler(elf, is_main=args.file is None).dump(with_hexdump=args.hexdump)
 
         if self.out:
             self.print_output()
@@ -45666,23 +45733,23 @@ class UnwindInfoCommand(GenericCommand):
             candidate = Elf.get_elf(filepath)
             if not candidate or not candidate.is_valid() or not candidate.get_shdr(".eh_frame"):
                 continue
-            if remote:
-                loads = [phdr for phdr in candidate.phdrs if phdr.p_type == Elf.Phdr.PT_LOAD]
-                if not loads:
-                    continue
-                linked_base = min(phdr.p_vaddr - phdr.p_offset for phdr in loads)
-                note = candidate.get_shdr(".note.gnu.build-id")
-                check_section = note or candidate.get_shdr(".eh_frame")
-                try:
-                    actual = read_memory(mapped_base + check_section.sh_addr - linked_base, check_section.sh_size)
-                except gdb.error:
-                    continue
-                if note:
-                    section_name = ".note.gnu.build-id"
-                else:
-                    section_name = ".eh_frame"
-                if actual != candidate.read_shdr(section_name):
-                    continue
+            # the local file may also differ from the mapped one (e.g., rebuilt while running, `(deleted)`)
+            loads = [phdr for phdr in candidate.phdrs if phdr.p_type == Elf.Phdr.PT_LOAD]
+            if not loads:
+                continue
+            linked_base = min(phdr.p_vaddr - phdr.p_offset for phdr in loads)
+            note = candidate.get_shdr(".note.gnu.build-id")
+            check_section = note or candidate.get_shdr(".eh_frame")
+            try:
+                actual = read_memory(mapped_base + check_section.sh_addr - linked_base, check_section.sh_size)
+            except gdb.error:
+                continue
+            if note:
+                section_name = ".note.gnu.build-id"
+            else:
+                section_name = ".eh_frame"
+            if actual != candidate.read_shdr(section_name):
+                continue
             elf = candidate
             break
 
@@ -45700,7 +45767,8 @@ class UnwindInfoCommand(GenericCommand):
         if not load_segments:
             return None, None
         linked_base = min(phdr.p_vaddr - phdr.p_offset for phdr in load_segments)
-        return DwarfExceptionHandler(elf), mapped_base - linked_base
+        load_bias = mapped_base - linked_base
+        return DwarfExceptionHandler(elf, load_bias=load_bias), load_bias
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
@@ -45709,20 +45777,28 @@ class UnwindInfoCommand(GenericCommand):
     def do_invoke(self, args):
         if args.location is None:
             pc = current_arch.pc
+            lookup_pc = pc
+            # A caller frame has the return address, which is out of the function after a call of a noreturn function.
+            # So use the address in the call like get_frame_address_in_block of gdb, except under a signal frame.
+            frame = gdb.selected_frame()
+            level = GefUtil.get_frame_level(frame)
+            if level and frame.newer().type() != gdb.SIGTRAMP_FRAME:
+                lookup_pc = frame.pc() - 1
         else:
             pc = args.location
-        handler, load_bias = self.find_handler(pc)
+            lookup_pc = pc
+        handler, load_bias = self.find_handler(lookup_pc)
         if handler is None:
             err("Could not read .eh_frame for the mapping containing {:#x}".format(pc))
             return
 
         try:
-            unwind = handler.unwind_info(pc, load_bias)
+            unwind = handler.unwind_info(lookup_pc, load_bias)
         except (IndexError, KeyError, ValueError) as exception:
             err("Failed to evaluate unwind information: {!s}".format(exception))
             return
         if unwind is None:
-            err("No FDE covers {:#x}".format(pc))
+            err("No FDE covers {:#x}".format(lookup_pc))
             return
 
         cie = unwind["cie"]
@@ -45733,12 +45809,18 @@ class UnwindInfoCommand(GenericCommand):
         fde_start = fde["pc_begin"] + load_bias
         fde_end = fde["pc_end"] + load_bias
 
+        # Without a rule, libgcc and gdb take the value as still in the register (only DW_CFA_undefined ends the
+        # unwinding), so tell it from the explicit undefined
+        if return_register in registers:
+            return_rule = handler.format_register_rule(registers[return_register])
+        else:
+            return_rule = "same_value (unspecified)"
         lines = [
             ("CIE", "{:#x}".format(cie["address"] + load_bias)),
             ("FDE", "{:#x} [{:#x}-{:#x})".format(fde["address"] + load_bias, fde_start, fde_end)),
             ("PC", Symbol.format(pc, show_address=True)),
             ("CFA", handler.format_cfa_rule(state["cfa"])),
-            ("RA", handler.format_register_rule(registers.get(return_register, ("undefined",)))),
+            ("RA", return_rule),
         ]
         for reg in sorted(registers):
             if reg == return_register:
@@ -45781,7 +45863,11 @@ class MultiBreakCommand(GenericCommand):
     @Decorator.parse_args
     def do_invoke(self, args):
         for bp in args.location:
-            gdb.execute("b {:s}".format(AddressUtil.breakpoint_spec(bp)))
+            # an invalid one (e.g., an undefined function, `$x` and `$pc` before running) must not stop the others
+            try:
+                gdb.execute("b {:s}".format(AddressUtil.breakpoint_spec(bp)))
+            except (gdb.error, ValueError) as e:
+                err(str(e))
         return
 
 
@@ -45797,9 +45883,17 @@ class MainBreakCommand(GenericCommand):
 
     def get_libc_start_main(self):
         try:
-            return AddressUtil.parse_address("__libc_start_main")
+            libc_start_main = AddressUtil.parse_address("__libc_start_main")
         except gdb.error:
-            pass
+            libc_start_main = None
+        if libc_start_main is not None:
+            # _start of PPC calls it by a stub, not by the lazy resolver of glink (`__libc_start_main@plt`),
+            # so resolve it again at the entry point
+            if is_ppc32() or is_ppc64():
+                symbol = Symbol.lookup_gdb(libc_start_main)
+                if symbol and symbol[0].endswith("@plt"):
+                    return 0
+            return libc_start_main
 
         ret = gdb.execute("got --no-pager --quiet __libc_start_main", to_string=True)
         ret = ret.strip()
@@ -45808,9 +45902,14 @@ class MainBreakCommand(GenericCommand):
             return None
         elem = Color.remove_color(ret).splitlines()[0].split()
         if elem[-1].endswith(">"):
-            return int(elem[-2], 16)
+            value = int(elem[-2], 16)
         else:
-            return int(elem[-1], 16)
+            value = int(elem[-1], 16)
+        # the GOT entry that ld.so has not relocated yet (e.g., 0 or an offset of PPC at the initial stop) is not an
+        # address, so resolve it again at the entry point
+        if not is_valid_addr(value):
+            return 0
+        return value
 
     def search_main(self):
         libc_start_main = self.get_libc_start_main()
@@ -45828,14 +45927,30 @@ class MainBreakCommand(GenericCommand):
                 if codebase is None:
                     return None
                 entry += codebase
+            # e_entry of Thumb has bit0, which does not hit
+            if is_arm32() or is_arm32_cortex_m():
+                entry &= ~1
+            # e_entry of ELFv1 is the function descriptor of _start, which ld.so has not relocated yet for a PIE
+            if is_ppc64():
+                if PPC64.is_elfv1():
+                    entry = read_int_from_memory(entry)
+                    if elf.is_pie() and entry < codebase:
+                        entry += codebase
             bp = EntryBreakBreakpoint("*{:#x}".format(entry))
             try:
                 with ContextManager.hidden_context():
                     gdb.execute("continue") # do not use c wrapper
+            except gdb.error as e:
+                err(str(e))
+                return None
             finally:
                 if bp.is_valid():
                     bp.delete()
             if not bp.hit:
+                if is_alive():
+                    # stopped by another reason in the hidden context
+                    gdb.execute("context")
+                    warn("Stopped before the entry point")
                 return None
             libc_start_main = self.get_libc_start_main()
 
@@ -45847,14 +45962,26 @@ class MainBreakCommand(GenericCommand):
         try:
             with ContextManager.hidden_context():
                 gdb.execute("continue") # do not use c wrapper
+        except gdb.error as e:
+            err(str(e))
+            return None
         finally:
             if bp.is_valid():
                 bp.delete()
         if not bp.hit:
+            if is_alive():
+                # stopped by another reason in the hidden context
+                gdb.execute("context")
+                warn("Stopped before __libc_start_main")
             return None
 
         # get first arg when break at __libc_start_main
         _, val = current_arch.get_ith_parameter(0)
+        if is_ppc32() or is_ppc64():
+            # PPC glibc passes (argc, argv, ev, auxvec, rtld_fini, stinfo, stack_on_entry), and main is stinfo->main
+            # (sysdeps/unix/sysv/linux/powerpc/libc-start.c). musl passes main first like the others.
+            if GefUtil.get_libc() != "musl":
+                val = read_int_from_memory(get_register("$r8") + current_arch.ptrsize)
         if is_x86_32():
             try:
                 insn = get_insn(val)
@@ -45868,22 +45995,54 @@ class MainBreakCommand(GenericCommand):
                         val = target
                 except (gdb.error, ValueError):
                     pass
+        # the function pointer is a descriptor for ELFv1 of PPC64 and a plabel (bit1) of HPPA, and has bit0 for Thumb
+        if is_ppc64():
+            if PPC64.is_elfv1():
+                val = read_int_from_memory(val)
+        elif is_hppa32():
+            if val & 2:
+                val = read_int_from_memory(val & ~3)
+        elif is_arm32() or is_arm32_cortex_m():
+            val &= ~1
         return val
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
-    @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
+    @Decorator.exclude_specific_gdb_mode(mode=("core", "qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
         try:
             main_address = AddressUtil.parse_address("main")
         except gdb.error:
-            main_address = self.search_main()
+            main_address = None
+
+        # frame.pc() has neither the Thumb bit of current_arch.pc nor the privilege level of HPPA
+        if main_address is not None and gdb.newest_frame().pc() == main_address:
+            info("Already at main")
+            return
+
+        # continue does not stop at main after it started (e.g., a breakpoint in a function that main calls, or attach).
+        # A frame called by the libc startup is main even without the symbol.
+        startup_functions = ("__libc_start_call_main", "__libc_start_main", "__libc_start_main_impl")
+        try:
+            frame = gdb.newest_frame()
+            while frame:
+                caller = frame.older()
+                if frame.name() == "main":
+                    break
+                if frame.name() not in startup_functions and caller is not None:
+                    if caller.name() in startup_functions:
+                        break
+                frame = caller
+        except gdb.error:
+            frame = None
+        if frame is not None:
+            info("Already in main")
+            return
 
         if main_address is None:
+            main_address = self.search_main()
+        if main_address is None:
             err("Failed to set a breakpoint to main")
-            return
-        if current_arch.pc == main_address:
-            info("Already at main")
             return
 
         bp = EntryBreakBreakpoint("*{:#x}".format(main_address))
@@ -45897,6 +46056,8 @@ class MainBreakCommand(GenericCommand):
             return
         if not bp.hit:
             if is_alive():
+                # stopped by another reason in the hidden context
+                gdb.execute("context")
                 warn("Stopped before main; temporary breakpoint remains at {:#x}".format(main_address))
                 return
             if bp.is_valid():
@@ -45922,6 +46083,7 @@ class LoadBreakCommand(GenericCommand):
 
     @Decorator.parse_args
     @Decorator.only_if_gdb_running
+    @Decorator.exclude_specific_gdb_mode(mode=("core",))
     def do_invoke(self, args):
         if gdb.parameter("stop-on-solib-events"):
             err("stop-on-solib-events is already 1")
@@ -45964,14 +46126,22 @@ class EntryBreakBreakpoint(gdb.Breakpoint):
 
 @register_command
 class EntryBreakCommand(GenericCommand):
-    """Try to find best entry point and set a temporary breakpoint on it."""
+    """Run the program (kill it first if running) and stop at the best entry point."""
 
     _cmdline_ = "entry-break"
     _category_ = "01-b. Debugging Support - Breakpoint"
     _aliases_ = ["start"]
 
     parser = argparse.ArgumentParser(prog=_cmdline_, add_help=False)
+    parser.add_argument("args", metavar="ARGS", nargs="*",
+                        help="the arguments passed to `run` as is (e.g., redirections and wildcards).")
     _syntax_ = parser.format_help()
+
+    _note_ = "\n".join([
+        "If the program is running, it is killed and started again.",
+        "It stops at the first symbol of entry_break.entrypoint_symbols found in the code of the main ELF,",
+        "or at the ELF entry point (after ld.so maps a PIE).",
+    ])
 
     def __init__(self, *args, **kwargs):
         super().__init__(complete=gdb.COMPLETE_FILENAME)
@@ -46019,6 +46189,19 @@ class EntryBreakCommand(GenericCommand):
         # automatically continue
         return
 
+    def run(self):
+        # pass the arguments as is, since splitting and quoting them breaks `start < file` and `start *.c`
+        try:
+            gdb.execute("run {:s}".format(self.command_args))
+        except gdb.error as e:
+            err(str(e))
+        # the breakpoint that is not hit stops the next run silently (e.g., the program exited before)
+        if not is_alive():
+            for bp in gdb.breakpoints():
+                if isinstance(bp, EntryBreakBreakpoint) and not bp.hit:
+                    bp.delete()
+        return
+
     # Need not @Decorator.parse_args because argparse can't stop interpreting argument for start.
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, argv):
@@ -46040,7 +46223,8 @@ class EntryBreakCommand(GenericCommand):
             warn("Invalid ELF")
             return
 
-        if is_alive():
+        # `run` starts a new process also from a core file
+        if is_alive() and not is_core_file():
             gdb.execute("kill", to_string=True)
 
         # use symbol if loaded
@@ -46051,10 +46235,23 @@ class EntryBreakCommand(GenericCommand):
             except gdb.error:
                 continue
 
-            # symbol found
-            info("Breaking at {:#x} ({:s})".format(value, sym))
+            # Use only the symbol in the code of the main ELF. `__libc_start_main` of a stripped binary may be the PLT
+            # (i386) or the libc of the previous run, both of which skip _start.
+            # `of OBJFILE` follows also for the main ELF when other objfiles are loaded.
+            where = gdb.execute("info symbol {:#x}".format(value), to_string=True).strip()
+            section = re.search(r" in section (\S+)(?: of (.+))?$", where)
+            if section is None:
+                continue
+            section_name, objfile_name = section.groups()
+            if objfile_name is not None and objfile_name != gdb.current_progspace().filename:
+                continue
+            if section_name.startswith(".plt"):
+                continue
+
+            # symbol found; the breakpoint by the name is after the prologue, and a PIE is not relocated yet
+            info("Breaking at {:s}".format(sym))
             EntryBreakBreakpoint(sym)
-            gdb.execute("run {:s}".format(" ".join(shlex.quote(arg) for arg in argv)))
+            self.run()
             return
 
         # no symbols. use elf entry point
@@ -46063,7 +46260,7 @@ class EntryBreakCommand(GenericCommand):
             entry = elf.e_entry
             info("Breaking at entry-point: {:#x}".format(entry))
             EntryBreakBreakpoint("*{:#x}".format(entry))
-            gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
+            self.run()
             return
 
         # PIE
@@ -46074,7 +46271,7 @@ class EntryBreakCommand(GenericCommand):
         # At least gdb 10.1 (Ubuntu 18.04) supports gdb.events.new_objfile.
         with ContextManager.hidden_context(), \
                 EventHooking.temporary("new_objfile", EntryBreakCommand.stop_callback, once=True):
-            gdb.execute("run {}".format(" ".join(shlex.quote(arg) for arg in argv)))
+            self.run()
         return
 
 
@@ -46416,8 +46613,14 @@ class ContextCommand(GenericCommand):
         err(message, redirect=redirect)
         return
 
-    def i386_auto_switch(self):
+    @staticmethod
+    def i386_auto_switch():
         if not Config.get("context.enable_auto_switch_for_i8086"):
+            return
+        if not is_qemu_system():
+            return
+        # gdb keeps the name i8086 even after switching current_arch to x86
+        if get_arch() != "i8086":
             return
 
         cs = QemuMonitor.get_x86_segments().get("CS")
@@ -46459,7 +46662,7 @@ class ContextCommand(GenericCommand):
             return
 
         if len(self.args.commands) == 0:
-            # this is more faster than executing "shell clear -x"
+            # this is faster than executing "shell clear -x"
             print("\x1b[H\x1b[2J", end="")
         return
 
@@ -46503,15 +46706,14 @@ class ContextCommand(GenericCommand):
         # get info for clear_screen and last line
         order_info = self.get_order_in_each_pane(tuple(current_layout), args.ignore_redirect)
 
-        # for create command
+        # options passed to each pane command
         if args.ignore_redirect:
             opts = "-i"
         else:
             opts = ""
 
-        # i386 auto switch
-        if is_qemu_system() and get_arch() == "i8086":
-            self.i386_auto_switch()
+        # i386 auto switch (also done at each stop and thread switch, but older GDB (e.g., 17.1) has no selected_context)
+        ContextCommand.i386_auto_switch()
 
         # do each layout
         for section, pane_info in zip(current_layout, order_info):
@@ -46931,7 +47133,7 @@ class ContextStackCommand(GenericCommand):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context stack` to")
         self.add_setting("show_stack_raw", False, "Show the stack pane as raw hexdump (no dereference)")
-        self.add_setting("nb_lines", 8, "Number of line in the stack pane")
+        self.add_setting("nb_lines", 8, "Number of lines in the stack pane (a word, or 16 bytes for raw)")
         return
 
     def context_stack_default(self, redirect):
@@ -46964,34 +47166,60 @@ class ContextStackCommand(GenericCommand):
             self.context_stack_default(redirect)
             return
 
-        if current_arch.sp is None:
+        sp = current_arch.sp
+        if sp is None:
             err("Failed to get value of $SP", redirect=redirect)
             return
+        # $sp of SPARC64 is the stack minus BIAS (an odd value), but some frames give it without BIAS
+        if is_sparc64() and sp & 1:
+            sp += 0x7ff
 
         show_raw = Config.get("context_stack.show_stack_raw")
         nb_lines = Config.get("context_stack.nb_lines")
         if nb_lines < 0:
             err("context_stack.nb_lines must be non-negative", redirect=redirect)
             return
+        if nb_lines == 0:
+            return
 
         if show_raw is True:
             size = 0x10 * nb_lines
             if current_arch.stack_grow_down:
-                base = current_arch.sp
+                base = sp
             else:
-                base = current_arch.sp - size
-            try:
-                mem = read_memory(base, size)
-                gef_print(hexdump(mem, base=base), redirect=redirect)
-            except gdb.MemoryError:
+                base = sp - size
+            # retry by page and show the readable part next to $sp (e.g., $sp near the end of the mapping)
+            reader = functools.partial(read_memory, safe=True)
+            chunks = list(GefUtil.iter_readable_chunks(base, base + size, size, reader))
+            if not current_arch.stack_grow_down:
+                chunks.reverse()
+            readable = []
+            for chunk_addr, data in chunks:
+                if data is None:
+                    break
+                readable.append((chunk_addr, data))
+            if not readable:
                 err("Cannot read memory from $SP (corrupted stack pointer?)", redirect=redirect)
+                return
+            if not current_arch.stack_grow_down:
+                readable.reverse()
+            mem = b"".join(data for _, data in readable)
+            mem_base, _ = readable[0]
+            gef_print(hexdump(mem, base=mem_base), redirect=redirect)
+            if len(readable) < len(chunks):
+                unreadable_addr, _ = chunks[len(readable)]
+                err("Cannot access memory at address {:#x}".format(unreadable_addr), redirect=redirect)
             return
 
-        if not current_arch.stack_grow_down:
+        if current_arch.stack_grow_down:
+            start = sp
+        else:
+            # an upward stack (HPPA) has the next free slot at $sp, like the range of the raw display
+            start = sp - current_arch.ptrsize
             nb_lines *= -1
 
         ContextCommand.execute_command(
-            "dereference {:#x} {:d} --no-pager".format(current_arch.sp, nb_lines), redirect,
+            "dereference {:#x} {:d} --no-pager".format(start, nb_lines), redirect,
         )
         return
 
@@ -48298,8 +48526,8 @@ class ContextTraceCommand(GenericCommand):
     def __init__(self):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context trace` to")
-        self.add_setting("nb_lines", 10, "Number of line in the backtrace pane")
-        self.add_setting("nb_lines_before", 2, "Number of line in the backtrace pane before selected frame")
+        self.add_setting("nb_lines", 10, "Number of lines in the backtrace pane")
+        self.add_setting("nb_lines_before", 2, "Number of lines in the backtrace pane before selected frame")
         return
 
     def context_trace(self, redirect):
@@ -48444,7 +48672,7 @@ class ContextThreadsCommand(GenericCommand):
     def __init__(self):
         super().__init__()
         self.add_setting("redirect", "", "The target tty name to redirect `context threads` to")
-        self.add_setting("nb_lines", 4, "Number of line in the threads pane (-1: infinity)")
+        self.add_setting("nb_lines", 4, "Number of lines in the threads pane (-1: infinity)")
         return
 
     def context_threads(self, redirect):
@@ -50730,7 +50958,7 @@ class DereferenceCommand(GenericCommand):
         return
 
     @staticmethod
-    @Cache.cache_until_next
+    @Cache.cache_until_next(per_cpu=True) # `thread N` does not reset the caches
     def get_frame_pcs():
         frames = []
         frame_addresses = set()
@@ -50764,17 +50992,40 @@ class DereferenceCommand(GenericCommand):
         return regs
 
     @staticmethod
-    @Cache.cache_until_next
     def get_target_registers_value():
-        regs = []
-        for regname in DereferenceCommand.get_target_registers():
-            regvalue = get_register(regname)
-            if regvalue is None:
-                continue
-            if regvalue == 0: # too noisy, so skip
-                continue
-            regs.append((regname, regvalue))
-        return regs
+
+        # `thread N`, `frame N` and `up` do not reset the caches, so the selected thread and frame are in the key
+        @Cache.cache_until_next(per_cpu=True)
+        def get_registers_value(frame_level): # frame_level is only for the cache key
+            regs = []
+            for regname in DereferenceCommand.get_target_registers():
+                regvalue = get_register(regname)
+                if regvalue is None:
+                    continue
+                if regvalue == 0: # too noisy, so skip
+                    continue
+                # $sp and $fp of SPARC64 are the stack minus BIAS, like the stack pane that adds BIAS
+                if is_sparc64() and regname in ("$sp", "$fp"):
+                    if regvalue & 1:
+                        regvalue += 0x7ff
+                regs.append((regname, regvalue))
+            # the stack of x86_16 is at the linear address of $ss:$sp, not at the offset in $esp
+            if is_x86_16():
+                for regname, (seg, reg) in current_arch.seg_extended_registers.items():
+                    try:
+                        regvalue = current_arch.real2phys(seg, reg)
+                    except gdb.error:
+                        continue
+                    if regvalue == 0: # too noisy, so skip
+                        continue
+                    regs.append((regname, regvalue))
+            return regs
+
+        try:
+            frame_level = GefUtil.get_frame_level(gdb.selected_frame())
+        except gdb.error:
+            frame_level = None
+        return get_registers_value(frame_level)
 
     @staticmethod
     def pprint_dereferenced(addr, idx, tag=None, phys=False, quiet=False, quiet_offset=False):
@@ -50825,10 +51076,19 @@ class DereferenceCommand(GenericCommand):
         current_address_value = addrs[1]
 
         # retaddr info
+        # frame.pc() of gdb drops the Thumb bit of ARM and the privilege level of HPPA, and is %i7+8 for SPARC
+        if is_arm32() or is_arm32_cortex_m():
+            return_address = current_address_value & ~1
+        elif is_hppa32():
+            return_address = current_address_value & ~3
+        elif is_sparc():
+            return_address = current_address_value + 8
+        else:
+            return_address = current_address_value
         for i, frame_pc in enumerate(DereferenceCommand.get_frame_pcs()):
             if not is_valid_addr(frame_pc):
                 continue
-            if current_address_value == frame_pc:
+            if return_address == frame_pc:
                 extra.append("retaddr[{:d}]".format(i))
                 break
 
@@ -240237,15 +240497,14 @@ class GefUtil:
     @staticmethod
     def get_terminal_size(redirect=""):
         """Return the current terminal size."""
-        if redirect and os.getenv("TMUX"):
-            res = subprocess.check_output([
-                GefUtil.which("tmux"), "list-panes", "-F#{pane_tty}:#{pane_height}:#{pane_width}",
-            ]).decode("utf-8").strip()
-
-            for line in res.splitlines():
-                tty, height, width = line.split(":")
-                if tty == redirect:
-                    return int(height) or 600, int(width) or 100
+        if redirect:
+            # ask the redirect target itself, which may be outside tmux or in another window of it
+            try:
+                with open(redirect, "w") as f:
+                    tty_columns, tty_rows = os.get_terminal_size(f.fileno())
+                return tty_rows or 600, tty_columns or 100
+            except OSError: # e.g., not a terminal
+                pass
 
         try:
             tty_columns, tty_rows = os.get_terminal_size()
