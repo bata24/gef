@@ -72071,41 +72071,44 @@ class SeccompCommand(GenericCommand):
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
     group = parser.add_mutually_exclusive_group(required=False)
-    group.add_argument("-c", "--force-ceccomp", action="store_true", help="force use ceccomp.")
-    group.add_argument("-s", "--force-seccomp-tools", action="store_true", help="force use seccomp-tools.")
+    group.add_argument("-c", "--force-ceccomp", action="store_true", help="force using ceccomp.")
+    group.add_argument("-s", "--force-seccomp-tools", action="store_true", help="force using seccomp-tools.")
     parser.add_argument("argv", nargs=argparse.REMAINDER, help="arguments for a new target process (after --).")
     _syntax_ = parser.format_help()
 
     _note_ = "\n".join([
-        "Default: Search `ceccomp` -> `seccomp-tools`, and use found one.",
+        "Default: Search `ceccomp` -> `seccomp-tools`, and use the one found.",
         "With `-c` or `-s`: Forces GEF to use the specified one.",
-        "The tool starts a new process; use `-- ARGS` for filters depending on startup arguments.",
+        "The tool starts a new process with `show args`; use `-- ARGS` to replace them, or `--` for no arguments.",
+        "The process uses the environment and cwd of GDB itself, ignoring `set environment` and `set cwd`.",
+        "`ceccomp probe` emulates the syscalls with the first filter only.",
     ])
 
-    def get_ceccomp_command(self):
+    def get_ceccomp_command(self, cmdline):
         try:
             comm = GefUtil.which("ceccomp")
-            return [f"{shlex.quote(comm)} trace --quiet ", f"{shlex.quote(comm)} probe --quiet "]
+            return [f"{shlex.quote(comm)} trace --quiet {cmdline}", f"{shlex.quote(comm)} probe --quiet {cmdline}"]
         except FileNotFoundError:
             err("Missing `ceccomp`, install from https://github.com/dbgbgtf1/Ceccomp")
             return None
 
-    def get_seccomp_tools_command(self):
+    def get_seccomp_tools_command(self, cmdline):
         try:
             comm = GefUtil.which("seccomp-tools")
-            return [f"{shlex.quote(comm)} dump "]
+            # dump runs the command line via sh, and kills the process at the first filter unless the limit is negative
+            return [f"{shlex.quote(comm)} dump --limit=-1 -c {shlex.quote(cmdline)}"]
         except FileNotFoundError:
             err("Missing `seccomp-tools`, install with: `gem install seccomp-tools`")
             return None
 
-    def get_either_command(self):
+    def get_either_command(self, cmdline):
         try:
             comm = GefUtil.which("ceccomp")
-            return [f"{shlex.quote(comm)} trace --quiet ", f"{shlex.quote(comm)} probe --quiet "]
+            return [f"{shlex.quote(comm)} trace --quiet {cmdline}", f"{shlex.quote(comm)} probe --quiet {cmdline}"]
         except FileNotFoundError:
             try:
                 comm = GefUtil.which("seccomp-tools")
-                return [f"{shlex.quote(comm)} dump "]
+                return [f"{shlex.quote(comm)} dump --limit=-1 -c {shlex.quote(cmdline)}"]
             except FileNotFoundError:
                 err("Missing both `ceccomp` and `seccomp-tools`")
                 err("install with `gem install seccomp-tools` or build `ceccomp`")
@@ -72114,29 +72117,54 @@ class SeccompCommand(GenericCommand):
     @Decorator.parse_args
     @Decorator.exclude_specific_gdb_mode(mode=("qemu-system", "kgdb", "vmware", "wine"))
     def do_invoke(self, args):
-        if args.force_seccomp_tools:
-            ret = self.get_seccomp_tools_command()
-        elif args.force_ceccomp:
-            ret = self.get_ceccomp_command()
-        else:
-            ret = self.get_either_command()
-        if ret is None:
-            return
-        commands = ret
-
         path = Path.get_filepath()
         if path is None:
             err("Could not find the target binary")
             return
 
-        if is_alive() and not args.argv:
-            warn("A new process will be inspected without the current process arguments")
+        elf = Elf.get_elf(path)
+        if elf is None or not elf.is_valid():
+            err("Failed to parse ELF")
+            return
 
-        argv = args.argv
-        if argv and argv[0] == "--":
-            argv = argv[1:]
+        # The tool runs the target on this host, while binfmt_misc runs one for another arch on qemu-user,
+        # which does not install the filters.
+        COMPAT_MACHINES = {
+            Elf.EM_X86_64: [Elf.EM_386],
+            Elf.EM_AARCH64: [Elf.EM_ARM],
+            Elf.EM_PPC64: [Elf.EM_PPC],
+            Elf.EM_SPARCV9: [Elf.EM_SPARC32PLUS, Elf.EM_SPARC],
+        }
+        host_machine = Elf.get_elf("/proc/self/exe").e_machine
+        native_machines = [host_machine] + COMPAT_MACHINES.get(host_machine, [])
+        if elf.e_machine not in native_machines:
+            err("The target binary does not run natively on this host")
+            return
+
+        if args.argv:
+            argv = args.argv
+            if argv[0] == "--":
+                argv = argv[1:]
+            cmdline = " ".join(shlex.quote(arg) for arg in [path] + argv)
+        else:
+            # same as `run`, which passes the arguments to a shell
+            cmdline = shlex.quote(path)
+            if gdb.parameter("args"):
+                cmdline += " " + gdb.parameter("args")
+            if is_alive():
+                warn("A new process will be inspected with the arguments of `show args`")
+
+        if args.force_seccomp_tools:
+            ret = self.get_seccomp_tools_command(cmdline)
+        elif args.force_ceccomp:
+            ret = self.get_ceccomp_command(cmdline)
+        else:
+            ret = self.get_either_command(cmdline)
+        if ret is None:
+            return
+        commands = ret
+
         for comm in commands:
-            comm += " ".join(shlex.quote(arg) for arg in [path] + argv)
             gef_print(titlify(comm))
             GefUtil.os_system(comm)
         return
@@ -72160,6 +72188,19 @@ class SysregCommand(GenericCommand):
         else:
             res = gdb.execute("info registers", to_string=True)
         res = res.strip()
+        if is_mips():
+            # MIPS shows a row of names and then a row of their values in hex without 0x,
+            # where only the rows of GPRs begin with R0, R8, etc. So convert them to the rows of `NAME 0xVALUE`.
+            lines = res.splitlines()
+            converted = []
+            for name_row, value_row in zip(lines[0::2], lines[1::2]):
+                names = name_row.split()
+                values = value_row.split()[-len(names):]
+                for regname, regvalue in zip(names, values):
+                    # skip <unavl> and <unavailable>
+                    if re.fullmatch(r"[0-9a-f]+", regvalue):
+                        converted.append("{:s} 0x{:s}".format(regname, regvalue))
+            res = "\n".join(converted)
         regs = {}
         for line in res.splitlines():
             m = re.match(r"^(\S+)\s*(0x\S+)", line)
@@ -72174,7 +72215,11 @@ class SysregCommand(GenericCommand):
                     if not any(f.lower() in regname.lower() for f in self.args.filter):
                         continue
             regs[regname] = int(regvalue, 16)
-        regs = list(filter(lambda x: "$" + x[0] not in current_arch.all_registers, sorted(regs.items())))
+        # gdb may name a general register by its alias (e.g., s8 instead of fp for MIPS)
+        generic_regs = set(current_arch.all_registers)
+        for alias in current_arch.alias_registers.values():
+            generic_regs.update(alias.split("/"))
+        regs = list(filter(lambda x: "$" + x[0] not in generic_regs, sorted(regs.items())))
         return regs # [[regname, regvalue], ...]
 
     def print_sysreg_compact(self):
@@ -72368,7 +72413,7 @@ class MmxCommand(GenericCommand):
 
 @register_command
 class XmmSetCommand(GenericCommand):
-    """Simply set the value to xmm or ymm register."""
+    """Simply set the value to xmm, ymm or zmm register."""
 
     _cmdline_ = "xmmset"
     _category_ = "04-b. Register - Modify"
@@ -72395,40 +72440,42 @@ class XmmSetCommand(GenericCommand):
             return
 
         # check register is valid or not
+        # the whole name is matched, since the raw upper halves (e.g., $ymm0h) have no vector members
+        m = re.fullmatch(r"\$?(([xyz])mm\d+)", reg)
+        if not m:
+            err("Invalid register name")
+            return
+        regname, kind = m.groups()
+        reg = "$" + regname
         try:
             gdb.execute(f"info registers {reg}", to_string=True)
         except gdb.error:
             err("Invalid register name")
             return
 
-        if "$xmm" in reg:
+        if kind == "x":
             width = 128
-        elif "$ymm" in reg:
+        elif kind == "y":
             width = 256
-        elif "$zmm" in reg:
+        elif kind == "z":
             width = 512
-        else:
-            err("Unsupported")
-            return
         if not AddressUtil.fits_width(value, width):
             err("Value exceeds {:d}-bit register width".format(width))
             return
 
         # modify
-        if "$xmm" in reg:
+        if kind == "x":
             for i in range(2):
                 v = (value >> (64 * i)) & ((1 << 64) - 1)
                 gdb.execute(f"set {reg}.v2_int64[{i}]={v:#x}", to_string=True)
-        elif "$ymm" in reg:
+        elif kind == "y":
             for i in range(4):
                 v = (value >> (64 * i)) & ((1 << 64) - 1)
                 gdb.execute(f"set {reg}.v4_int64[{i}]={v:#x}", to_string=True)
-        elif "$zmm" in reg:
+        elif kind == "z":
             for i in range(8):
                 v = (value >> (64 * i)) & ((1 << 64) - 1)
                 gdb.execute(f"set {reg}.v8_int64[{i}]={v:#x}", to_string=True)
-        else:
-            err("Unsupported")
         return
 
 
@@ -72446,8 +72493,6 @@ class SseCommand(GenericCommand):
     _syntax_ = parser.format_help()
 
     def print_sse(self):
-        gef_print(titlify("SSE Data Register"))
-
         # xmm0-15
         regs = []
         if is_x86_64():
@@ -72463,7 +72508,11 @@ class SseCommand(GenericCommand):
             if r:
                 reg = int(r[0], 16)
                 regs.append((i, reg))
+        if not regs:
+            err("Could not find sse registers")
+            return
 
+        gef_print(titlify("SSE Data Register"))
         fmt = "{:7s}: {:s}"
         legend = ["Name", "128-bit hex"]
         gef_print(GefUtil.make_legend(fmt.format(*legend)))
@@ -72479,6 +72528,11 @@ class SseCommand(GenericCommand):
 
     def print_sse_other(self):
         # mxcsr
+        reg = get_register("$mxcsr")
+        if reg is None:
+            err("Could not read MXCSR register")
+            return
+
         gef_print(titlify("MXCSR (MXCSR Control and Status Register)"))
         bit_info = [
             [15, "FZ", "Flush To Zero"],
@@ -72487,7 +72541,7 @@ class SseCommand(GenericCommand):
             [11, "UM", "Underflow Exception Mask"],
             [10, "OM", "Overflow Exception Mask"],
             [9, "ZM", "Zero Divide Exception Mask"],
-            [8, "DM", "Denormalized Opernad Exception Mask"],
+            [8, "DM", "Denormalized Operand Exception Mask"],
             [7, "IM", "Invalid Operation Exception Mask"],
             [6, "DAZ", "Use as 0.0 if input data is denormalized"],
             [5, "PE", "Precision Exception"],
@@ -72497,7 +72551,6 @@ class SseCommand(GenericCommand):
             [1, "DE", "Denormalized Operand Exception"],
             [0, "IE", "Invalid Operation Exception"],
         ]
-        reg = int(gdb.execute("info registers $mxcsr", to_string=True).split()[1], 16)
         BitInfo("$mxcsr", 32, bit_info).print(reg)
         return
 
@@ -72584,7 +72637,7 @@ class Avx512Command(GenericCommand):
                 continue
             regs.append((i, reg))
         if regs:
-            gef_print(titlify("AVX Register"))
+            gef_print(titlify("AVX512 Register"))
 
             fmt = "{:7s}: {:s}"
             legend = ["Name", "512-bit hex"]
