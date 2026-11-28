@@ -91611,12 +91611,14 @@ class KernelPath:
 
     def get_dentry_name(self, dentry, default=""):
         try:
+            # a name may be UTF-8 or have control characters, and it is up to NAME_MAX.
+            # A long name is in an external_name, so d_iname is read only if it is unreadable.
             name_ptr = read_int_from_memory(dentry + self.offset_dname_name)
             if is_valid_addr(name_ptr) and (name_ptr & 0b11) == 0:
-                name = read_cstring_from_memory(name_ptr)
+                name = read_cstring_from_memory(name_ptr, max_length=255, allow_non_ascii=True)
                 if name:
                     return name
-            name = read_cstring_from_memory(dentry + self.offset_d_iname)
+            name = read_cstring_from_memory(dentry + self.offset_d_iname, max_length=255, allow_non_ascii=True)
             if name:
                 return name
         except (gdb.MemoryError, OverflowError):
@@ -91700,7 +91702,7 @@ class KernelPath:
                 status = "unreadable"
                 break
 
-            if dentry == mnt_root or parent == dentry:
+            if dentry == mnt_root:
                 mnt_parent = read_int_from_memory(mount + self.offset_mount_mnt_parent, safe=True)
                 if mnt_parent is None:
                     status = "unreadable"
@@ -91715,14 +91717,16 @@ class KernelPath:
                     vfsmnt = mount + self.offset_mount_mnt
                     crossed = True
                     continue
-                if dentry != mnt_root:
-                    status = "disconnected"
-                elif root is not None:
+                if root is not None:
                     status = "outside-root"
-                if dentry == mnt_root:
-                    names.append("/")
-                else:
-                    names.append(self.get_dentry_name(dentry, unknown))
+                names.append("/")
+                break
+
+            # Like __prepend_path(), only mnt_root crosses the mount. Another root has escaped from the mount
+            # (e.g., renamed out of a bind mount, or opened by open_by_handle_at()), or it is a pseudo file.
+            if parent == dentry:
+                status = "disconnected"
+                names.append(self.get_dentry_name(dentry, unknown))
                 break
 
             names.append(self.get_dentry_name(dentry, unknown))
@@ -91761,19 +91765,71 @@ class KernelPath:
         return KernelPath.PathInfo(os.path.join(*names[::-1]), status, False, None)
 
     def decorate_pseudo_path(self, filepath, dentry):
-        """Apply the notations /proc/pid/fd uses for the filesystems that have no real pathname."""
-        if filepath and filepath.startswith("/"):
+        """Apply the notations /proc/pid/fd uses for the filesystems that have no real pathname (d_dname())."""
+        # an anonymous dentry (d_alloc_anon(), e.g., nsfs and pidfs) is named "/"
+        if filepath and filepath.startswith("/") and filepath != "/":
             return filepath
         try:
-            # a socket dentry is named after its protocol (e.g. UNIX-STREAM, RAW, PING, ...)
             inode = read_int_from_memory(dentry + self.offset_d_inode, safe=True)
+            mode = None
+            fstype = None
             if inode:
                 mode = read_int16_from_memory(inode + self.offset_i_mode, safe=True)
-            else:
-                mode = None
+                # the filesystem tells which d_dname() names the file
+                if self.offset_i_sb is not None:
+                    super_block = read_int_from_memory(inode + self.offset_i_sb, safe=True)
+                    kfs = Kernel.file_system()
+                    # super_block->s_type, which the callers (e.g., kfiles) may not resolve beforehand
+                    if kfs.offset_s_type is None:
+                        kfs.initialize()
+                    if super_block:
+                        fstype = kfs.get_fstype_name(super_block)
+            # a socket dentry is named after its protocol (e.g. UNIX-STREAM, RAW, PING, ...)
             is_socket = mode is not None and mode & 0o170000 == 0o140000 # S_IFSOCK
-            if is_socket or filepath in ["UNIX", "NETLINK", "TCP", "TCPv6", "UDP", "UDPv6", "PACKET"]:
+            if fstype == "sockfs" or is_socket or filepath in ["UNIX", "NETLINK", "TCP", "TCPv6", "UDP", "UDPv6", "PACKET"]:
                 return "socket:[{:d}]".format(self.get_ino(dentry))
+            if fstype == "pipefs":
+                return "pipe:[{:d}]".format(self.get_ino(dentry))
+            if fstype == "anon_inodefs":
+                return "anon_inode:{:s}".format(filepath)
+            if fstype == "pidfs":
+                return "anon_inode:[pidfd]"
+            if fstype == "nsfs":
+                # ns_dname() shows the name of proc_ns_operations (e.g., `net:[4026531840]`), which i_private,
+                # struct ns_common, points to by `ops` followed by `inum` (= i_ino)
+                ino = self.get_ino(dentry)
+                ptrsize = current_arch.ptrsize
+                ns_names = (
+                    "cgroup", "ipc", "mnt", "net", "pid", "pid_for_children", "time", "time_for_children", "user", "uts",
+                )
+                for i in range(self.offset_i_sb // ptrsize + 1, 0x300 // ptrsize):
+                    ns = read_int_from_memory(inode + ptrsize * i, safe=True)
+                    if not ns or ns % ptrsize or not is_valid_addr(ns):
+                        continue
+                    # ns_common has `refcount_t __ns_ref` aligned to the cache line in front of them since v6.18
+                    data = read_memory(ns, 0x80, safe=True)
+                    if data is None:
+                        continue
+                    words = slice_unpack(data, ptrsize)
+                    for j in range(1, len(words)):
+                        # inum is an unsigned int
+                        if u32(data[ptrsize * j:ptrsize * j + 4]) != ino & 0xffff_ffff:
+                            continue
+                        name = read_int_from_memory(words[j - 1], safe=True)
+                        if not name or not is_valid_addr(name):
+                            continue
+                        ns_name = read_cstring_from_memory(name, max_length=0x20, safe=True)
+                        if ns_name in ns_names:
+                            return "{:s}:[{:d}]".format(ns_name, ino)
+                return "nsfs:[{:d}]".format(ino)
+            if fstype == "dmabuf":
+                # dmabuffs_dname() also appends the name of the dma_buf, which is not read here
+                return "/{:s}:".format(filepath)
+            if filepath == "/":
+                return filepath
+            if fstype is not None:
+                # simple_dname() of the pseudo files of the other filesystems (e.g., memfd and SysV shm of tmpfs)
+                return "/{:s} (deleted)".format(filepath)
             elif filepath:
                 return "anon_inode:{:s}".format(filepath)
             else:
@@ -92634,10 +92690,13 @@ class KernelPath:
     def is_inode(self, inode, offsets=None):
         """Return True if `inode` looks like a struct inode, read with `offsets` (of i_mode, i_ino and i_sb), which
         are the resolved ones by default.
-        An anonymous inode is told by its filesystem, so KernelFileSystem must be initialized beforehand."""
+        An inode without the file type is told by its filesystem, so KernelFileSystem must be initialized beforehand."""
         if offsets is None:
             offsets = (self.offset_i_mode, self.offset_i_ino, self.offset_i_sb)
         offset_i_mode, offset_i_ino, offset_i_sb = offsets
+        # i_sb may be unresolved (see initialize_dentry_offsets())
+        if offset_i_sb is None:
+            return False
         if not is_valid_addr(inode) or inode & (current_arch.ptrsize - 1):
             return False
         try:
@@ -92649,20 +92708,15 @@ class KernelPath:
         if not is_valid_addr(super_block):
             return False
         file_type = mode & 0o170000
+        # alloc_anon_inode() gives no file type (e.g., dma-buf, aio and anon_inodefs), so s_type must be a filesystem
         if file_type == 0:
-            return Kernel.file_system().get_fstype_name(super_block) == "anon_inodefs"
+            return Kernel.file_system().get_fstype_name(super_block) is not None
         return file_type in self.FILE_TYPES
 
     def is_file(self, file):
-        """Return True if `file` looks like a struct file. The file offsets are guessed from it if they are not resolved yet."""
-        try:
-            if self.offset_file_mnt is None and not self.initialize_file_offsets(file):
-                return False
-            vfsmnt = read_int_from_memory(file + self.offset_file_mnt)
-            dentry = read_int_from_memory(file + self.offset_file_dentry)
-        except (gdb.MemoryError, OverflowError, RuntimeError):
-            return False
-        return self.is_vfsmount(vfsmnt) and self.is_dentry(dentry)
+        """Return True if `file` looks like a struct file. The file offsets are guessed from it if they are not resolved yet,
+        and forgotten again if it is not a file (see resolve_file())."""
+        return bool(self.resolve_file(file))
 
     def detect_vfs_type(self, address):
         """Return which of "file", "dentry" and "inode" `address` points to, or None.
@@ -93260,7 +93314,8 @@ class KernelFileSystem:
             return None
         if not is_valid_addr(devname_p):
             return None
-        devname = read_cstring_from_memory(devname_p)
+        # it may be UTF-8, and up to PATH_MAX (e.g., the long source of a network filesystem)
+        devname = read_cstring_from_memory(devname_p, max_length=4096, allow_non_ascii=True)
         return devname
 
     def iter_file_system_types(self):
@@ -100180,6 +100235,10 @@ class KernelModule:
     MOD_MEM_TYPES = ["text", "data", "rodata", "ro_after_init", "init_text", "init_data", "init_rodata"]
     # not a limit of the kernel, only to reject garbage
     MAX_MODULE_SIZE = 0x4000_0000
+    # enum module_state; the module is linked to the list, but kallsyms is not set yet (e.g., during the relocation)
+    MODULE_STATE_UNFORMED = 3
+    # KSYM_NAME_LEN (128 until v6.0)
+    KSYM_NAME_LEN = 512
 
     @classmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -100242,7 +100301,7 @@ class KernelModule:
         # module->{mem,core_layout,module_core}
         # (member name, size member name, getter)
         mem = ("mem", "mem.size", self.get_offset_mem) # v6.4~
-        core_layout = ("core_layout", "core_layout.size", self.get_offset_core_layout) # v4.5~v6.4
+        core_layout = ("core_layout", "core_layout.size", self.get_offset_core_layout) # v4.5~v6.3
         module_core = ("module_core", "core_size", self.get_offset_module_core) # ~v4.4
         # the kernel version only decides which layout is tried first, because distributions
         # backport the layout change (e.g. Ubuntu 4.4 already has core_layout)
@@ -100278,6 +100337,10 @@ class KernelModule:
             return True
 
         self.kallsyms_meta = []
+        # an unformed module has no kallsyms yet, so it is not a sample (parse_kallsyms() skips it)
+        module_addrs = [x for x in module_addrs if read_int32_from_memory(x) != self.MODULE_STATE_UNFORMED]
+        if not module_addrs:
+            return True
         # the kernel version only decides which layout is tried first, because distributions
         # backport the change of v4.5 (struct mod_kallsyms)
         if Kernel.version() < "4.5":
@@ -100384,7 +100447,8 @@ class KernelModule:
         return entries, meta
 
     def get_name(self, module):
-        return read_cstring_from_memory(module + self.offset_name)
+        # MODULE_NAME_LEN
+        return read_cstring_from_memory(module + self.offset_name, max_length=64 - current_arch.ptrsize)
 
     def find(self, module_addrs, name):
         for module in module_addrs:
@@ -100447,6 +100511,10 @@ class KernelModule:
     def parse_kallsyms(self, module, progress=False):
         kversion = Kernel.version()
 
+        # kallsyms is set after the module is linked to the list, like module_get_kallsym()
+        if read_int32_from_memory(module) == self.MODULE_STATE_UNFORMED:
+            return []
+
         if is_64bit():
             sizeof_symtab_entry = 24
         else:
@@ -100475,7 +100543,7 @@ class KernelModule:
         for i in ProgressBar(range(num_symtab), disable=not progress):
             sym_addr = read_int_from_memory(symtab + sizeof_symtab_entry * i + current_arch.ptrsize)
             strtab_pos = read_int32_from_memory(symtab + sizeof_symtab_entry * i)
-            sym_name = read_cstring_from_memory(strtab + strtab_pos)
+            sym_name = read_cstring_from_memory(strtab + strtab_pos, max_length=self.KSYM_NAME_LEN)
             # the local labels of the assembler (e.g., `L0^A` and `.L10001^B1` of LoongArch) are not printable
             if sym_name is None:
                 continue
@@ -100494,6 +100562,17 @@ class KernelModule:
                     sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 4))
                 else:
                     sym_type = chr(read_int8_from_memory(symtab + sizeof_symtab_entry * i + 12))
+
+            # the functions of CONFIG_THUMB2_KERNEL have the bit 0 set, which kallsyms_symbol_value() clears (v5.0~)
+            if is_arm32() and sym_addr & 1:
+                if "5.0" <= kversion:
+                    st_info = read_int8_from_memory(symtab + sizeof_symtab_entry * i + 12)
+                    is_function = (st_info & 0xf) == 2 # STT_FUNC
+                else:
+                    # st_info is replaced by the type letter
+                    is_function = sym_type in ("t", "T")
+                if is_function:
+                    sym_addr &= ~1
             entries.append([sym_addr, sym_type, sym_name])
         return entries
 
@@ -100653,7 +100732,7 @@ class KernelModule:
                     return offset_mem, offset_mem + offset_size, sizeof_module_memory
         return None
 
-    def get_offset_core_layout(self, module_addrs): # v4.5 ~ v6.4
+    def get_offset_core_layout(self, module_addrs): # v4.5 ~ v6.3
         """
         struct module { // kernel v4.5~
             enum module_state state;
@@ -100779,9 +100858,10 @@ class KernelModule:
                     valid = False
                     break
                 # ro_after_init_size check; it does not exist under v4.8, then the read hits
-                # the tail padding (or init_layout.base of an already initialized module)
+                # the tail padding (or init_layout.base of an already initialized module),
+                # or mtn.mod (the module itself) of CONFIG_MODULES_TREE_LOOKUP on 32-bit
                 cand_ro_after_init_size = read_int32_from_memory(core_layout_ptr + current_arch.ptrsize + 4 * 3)
-                if cand_ro_after_init_size != 0:
+                if cand_ro_after_init_size not in (0, module & 0xffff_ffff):
                     if cand_ro_after_init_size < cand_ro_size or cand_ro_after_init_size > cand_size:
                         valid = False
                         break
@@ -101524,13 +101604,18 @@ class KernelSysctl:
         self.init_net = None
         self.ctsets = {}
         self.ctset_namespaces = {}
+        self.sets_missing = False
         self.handler_types = {}
         self.known_handlers = {}
+        self.sizeof_mode = 2
         return
 
     def initialize(self, force=False):
         """Resolve all layouts and roots required for a sysctl tree walk."""
         if self.initialized and not force:
+            # a set is created during the boot (e.g., the one of init_net by net_sysctl_init()), so it is searched again
+            if self.sets_missing:
+                self.resolve_namespace_sets()
             return True
 
         self.meta = []
@@ -101546,6 +101631,11 @@ class KernelSysctl:
 
         kversion = Kernel.version()
         self.is_legacy = kversion is not None and kversion < "3.4"
+        # mode_t (~v3.2) is unsigned int on MIPS, PowerPC and s390x, whose first 2 bytes are 0 on big-endian
+        self.sizeof_mode = 2
+        if kversion is not None and kversion < "3.3":
+            if is_mips() or is_ppc32() or is_ppc64() or is_s390x():
+                self.sizeof_mode = 4
         by_debug_info = self.resolve_layout_by_debug_info()
         if by_debug_info and self.is_valid_layout():
             self.meta.append(("info", "layout: debug info"))
@@ -101603,7 +101693,9 @@ class KernelSysctl:
             yield from self.walk_legacy_roots(skip_symlink, progress)
             return
         self.parent_paths = {self.root_ctl_dir: ""}
-        yield from self.walk_node(self.root_rb_node, skip_symlink, progress)
+        # adding or removing a top directory (e.g., by a module) rotates the rbtree, so the root is read every time
+        root_rb_node = read_int_from_memory(self.root_ctl_dir + self.offset_rb_node)
+        yield from self.walk_node(root_rb_node, skip_symlink, progress)
         return
 
     def parse_entry(self, entry, include_namespace=False):
@@ -101620,7 +101712,8 @@ class KernelSysctl:
 
     def get_data_value(self, data, verbose=False, decimal=False):
         """Return (data address, decoded value) strings of the parsed entry `data` as ksysctl shows them,
-        or None if it is hidden without `verbose` (an invalid data address or a zero maxlen)."""
+        or None if it is hidden without `verbose` (an invalid data address, or a zero maxlen of the data
+        but a static key, which is read without maxlen)."""
         if not data.address:
             return "-", "-"
         if not is_valid_addr(data.address):
@@ -101629,12 +101722,14 @@ class KernelSysctl:
             return "{:#018x}".format(data.address), "-"
 
         address = "{:#018x}".format(data.address)
-        if data.maxlen == 0:
+        handler_type = self.get_handler_type(data.handler)
+        # e.g., kernel.bpf_stats_enabled (v6.6) and vm.mem_profiling have no maxlen
+        if data.maxlen == 0 and handler_type != "static_key":
             if not verbose:
                 return None
             return address, "-"
         try:
-            value = self.decode_value(data, self.get_handler_type(data.handler), decimal=decimal)
+            value = self.decode_value(data, handler_type, decimal=decimal)
         except gdb.MemoryError:
             value = "???"
         return address, value
@@ -101943,6 +102038,7 @@ class KernelSysctl:
         """Resolve the sets of the initial namespaces that the symlinks (net.*, user.*, and ipc since v5.19) lead to."""
         self.ctset_namespaces = {self.sysctl_table_root + self.offset_default_set: "global"}
         self.ctsets = {}
+        self.sets_missing = False
         if self.is_legacy:
             # a root without `lookup` (e.g., net_sysctl_ro_root) shares its default set among the namespaces
             for root in KernelListHead(self.sysctl_table_root).iter_entries():
@@ -101953,7 +102049,8 @@ class KernelSysctl:
         is_seen = Ksym.get_addr("is_seen")
         if init_net and is_seen:
             ctset = self.find_set(init_net, {is_seen}, self.offset_is_seen)
-            self.add_set(ctset, "net:{:#018x}".format(init_net))
+            if not self.add_set(ctset, "net:{:#018x}".format(init_net)):
+                self.sets_missing = True
 
         # the user, ipc and mqueue namespaces have their own `set_is_seen` and `set_lookup`
         set_is_seen = Ksym.get_addrs("set_is_seen")
@@ -101961,7 +102058,8 @@ class KernelSysctl:
             return
         init_user_ns = KernelAddressHeuristicFinder.get_init_user_ns()
         if init_user_ns:
-            self.add_set(self.find_set(init_user_ns, set_is_seen), "user:{:#018x}".format(init_user_ns))
+            if not self.add_set(self.find_set(init_user_ns, set_is_seen), "user:{:#018x}".format(init_user_ns)):
+                self.sets_missing = True
 
         init_ipc_ns = KernelAddressHeuristicFinder.get_init_ipc_ns()
         if init_ipc_ns:
@@ -102043,7 +102141,8 @@ class KernelSysctl:
         procname = read_int_from_memory(ctl_table + self.offset_procname)
         if procname == 0:
             return None
-        procname_str = read_cstring_from_memory(procname)
+        # a name may be UTF-8 (e.g., the directory of a network device), and is not cut by the display setting
+        procname_str = read_cstring_from_memory(procname, max_length=0x100, allow_non_ascii=True)
         if not procname_str:
             return None
         parent = read_int_from_memory(ctl_dir + self.offset_parent)
@@ -102145,14 +102244,17 @@ class KernelSysctl:
             self.seen_ctl_table.add(ctl_table)
             procname = read_int_from_memory(ctl_table + self.offset_procname)
             if procname:
-                procname_str = read_cstring_from_memory(procname)
+                procname_str = read_cstring_from_memory(procname, max_length=0x100, allow_non_ascii=True)
             else:
                 procname_str = None
             if not procname_str:
                 break
             param_path = (parent_path + "." + procname_str).lstrip(".")
 
-            mode = read_int16_from_memory(ctl_table + self.offset_mode)
+            if self.sizeof_mode == 4:
+                mode = read_int32_from_memory(ctl_table + self.offset_mode)
+            else:
+                mode = read_int16_from_memory(ctl_table + self.offset_mode)
             child = read_int_from_memory(ctl_table + self.offset_child)
             if child:
                 yield from self.walk_legacy_table(header, child, param_path)
@@ -106013,7 +106115,8 @@ class KernelTask:
             file = read_int_from_memory(array + current_arch.ptrsize * fd)
         except (gdb.MemoryError, OverflowError):
             return None, "Could not read fd {:d} of pid {:d}".format(fd, pid)
-        if not is_valid_addr(file):
+        # NULL is also a valid address of s390x, where the lowcore is
+        if file == 0 or not is_valid_addr(file):
             return None, "FD {:d} of pid {:d} is not open".format(fd, pid)
         return file, None
 
@@ -110449,7 +110552,7 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "                   |     base                       |",
         "                   |     size                       |",
         "                   |     ...                        |",
-        "                   | core_layout (v4.5~v6.4)        |",
+        "                   | core_layout (v4.5~v6.3)        |",
         "                   |     base                       |",
         "                   |     size                       |",
         "                   |     text_size                  |",
@@ -110467,7 +110570,8 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         "                   +--------------------------------+      +----------------+",
         "",
         "Since v6.4, each type of mem[] (text, data, rodata, ro_after_init, init_*) is allocated separately,",
-        "so each allocated type is displayed on its own line. Before v6.4, the whole core is displayed as `core`.",
+        "so each allocated type is displayed on its own line. Before v6.4, the whole core is displayed as `core`,",
+        "but PPC32 (CONFIG_ARCH_WANTS_MODULES_DATA_IN_VMALLOC) displays the text as `core` and the data as `data`.",
         "",
         "Notes for -a option:",
         "- You can check the added symbols with the `symbols` command.",
@@ -110488,14 +110592,20 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
         self.out.append(titlify(""))
         return
 
-    def apply_symbol_region(self, module_name, region_name, text_base, text_end, entries):
-        # remove old file
+    def remove_symbol_elf(self, module_name, region_name):
         sym_elf_path = os.path.join(GEF_TEMP_DIR, "kmod-{:s}-{:s}.elf".format(module_name, region_name))
+        # gdb holds the realpath (e.g., TMPDIR via a symlink), which remove-symbol-file also needs
+        real_path = os.path.realpath(sym_elf_path)
         for objfile in gdb.objfiles():
-            if objfile.filename == sym_elf_path:
-                gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(sym_elf_path)), to_string=True)
+            if objfile.filename == real_path:
+                gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(real_path)), to_string=True)
         if os.path.exists(sym_elf_path):
             os.unlink(sym_elf_path)
+        return sym_elf_path
+
+    def apply_symbol_region(self, module_name, region_name, text_base, text_end, entries):
+        # remove old file
+        sym_elf_path = self.remove_symbol_elf(module_name, region_name)
 
         # make blank ELF
         text_base &= get_pagesize_mask_high()
@@ -110522,6 +110632,9 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
     def apply_symbol(self, module_name, regions, entries):
         # the null symbol
         entries = [entry for entry in entries if entry[0] and entry[2]]
+        # the mapping symbols (e.g., `$d` of ARM32 and `.L0 ` of RISC-V) hide the functions in gdb,
+        # so they are skipped like is_mapping_symbol() of find_kallsyms_symbol()
+        entries = [entry for entry in entries if not entry[2].startswith(("$", ".L", "L0"))]
         if not entries:
             self.quiet_err("No symbols")
             return
@@ -110549,6 +110662,12 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
             self.quiet_warn(
                 "{:s}: {:d} symbols outside the module memory were skipped ({:s})".format(module_name, len(skipped), names)
             )
+
+        # the regions freed since the last time (e.g., init_text after the initialization) must not keep
+        # the old symbols at the freed addresses
+        for region_name in ["core"] + KernelModule.MOD_MEM_TYPES:
+            if region_name not in groups:
+                self.remove_symbol_elf(module_name, region_name)
 
         for region_name, base, size in regions:
             if not groups[region_name]:
@@ -110643,13 +110762,13 @@ class KernelModuleCommand(GenericCommand, BufferingOutput):
 
 @register_command
 class KernelModuleLoadCommand(GenericCommand):
-    """Load the kernel module without a load address."""
+    """Load the symbols of a kernel module file at the addresses of the loaded module."""
 
     _cmdline_ = "kmod-load"
     _category_ = "06-e. Qemu-system/KGDB Cooperation - Linux Symbol/Type"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("name", type=str, help="name of the loaded module to search for by `kmod`.")
+    parser.add_argument("name", type=str, help="name of the loaded module (as shown by `kmod`).")
     parser.add_argument("path", type=str, help="path to compiled kernel module.")
     parser.add_argument("--force", action="store_true", help="load even if the file does not match the loaded module.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
@@ -110683,8 +110802,6 @@ class KernelModuleLoadCommand(GenericCommand):
     def verify_file(self, module, sections):
         # Returns (mismatches, verified_by)
         elf = Elf.get_elf(self.args.path)
-        if elf is None or not elf.is_valid() or not elf.shdrs:
-            return ["It is not a valid ELF"], None
 
         # architecture
         if is_x86_64():
@@ -110732,7 +110849,9 @@ class KernelModuleLoadCommand(GenericCommand):
             mismatches.append("sections not found in the file: {:s}".format(", ".join(missing)))
         file_sections = [s.sh_name for s in elf.shdrs if s.sh_flags & Elf.Shdr.SHF_ALLOC and s.sh_size]
         dropped = [name for name in file_sections if name not in runtime_sections]
-        dropped = [name for name in dropped if name not in (".modinfo", "__versions", ".data..percpu")]
+        # __version_ext_* are of CONFIG_EXTENDED_MODVERSIONS (v6.14~), dropped like __versions
+        unloaded = (".modinfo", "__versions", "__version_ext_crcs", "__version_ext_names", ".data..percpu")
+        dropped = [name for name in dropped if name not in unloaded]
         if dropped:
             self.quiet_warn("Sections not loaded (GDB uses the address in the file): {:s}".format(", ".join(dropped)))
 
@@ -110803,12 +110922,11 @@ class KernelModuleLoadCommand(GenericCommand):
         if not sections:
             self.quiet_err("module->sect_attrs of {:s} is NULL or invalid".format(self.args.name))
             return
-        # PPC64 renames ".init" in the section names to "_init" (e.g., `_init.text`) in module_frob_arch_sections()
+        # PPC64 renames ".init" in the section names to "_init" (e.g., `_init.text`) in module_frob_arch_sections() (~v5.17)
         if is_ppc64():
             elf = Elf.get_elf(self.args.path)
-            if elf is not None and elf.is_valid() and elf.shdrs:
-                names = {s.sh_name.replace(".init", "_init"): s.sh_name for s in elf.shdrs}
-                sections = [(names.get(name, name), addr) for name, addr in sections]
+            names = {s.sh_name.replace(".init", "_init"): s.sh_name for s in elf.shdrs}
+            sections = [(names.get(name, name), addr) for name, addr in sections]
         for name, addr in sections:
             self.quiet_info("name={:s}, addr={:#x}".format(name, addr))
             # unneeded, but for convenience
@@ -110847,6 +110965,15 @@ class KernelModuleLoadCommand(GenericCommand):
         if not loaded:
             self.quiet_err("Could not find loaded module sections")
             return
+        # gdb looks up the objfiles in order, so the old one of the same file (e.g., before reloading the module) wins
+        for objfile in gdb.objfiles():
+            if os.path.realpath(objfile.filename) != os.path.realpath(self.args.path):
+                continue
+            # the main symbol file cannot be removed
+            if objfile.filename == objfile.progspace.filename:
+                continue
+            gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(objfile.filename)), to_string=True)
+
         arguments = ['-s {:s} {:#x}'.format(GefUtil.quote_gdb_argument(name), addr) for name, addr in loaded]
         command = " ".join(arguments)
         gdb.execute("add-symbol-file {:s} {:s}".format(GefUtil.quote_gdb_argument(self.args.path), command))
@@ -110863,6 +110990,11 @@ class KernelModuleLoadCommand(GenericCommand):
     def do_invoke(self, args):
         if not os.path.exists(args.path):
             self.quiet_err("Could not find {:s}".format(args.path))
+            return
+        # e.g., a compressed module (.ko.zst and .ko.xz), which GDB cannot read even with --force
+        elf = Elf.get_elf(args.path)
+        if elf is None or not elf.is_valid() or not elf.shdrs:
+            self.quiet_err("{:s} is not a valid ELF (decompress it if it is compressed)".format(args.path))
             return
 
         kversion = Kernel.version()
@@ -111984,7 +112116,7 @@ class KernelCharDevice:
             (73, 8): "/dev/ip2ipl2",
             (73, 9): "/dev/ip2stat2",
             (73, 12): "/dev/ip2ipl3",
-            (73, 13): "/dev/ip2stat",
+            (73, 13): "/dev/ip2stat3",
             (95, 0): "/dev/ipl",
             (95, 1): "/dev/ipnat",
             (95, 2): "/dev/ipstate",
@@ -112239,7 +112371,7 @@ class KernelCharDevice:
         elif major == 35:
             if 0 <= minor < 4:
                 return "/dev/midi{:d}".format(minor)
-            elif 64 <= minor < 67:
+            elif 64 <= minor < 68:
                 return "/dev/rmidi{:d}".format(minor - 64)
             elif 128 <= minor < 132:
                 return "/dev/smpte{:d}".format(minor - 128)
@@ -112253,16 +112385,16 @@ class KernelCharDevice:
                 return "/dev/nht{:d}".format(minor - 128)
         elif major == 39:
             if 0 <= minor % 32 < 16:
-                return "/dev/ml16p{:s}-a{:d}".format(chr(ord("a") + minor // 32), minor)
+                return "/dev/ml16p{:s}-a{:d}".format(chr(ord("a") + minor // 32), minor % 32)
             elif minor % 32 == 16:
                 return "/dev/ml16p{:s}-d".format(chr(ord("a") + minor // 32))
             elif 17 <= minor % 32 < 20:
-                return "/dev/ml16p{:s}-c{:d}".format(chr(ord("a") + minor // 32), minor - 17)
+                return "/dev/ml16p{:s}-c{:d}".format(chr(ord("a") + minor // 32), minor % 32 - 17)
         elif major == 45:
             if 0 <= minor < 64:
                 return "/dev/isdn{:d}".format(minor)
             elif 64 <= minor < 128:
-                return "/dev/isdncntl{:d}".format(minor - 64)
+                return "/dev/isdnctrl{:d}".format(minor - 64)
             elif 128 <= minor < 192:
                 return "/dev/ippp{:d}".format(minor - 128)
             elif minor == 255:
@@ -112271,11 +112403,11 @@ class KernelCharDevice:
             if 0 <= minor < 3:
                 return "/dev/pd_bdm{:d}".format(minor)
             elif 4 <= minor < 7:
-                return "/dev/icd_bdm{:d}".format(minor)
+                return "/dev/icd_bdm{:d}".format(minor - 4)
         elif major == 65:
             if 0 <= minor < 4:
                 return "/dev/plink{:d}".format(minor)
-            elif 64 <= minor < 67:
+            elif 64 <= minor < 68:
                 return "/dev/rplink{:d}".format(minor - 64)
             elif 128 <= minor < 132:
                 return "/dev/plink{:d}d".format(minor - 128)
@@ -112284,7 +112416,7 @@ class KernelCharDevice:
         elif major == 68:
             if minor == 0:
                 return "/dev/capi20"
-            elif 1 <= minor < 20:
+            elif 1 <= minor < 21:
                 return "/dev/capi20.{:02d}".format(minor - 1)
         elif major == 81:
             if 0 <= minor < 64:
@@ -112293,13 +112425,13 @@ class KernelCharDevice:
                 return "/dev/radio{:d}".format(minor - 64)
             elif 128 <= minor < 192:
                 return "/dev/swradio{:d}".format(minor - 128)
-            elif 192 <= minor < 256:
-                return "/dev/vbi{:d}".format(minor - 192)
+            elif 224 <= minor < 256:
+                return "/dev/vbi{:d}".format(minor - 224)
         elif major == 85:
             if minor == 0:
                 return "/dev/shmiq"
             elif 1 <= minor:
-                return "/dev/qcntl{:d}".format(minor)
+                return "/dev/qcntl{:d}".format(minor - 1)
         elif major == 90:
             if 0 <= minor < 32:
                 if minor % 2 == 0:
@@ -112478,9 +112610,10 @@ class KernelCharDevice:
                 return "/dev/ttySMX{:d}".format(minor - 41)
             elif 44 <= minor < 46:
                 return "/dev/ttyMM{:d}".format(minor - 44)
-            elif 46 <= minor < 50:
+            # 6 ports of cpm_uart (UART_NR), which overlap the first ones of IOC4 removed from devices.txt
+            elif 46 <= minor < 52:
                 return "/dev/ttyCPM{:d}".format(minor - 46)
-            elif 50 <= minor < 82:
+            elif 52 <= minor < 82:
                 return "/dev/ttyIOC{:d}".format(minor - 50)
             elif 82 <= minor < 84:
                 return "/dev/ttyVR{:d}".format(minor - 82)
@@ -112496,13 +112629,13 @@ class KernelCharDevice:
                 return "/dev/ttyNX{:d}".format(minor - 170)
             elif minor == 186:
                 return "/dev/ttyJ0"
-            elif 187 <= minor < 190:
+            elif 187 <= minor < 191:
                 return "/dev/ttyUL{:d}".format(minor - 187)
             elif minor == 191:
                 return "/dev/xvc0"
             elif 192 <= minor < 196:
                 return "/dev/ttyPZ{:d}".format(minor - 192)
-            elif 196 <= minor < 204:
+            elif 196 <= minor < 205:
                 return "/dev/ttyTX{:d}".format(minor - 196)
             elif 205 <= minor < 209:
                 return "/dev/ttySC{:d}".format(minor - 205)
@@ -112527,9 +112660,9 @@ class KernelCharDevice:
                 return "/dev/cusg0"
             elif 41 <= minor < 44:
                 return "/dev/ttycusmx{:d}".format(minor - 41)
-            elif 46 <= minor < 50:
+            elif 46 <= minor < 52:
                 return "/dev/cucpm{:d}".format(minor - 46)
-            elif 50 <= minor < 82:
+            elif 52 <= minor < 82:
                 return "/dev/cuioc4{:d}".format(minor - 50)
             elif 82 <= minor < 84:
                 return "/dev/cuvr{:d}".format(minor - 82)
@@ -112556,9 +112689,9 @@ class KernelCharDevice:
             elif minor % 10 == 1:
                 return "/dev/sbei/dld{:d}".format(minor // 10)
             elif 2 <= minor % 10 < 6:
-                return "/dev/sbei/wan{:d}{:d}".format(minor // 10, minor % 10)
+                return "/dev/sbei/wan{:d}{:d}".format(minor // 10, minor % 10 - 2)
             elif 6 <= minor % 10 < 10:
-                return "/dev/sbei/wanc{:d}{:d}".format(minor // 10, minor % 10)
+                return "/dev/sbei/wanc{:d}{:d}".format(minor // 10, minor % 10 - 6)
         elif major == 212:
             if minor % 64 % 9 == 0:
                 return "/dev/dvb/adapter{:d}/video{:d}".format(minor // 64, minor % 64 // 9)
@@ -112840,7 +112973,8 @@ class KernelCharDevice:
             members = [read_int_from_memory(ops + current_arch.ptrsize * i) for i in range(20)]
         except gdb.MemoryError:
             return None
-        if members[1] < 0x10000:
+        # fop_flags (v6.10~) is 4 bytes, so it is the upper half of members[1] on big-endian 64-bit
+        if read_int32_from_memory(ops + current_arch.ptrsize) < 0x10000:
             members[1] = 0
         unknown = False
         for x in members:
@@ -113043,7 +113177,7 @@ class KernelCharacterDevicesCommand(GenericCommand, BufferingOutput):
         "                +-------------+    +-------+",
         "",
         "The character devices are managed at chrdevs[] and cdev_map.",
-        "This command use each of them for getting structure information.",
+        "This command uses each of them to get the structure information.",
         "",
         "Each line is a registered range of minors, not a device node.",
         "`name (guessed)` is guessed from the static major/minor table only when the range has a single minor.",
@@ -114346,12 +114480,14 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     parser = argparse.ArgumentParser(prog=_cmdline_)
     parser.add_argument("-hh", "--help-simple", action="store_true", help="show help without ASCII diagram.")
     parser.add_argument("-f", "--filter", action="append", type=re.compile, default=[], help="REGEXP filter.")
-    parser.add_argument("-s", "--skip-symlink", action="store_true", help="do not follow symlink (net.* and user.*).")
+    parser.add_argument("-s", "--skip-symlink", action="store_true",
+                        help="do not follow the symlinks to the sets of the namespaces (e.g., net.*).")
     parser.add_argument("-e", "--exact", action="store_true", help="use exact match.")
     parser.add_argument("-d", "--decimal", action="store_true", help="display integer values in decimal.")
     parser.add_argument("--meta", action="store_true", help="display offset information.")
     parser.add_argument("-r", "--rescan", action="store_true", help="do not use cache.")
-    parser.add_argument("-v", "--verbose", action="store_true", help="dump zero-sized entries and proc_handler too.")
+    parser.add_argument("-v", "--verbose", action="store_true",
+                        help="dump the hidden entries (zero-sized or invalid data), the header, set and proc_handler too.")
     parser.add_argument("-n", "--no-pager", action="store_true", help="do not use the pager.")
     parser.add_argument("-q", "--quiet", action="store_true", help="enable quiet mode.")
     _syntax_ = parser.format_help()
@@ -114359,7 +114495,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     _example_ = "\n".join([
         "{0:s} --filter modprobe             # filter by parameter name",
         "{0:s} --filter kernel.modprobe -e   # exact match",
-        "{0:s} -s                            # skip symlink (improves performance with many .net.* and user.* entries)",
+        "{0:s} -s                            # skip symlink (improves performance with many net.* and user.* entries)",
     ]).format(_cmdline_)
 
     _note_ = "\n".join([
@@ -114406,7 +114542,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         if self.args.exact:
             for filt in self.args.filter:
                 if filt.pattern == procname:
-                    self.exact_found = True
+                    self.exact_found.add(filt.pattern)
                     return True
             return False
 
@@ -114423,6 +114559,9 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         data = self.ksysctl.parse_entry(entry, include_namespace=self.args.verbose)
         value = self.ksysctl.get_data_value(data, verbose=self.args.verbose, decimal=self.args.decimal)
         if value is None:
+            # otherwise it looks as if it were not found
+            if self.args.exact:
+                self.quiet_info_add_out("{:s} is hidden (zero-sized or invalid data); use -v".format(entry.path))
             return
         data_addr_str, data_val = value
 
@@ -114462,7 +114601,8 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
         try:
             for entry in self.ksysctl.walk(skip_symlink=self.args.skip_symlink, progress=progress):
                 self.dump_data(entry)
-                if self.args.exact and self.exact_found:
+                # -f can be given more than once
+                if self.args.exact and len(self.exact_found) == len({x.pattern for x in self.args.filter}):
                     break
         except gdb.MemoryError:
             self.err_add_out("Memory read error; sysctl scan incomplete")
@@ -114487,7 +114627,7 @@ class KernelSysctlCommand(GenericCommand, BufferingOutput):
     ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
-        self.exact_found = False
+        self.exact_found = set()
         if args.exact and not args.filter:
             self.quiet_err("Filter string is needed")
             return
@@ -114766,7 +114906,10 @@ class KernelPathCommand(GenericCommand, BufferingOutput):
                 "{:#018x} {:#018x} {:#018x} {:12s} {:s}".format(dentry, vfsmnt - kpath.offset_mount_mnt, vfsmnt, status, path)
             )
             if not self.args.all and len(targets) > 1:
-                self.quiet_info_add_out("{:d} more mounts can reach this dentry; use --all".format(len(targets) - 1))
+                if len(targets) == 2:
+                    self.quiet_info_add_out("1 more mount can reach this dentry; use --all")
+                else:
+                    self.quiet_info_add_out("{:d} more mounts can reach this dentry; use --all".format(len(targets) - 1))
                 break
         return
 
@@ -114868,6 +115011,7 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
         "",
         "ADDRESS is detected as struct file, dentry or inode unless --type is specified.",
+        "The path of a dentry is the one inside its filesystem (e.g., `/1/status` of procfs), which crosses no mount.",
         "The filesystem type and mount device are best-effort when debug information is unavailable.",
         "",
         "Simplified VFS object graph:",
@@ -114923,7 +115067,10 @@ class KernelVfsCommand(GenericCommand, BufferingOutput):
         inode = read_int_from_memory(dentry + kpath.offset_d_inode)
         name = kpath.get_dentry_name(dentry, "???")
         if path is None:
-            path = kpath.decorate_pseudo_path(kpath.dentry_path(dentry), dentry) or "???"
+            # the pathname inside the filesystem, which does not cross any mount (e.g., `/1/status` of procfs)
+            path = kpath.decorate_path(kpath.get_dentry_path_info(dentry), dentry) or "???"
+            if kpath.is_unlinked(dentry):
+                path += " (deleted)"
         self.out.append(prefix + "struct dentry {:#018x}".format(dentry))
         self.out.append(prefix + "├─ d_name {!r}".format(name))
         self.out.append(prefix + "├─ path {!r}".format(path))
@@ -115043,8 +115190,8 @@ class KernelMount:
         (0x08_0000, "lock_noexec", "3.17"),
         (0x10_0000, "lock_nosuid", "3.17"),
         (0x20_0000, "lock_nodev", "3.17"),
-        (0x40_0000, "lock_readonly", "3.17"),
-        (0x80_0000, "locked", "3.17"),
+        (0x40_0000, "lock_readonly"),
+        (0x80_0000, "locked"),
         (0x100_0000, "doomed"),
         (0x200_0000, "sync_umount"),
         (0x800_0000, "umount", "3.18"),
@@ -115103,6 +115250,15 @@ class KernelMount:
             self.meta.append(("info", "offsetof(super_block, s_type): {:#x}".format(self.kfs.offset_s_type)))
 
         self.kpath = Kernel.path()
+        if not self.kpath.initialized and "3.3" <= kversion:
+            # KernelFileSystem resolves the struct dentry layout with the root of a mount, but it fails without
+            # file_systems (or its s_instances), so the open files of the tasks are used like KernelPath.bootstrap().
+            # bootstrap() itself is not used, since it initializes the task resolver without namespaces.
+            task_ready = task_command.initialize(files=True, namespaces=True, threads=threads)
+            if not task_ready:
+                self.meta.extend(task_command.meta)
+                return None
+            self.offset_nsproxy = getattr(task_command, "offset_nsproxy", None)
         if not self.kpath.initialized:
             self.meta.append(("err", "Could not resolve the struct dentry layout"))
             return None
@@ -115736,7 +115892,11 @@ class KernelMountCommand(GenericCommand, BufferingOutput):
             return
 
         if args.pid is None and args.task is None and len(self.kmount.namespaces) > len(targets):
-            self.quiet_info("{:d} more mount namespaces exist; use --all".format(len(self.kmount.namespaces) - len(targets)))
+            rest = len(self.kmount.namespaces) - len(targets)
+            if rest == 1:
+                self.quiet_info("1 more mount namespace exists; use --all")
+            else:
+                self.quiet_info("{:d} more mount namespaces exist; use --all".format(rest))
 
         self.out = []
         for i, (root_mount, tree_root) in enumerate(targets):
@@ -225118,9 +225278,11 @@ class KsymaddrRemoteApplyCommand(GenericCommand):
 
         # add symbol to gdb
         text_base = Ksym.get_text_base() & get_pagesize_mask_high()
+        # gdb holds the realpath (e.g., TMPDIR via a symlink), which remove-symbol-file also needs
+        real_path = os.path.realpath(sym_elf_path)
         for objfile in gdb.objfiles():
-            if objfile.filename == sym_elf_path:
-                gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(sym_elf_path)), to_string=True)
+            if objfile.filename == real_path:
+                gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(real_path)), to_string=True)
         cmd = "add-symbol-file {:s} {:#x}".format(GefUtil.quote_gdb_argument(sym_elf_path), text_base)
         self.quiet_warn("Execute `{:s}`".format(cmd))
         gdb.execute(cmd)

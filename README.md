@@ -241,7 +241,7 @@ For the usage and options of each command, see [docs/COMMANDS.md](docs/COMMANDS.
     - ![](images/ktypes-load.png)
 - `kload`: loads `vmlinux` without a load address.
     - It is useful if you have a `vmlinux` with `debuginfo` at hand.
-- `kmod-load`: loads the kernel module without a load address.
+- `kmod-load`: loads the symbols of a kernel module file at the addresses of the loaded module.
     - It is useful if you have a kernel module with `debuginfo` at hand.
 
 </details>
