@@ -74574,7 +74574,7 @@ class CppMangleCommand(GenericCommand):
         "=": "aS", "+=": "pL", "-=": "mI", "*=": "mL", "/=": "dV", "%=": "rM", "&=": "aN", "|=": "oR", "^=": "eO",
         "<<": "ls", ">>": "rs", "<<=": "lS", ">>=": "rS", "==": "eq", "!=": "ne", "<": "lt", ">": "gt",
         "<=": "le", ">=": "ge", "<=>": "ss", "!": "nt", "&&": "aa", "||": "oo", "++": "pp", "--": "mm",
-        ",": "cm", "->*": "pm", "->": "pt", "()": "cl", "[]": "ix",
+        ",": "cm", "->*": "pm", "->": "pt", "()": "cl", "[]": "ix", "co_await": "aw",
     }
     UNARY_OPERATORS = {"+": "ps", "-": "ng", "&": "ad", "*": "de"}
     BUILTINS = {
@@ -74589,12 +74589,17 @@ class CppMangleCommand(GenericCommand):
         "decimal32": "Df",
         "decimal64": "Dd",
         "decimal128": "De",
+        "half": "Dh",
+        "auto": "Da",
         "_Float16": "DF16_",
         "_Float32": "DF32_",
         "_Float64": "DF64_",
         "_Float128": "DF128_",
         "_Float32x": "DF32x",
         "_Float64x": "DF64x",
+        # the vendor extended types that are not substitution candidates (__bf16 of ARM, __ieee128 of PPC64)
+        "__bf16": "u6__bf16",
+        "__ieee128": "u9__ieee128",
     }
     INTEGER_WORDS = ("signed", "unsigned", "short", "long", "int", "char", "double", "__int128")
     ABBREVIATIONS = {
@@ -74645,6 +74650,9 @@ class CppMangleCommand(GenericCommand):
         if self.peek() == "::":
             self.pop()
         comps = [self.parse_component()]
+        # only the outermost `std` is St (e.g., not the one of `cuda::std::foo()`)
+        if comps[0]["kind"] == "id" and comps[0]["name"] == "std":
+            comps[0]["kind"] = "std"
         while self.peek() == "::" and self.peek(1) != "*":
             self.pop()
             comps.append(self.parse_component())
@@ -74670,6 +74678,11 @@ class CppMangleCommand(GenericCommand):
                 else:
                     token += "]"
                 self.expect(token[1])
+            elif token == '"':
+                # a literal operator, e.g., `operator"" _km`
+                self.expect('"')
+                token = self.pop()
+                comp["kind"] = "literal"
             elif token not in self.OPERATORS:
                 self.pos -= 1
                 comp["kind"] = "conv"
@@ -74740,9 +74753,23 @@ class CppMangleCommand(GenericCommand):
             elif t is None and not words and token == "decltype":
                 self.pop()
                 self.expect("(")
-                self.expect("nullptr")
+                if self.peek() == "auto":
+                    self.pop()
+                    t = ("b", "Dc")
+                else:
+                    self.expect("nullptr")
+                    t = ("b", "Dn")
                 self.expect(")")
-                t = ("b", "Dn")
+                continue
+            elif t is None and not words and self.tokens[self.pos:self.pos + 3] == ["std", "::", "bfloat16_t"]:
+                # DF16b (e.g., __bf16 of x86) is printed as `std::bfloat16_t`
+                self.pos += 3
+                t = ("b", "DF16b")
+                continue
+            elif t is None and not words and re.fullmatch(r"__SV\w+_t", token or ""):
+                # the SVE types are the vendor extended types that are substitution candidates, unlike __bf16
+                self.pop()
+                t = ("u", ("b", "{:d}{:s}".format(len(token), token)))
                 continue
             elif t is None and not words and (token == "::" or self.is_identifier(token)):
                 t = ("n", self.parse_qualified_name())
@@ -74804,6 +74831,12 @@ class CppMangleCommand(GenericCommand):
                     ops.append(("O",))
             elif token in ("const", "volatile", "__restrict", "restrict"):
                 ops.append(("cv", {"const": "K", "volatile": "V"}.get(token, "r")))
+            elif token in ("_Complex", "_Imaginary"):
+                # C99, e.g., `float _Complex` is Cf
+                if token == "_Complex":
+                    ops.append(("C",))
+                else:
+                    ops.append(("G",))
             elif token == "::" or self.is_identifier(token):
                 saved = self.pos
                 comps = self.parse_qualified_name()
@@ -74832,11 +74865,7 @@ class CppMangleCommand(GenericCommand):
             if self.peek() == "(" and (allow_func or (inner and not suffixes)):
                 params = self.parse_params()
                 quals = self.parse_method_quals()
-                exception = ""
-                if self.peek() == "noexcept":
-                    self.pop()
-                    exception = "Do"
-                suffixes.append(("F", params) + quals + (exception,))
+                suffixes.append(("F", params) + quals)
             elif self.peek() == "[":
                 self.pop()
                 if self.peek() == "]":
@@ -74887,9 +74916,13 @@ class CppMangleCommand(GenericCommand):
     def parse_method_quals(self):
         quals = ""
         ref = ""
-        while self.peek() in ("const", "volatile", "&", "&&"):
+        exception = ""
+        # the demangler prints `noexcept` before the others, e.g., `void (Foo::*)(int) noexcept const`
+        while self.peek() in ("const", "volatile", "&", "&&", "noexcept"):
             token = self.pop()
-            if token in ("&", "&&"):
+            if token == "noexcept":
+                exception = "Do"
+            elif token in ("&", "&&"):
                 if token == "&":
                     ref = "R"
                 else:
@@ -74899,11 +74932,11 @@ class CppMangleCommand(GenericCommand):
                     quals += "K"
                 else:
                     quals += "V"
-        return "".join(q for q in "VK" if q in quals), ref
+        return "".join(q for q in "VK" if q in quals), ref, exception
 
     def unqualified(self, comp, encode_type):
         kind = comp["kind"]
-        if kind == "id" and comp["name"] == "std":
+        if kind == "std":
             return "St"
         if kind == "ctor":
             return "C1" + comp["tags"]
@@ -74913,6 +74946,8 @@ class CppMangleCommand(GenericCommand):
             return comp["code"] + comp["tags"]
         if kind == "conv":
             return "cv" + encode_type(comp["type"])
+        if kind == "literal":
+            return "li{:d}{:s}{:s}".format(len(comp["name"].encode("utf-8")), comp["name"], comp["tags"])
         if kind == "anon":
             return "12_GLOBAL__N_1"
         return "{:d}{:s}{:s}".format(len(comp["name"].encode("utf-8")), comp["name"], comp["tags"])
@@ -74943,7 +74978,7 @@ class CppMangleCommand(GenericCommand):
         if kind == "cv":
             return t[1] + self.type_key(t[2])
         if kind == "F":
-            return t[5] + t[3] + "F" + "".join(self.type_key(x) for x in [t[1]] + t[2]) + t[4] + "E"
+            return t[3] + t[5] + "F" + "".join(self.type_key(x) for x in [t[1]] + t[2]) + t[4] + "E"
         if kind == "A":
             return "A" + t[1] + "_" + self.type_key(t[2])
         if kind == "M":
@@ -75001,11 +75036,15 @@ class CppMangleCommand(GenericCommand):
             return self.encode_prefix(comps, add=False)
         return "N" + quals + self.encode_prefix(comps, add=False) + "E"
 
-    def encode_type(self, t):
+    def encode_type(self, t, member_of=None):
         kind = t[0]
         if kind == "b":
             return t[1]
         key = self.type_key(t)
+        if kind == "F" and member_of is not None:
+            # A member function type is another substitution candidate than the plain one, for each class.
+            # e.g., `r(void (Foo::*)(int), void (*)(int))` is _Z1rM3FooFviEPFviE
+            key = self.type_key(member_of) + "::" + key
         if self.substitute(key):
             return self.substitute(key)
         if kind == "n":
@@ -75013,17 +75052,17 @@ class CppMangleCommand(GenericCommand):
         elif kind == "cv":
             out = t[1] + self.encode_type(t[2])
         elif kind == "F":
-            out = t[5] + t[3] + "F" + "".join(self.encode_type(x) for x in [t[1]] + t[2]) + t[4] + "E"
+            out = t[3] + t[5] + "F" + "".join(self.encode_type(x) for x in [t[1]] + t[2]) + t[4] + "E"
         elif kind == "A":
             out = "A" + t[1] + "_" + self.encode_type(t[2])
         elif kind == "M":
-            out = "M" + self.encode_type(t[1]) + self.encode_type(t[2])
+            out = "M" + self.encode_type(t[1]) + self.encode_type(t[2], member_of=t[1])
         else:
             out = kind + self.encode_type(t[1])
         self.subs.append(key)
         return out
 
-    def encode_entity(self):
+    def encode_entity(self, scope=""):
         ret = None
         saved = self.pos
         try:
@@ -75035,22 +75074,25 @@ class CppMangleCommand(GenericCommand):
             ret = self.parse_type()
             comps = self.parse_qualified_name()
         if self.peek() != "(":
-            return self.encode_name(comps)
+            return scope + self.encode_name(comps)
 
         params = self.parse_params()
-        quals, ref = self.parse_method_quals()
+        # the exception specification of a function is not mangled in its name
+        quals, ref, _ = self.parse_method_quals()
         last = comps[-1]
         if last["kind"] == "op":
             count = len(params) - (params == [("b", "v")])
             if count + (len(comps) > 1 and count < 2) == 1 and last["name"] in self.UNARY_OPERATORS:
                 last["code"] = self.UNARY_OPERATORS[last["name"]]
-        out = self.encode_name(comps, quals + ref)
+        out = scope + self.encode_name(comps, quals + ref)
         if ret and last["args"] is not None:
             out += self.encode_type(ret)
         out += "".join(self.encode_type(p) for p in params)
+        # the whole encoding so far is the scope of the next entity,
+        # e.g., `f()::S::g()::z` is Z(Z(f())E(S::g()))E(z), not Z(f())E(Z(S::g())E(z))
         if self.peek() == "::":
             self.pop()
-            out = "Z" + out + "E" + self.encode_entity()
+            return self.encode_entity("Z" + out + "E")
         return out
 
     def mangle(self, name, is_type=False):
@@ -75095,7 +75137,12 @@ class CppMangleCommand(GenericCommand):
 
         gef_print("{:10s} {:s}".format("Mangled:", mangled))
         if mangled != name:
-            demangled = CppDemangleCommand.demangle(mangled, is_type=args.type)
+            # `vtable for` and such are mangled as symbols even with -t
+            if mangled.startswith("_Z"):
+                is_type = False
+            else:
+                is_type = args.type
+            demangled = CppDemangleCommand.demangle(mangled, is_type=is_type)
             if demangled is None:
                 warn("Failed to demangle the result")
             else:
@@ -79909,7 +79956,11 @@ class KernelAddressHeuristicFinder:
         if is_kgdb():
             cpu = KernelPerCpu.get_cpu_index(gdb.selected_thread())
             if cpu is not None:
-                task = to_unsigned_long(gdb.parse_and_eval("kgdb_info[{:d}].task".format(cpu)))
+                # `kgdb_info` needs the type information (e.g., not KDB without symbols, or vmlinux-to-elf)
+                try:
+                    task = to_unsigned_long(gdb.parse_and_eval("kgdb_info[{:d}].task".format(cpu)))
+                except gdb.error:
+                    task = None
                 if task:
                     return task
 
@@ -88082,7 +88133,8 @@ class Kernel:
 
     @staticmethod
     def version():
-        """Return the version of the running kernel, or the one specified by `kversion VERSION`."""
+        """Return the version of the running kernel, or the one specified by `kversion VERSION`.
+        The latter has no address of linux_banner, so `KernelVersion.detect()` is used for the banner."""
         override = KernelVersion.get_override()
         if override is not None:
             return override
@@ -91111,7 +91163,7 @@ class KernelPerCpu:
         UTS_VERSION gets " SMP" after the build number exactly when CONFIG_SMP=y.
             Linux version 6.6.32 (...) #1 SMP Tue Sep 17 10:52:27 JST 2024
             Linux version 4.4.114-suctf (...) #1 Fri Feb 2 15:14:36 +0330 2018"""
-        kversion = Kernel.version()
+        kversion = KernelVersion.detect()
         if kversion is None or not kversion.version_string:
             return False
         _, sep, uts_version = kversion.version_string.rpartition(" #")
@@ -105398,15 +105450,6 @@ class KernelVersionCommand(GenericCommand):
                 self.quiet_err(message.format(args.version))
                 return
 
-            detected = Kernel.version()
-            if detected is not None:
-                address = detected.address
-            else:
-                address = 0
-            if detected is not None:
-                version_string = detected.version_string
-            else:
-                version_string = "Linux version {:s} (user specified)".format(args.version)
             numbers = []
             for value in match.groups():
                 if value is not None:
@@ -105414,9 +105457,11 @@ class KernelVersionCommand(GenericCommand):
                 else:
                     numbers.append(0)
             major, minor, patch = numbers
+            # Only the numbers are overridden. linux_banner is detected each time, since it moves after a reboot (KASLR).
+            version_string = "Linux version {:s} (user specified)".format(args.version)
             inferior = gdb.selected_inferior()
             KernelVersion.overrides[inferior, getattr(inferior, "connection_num", None)] = KernelVersion( # GDB 11+
-                address, version_string, major, minor, patch)
+                0, version_string, major, minor, patch)
             Cache.reset_gef_caches(all=True)
 
         self.quiet_info("Wait for memory scan")
@@ -105426,8 +105471,9 @@ class KernelVersionCommand(GenericCommand):
             return
 
         self.out = []
-        if kversion.address:
-            self.out.append("{:#x}: {:s}".format(kversion.address, kversion.version_string))
+        detected = KernelVersion.detect()
+        if detected is not None:
+            self.out.append("{:#x}: {:s}".format(detected.address, detected.version_string))
         if KernelVersion.get_override() is not None:
             self.out.append("User-specified kernel version: {:s}".format(str(kversion)))
         if self.out:
@@ -105497,7 +105543,8 @@ class KernelCurrentCommand(GenericCommand):
         if self.offset_comm is None:
             return "???"
 
-        comm = read_cstring_from_memory(task_addr + self.offset_comm)
+        # comm may be UTF-8 (e.g., the name of the executable) or any bytes set by prctl(PR_SET_NAME)
+        comm = read_cstring_from_memory(task_addr + self.offset_comm, allow_non_ascii=True)
         return comm or "???"
 
     @Decorator.parse_args
@@ -105683,7 +105730,12 @@ class KernelTask:
                 tasks.append((None, KernelAddressHeuristicFinder.dereference_current_task(current), None))
                 return tasks
             # pattern 1: offset from __per_cpu_offset.
+            # The per-cpu area of a possible but not present CPU (e.g., a hotplug slot) is a copy of the template,
+            # where `current_task` is &init_task. The other arches see the vCPUs only.
+            present = percpu.get_cpu_masks()["present"]
             for index, base in enumerate(percpu.offsets):
+                if present is not None and index not in present:
+                    continue
                 task = KernelAddressHeuristicFinder.dereference_current_task(current, base)
                 tasks.append(("cpu{:d}".format(index), task, None))
             return tasks
@@ -106623,8 +106675,10 @@ class KernelTask:
                     valid = False
                     break
                 s = read_cstring_from_memory(task + offset_comm)
-                # very common name, so for speeding up, we assume that offset is found
-                if s == "swapper/0":
+                # very common name, so for speeding up, we assume that offset is found.
+                # init_task is "swapper" if init_idle() does not rename it (CONFIG_SMP=n, e.g., v6.6). Without this,
+                # a short or non-ASCII comm of another task (e.g., set by prctl(PR_SET_NAME)) rejects the offset.
+                if s in ("swapper/0", "swapper"):
                     break
                 if len(s) < 2:
                     valid = False
@@ -107590,11 +107644,12 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
                 image_end = max(image_ends)
                 if image_start <= self.ktask.init_task < image_end:
                     return
-                self.quiet_warn("Hint: init_task looks outside the kernel image (kbase: {:#x} - {:#x}).".format(
+                # not quiet, since the shortcuts (e.g., kfiles) always pass --quiet
+                warn("Hint: init_task looks outside the kernel image (kbase: {:#x} - {:#x}).".format(
                     image_start, image_end,
                 ))
 
-        self.quiet_warn("Retry with: ktask --init-task <addr>")
+        warn("Retry with: ktask --init-task <addr>")
         return
 
     def append_task_legend(self):
@@ -107904,6 +107959,11 @@ class KernelTaskCommand(GenericCommand, BufferingOutput):
             for func, line in self.meta:
                 func(line)
         if not ret:
+            # the reason is not quiet, since the shortcuts (e.g., kfiles) always pass --quiet
+            if args.quiet:
+                for level, line in self.ktask.meta:
+                    if level == "err":
+                        err(line)
             self.show_init_task_recovery_hint(args.init_task)
             return
 
@@ -107960,6 +108020,7 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
         "This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.",
     ])
 
+    @Decorator.switch_to_intel_syntax
     def initialize(self):
         self.ktask = Kernel.task()
         ret = self.ktask.initialize(threads=self.args.print_thread)
@@ -108029,7 +108090,11 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
                         pattern = r"\bmov\s+(?:QWORD|DWORD) PTR \[\w+\+0x([0-9a-f]+)\],(?:rsp|esp)\b"
                         candidates.extend(("task", int(m, 16)) for m in re.findall(pattern, res))
                     elif is_arm64():
+                        # `mov x10, #THREAD_CPU_CONTEXT` and `add x8, x0, x10` (e.g., v4.9),
+                        # or `add x8, x0, #THREAD_CPU_CONTEXT` (e.g., v3.10 and v4.1)
                         for m in re.findall(r"\bmov\s+x10,\s*#(0x[0-9a-f]+|\d+)", res):
+                            candidates.append(("task", int(m, 0) + ptrsize * 11))
+                        for m in re.findall(r"\badd\s+x8,\s*x0,\s*#(0x[0-9a-f]+|\d+)", res):
                             candidates.append(("task", int(m, 0) + ptrsize * 11))
                     elif is_arm32():
                         for m in re.findall(r"\badd\s+(?:ip|r12),\s*r1,\s*#(0x[0-9a-f]+|\d+)", res):
@@ -108109,6 +108174,18 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
     ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        # TARGET is parsed before the memory scan
+        target = None
+        if args.target is not None:
+            if args.target.isdigit():
+                target = int(args.target)
+            else:
+                try:
+                    target = AddressUtil.parse_address(args.target)
+                except gdb.error:
+                    err("Invalid PID or address: {:s}".format(args.target))
+                    return
+
         self.quiet_info("Wait for memory scan")
         self.out = []
         ret = self.initialize()
@@ -108120,15 +108197,30 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
             return
 
         tasks = [task for task in self.tasks if GefUtil.matches_regex(task["comm"], args.filter)]
-        if args.target is not None:
-            if args.target.isdigit():
-                target = int(args.target)
-            else:
-                target = AddressUtil.parse_address(args.target)
+        if target is not None:
             tasks = [task for task in tasks if target in (task["pid"], task["task"])]
             if not tasks:
                 err("No task matched `{:s}`".format(args.target))
                 return
+
+        # The task running on a CPU whose current task is unknown (e.g., in the user mode) is not skipped
+        for label, task, reason in KernelTask.get_current_tasks():
+            if task is not None:
+                continue
+            if label is None:
+                label = "cpu0"
+            msg = "The current task of {:s} is unavailable".format(label)
+            if reason is not None:
+                msg += " ({:s})".format(reason)
+            self.warn_add_out(msg + "; the task running there may be shown with a stale context")
+
+        # the kernel PAC is in bits 63..VA_BITS, i.e., ptrauth_kernel_pac_mask() is GENMASK_ULL(63, vabits_actual)
+        pac_mask = None
+        if is_arm64():
+            va_bits = KernelAddressHeuristicFinder.consts().CONFIG_ARM64_VA_BITS
+            if va_bits is None:
+                va_bits = 48 # TCR_EL1 is unreadable
+            pac_mask = (0xffff_ffff_ffff_ffff >> va_bits) << va_bits
 
         for task in ProgressBar(tasks, desc="task", disable=args.quiet):
             self.out.append(titlify("PID {:d} ({:s}) task={:#x}".format(task["pid"], task["comm"], task["task"])))
@@ -108172,7 +108264,7 @@ class KernelBacktraceCommand(GenericCommand, BufferingOutput):
                 if is_arm32():
                     pc &= ~1
                 elif is_arm64() and (pc >> 55) & 1:
-                    pc |= 0xffff_0000_0000_0000
+                    pc |= pac_mask
                 if not self.text.in_kernel_text(pc) and not self.text.in_module_text(pc):
                     continue
                 self.out.append("#{:<3d} [{:#x}] {:s}".format(
@@ -108908,7 +109000,7 @@ class KernelKeyring:
         for task in task_addrs:
             try:
                 pid = read_int32_from_memory(task + command.offset_pid)
-                comm = read_cstring_from_memory(task + command.offset_comm) or "???"
+                comm = read_cstring_from_memory(task + command.offset_comm, allow_non_ascii=True) or "???"
                 cred = read_int_from_memory(task + command.offset_cred)
             except (gdb.MemoryError, OverflowError):
                 continue
@@ -109482,7 +109574,7 @@ class KernelSchedCommand(GenericCommand, BufferingOutput):
             elif task is None:
                 lines.append("current ({:s}): unavailable ({:s})".format(label, reason))
             else:
-                comm = read_cstring_from_memory(task + self.task_command.offset_comm)
+                comm = read_cstring_from_memory(task + self.task_command.offset_comm, allow_non_ascii=True)
                 lines.append("current ({:s}): {:#x} {:s}".format(label, task, comm or "???"))
                 current_map[task] = label
         return lines, current_map
@@ -109796,7 +109888,7 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
                 return
             offset_comm = self.task_command.offset_comm
             offset_mm = self.task_command.offset_mm
-        label = "{:s}[{:d}]".format(read_cstring_from_memory(task + offset_comm) or "???", args.pid)
+        label = "{:s}[{:d}]".format(read_cstring_from_memory(task + offset_comm, allow_non_ascii=True) or "???", args.pid)
         mm = read_int_from_memory(task + offset_mm)
         if mm == 0:
             err("{:s} is a kernel thread, which has no user-land memory".format(label))
@@ -109896,7 +109988,7 @@ class KernelLoadCommand(GenericCommand):
         return slide & get_pagesize_mask_low() == 0
 
     def get_slide_from_banner(self, elf):
-        kversion = Kernel.version()
+        kversion = KernelVersion.detect()
         if kversion is None or not kversion.address:
             return None
         shdr = elf.get_shdr(".rodata")
@@ -110025,7 +110117,7 @@ class KernelLoadCommand(GenericCommand):
                 results.append(("build ID", "mismatch", "{:s} in the vmlinux, {:s} in memory".format(desc.hex(), actual.hex())))
 
         # linux_banner
-        kversion = Kernel.version()
+        kversion = KernelVersion.detect()
         rodata = elf.read_shdr(".rodata")
         if kversion is None or not kversion.address or rodata is None:
             results.append(("linux_banner", "unknown", "not found"))
@@ -220296,7 +220388,7 @@ class KernelAllocTracer:
         offset_comm = KernelTask.resolve_offset_comm()
         if offset_comm is None:
             return task, "???"
-        return task, read_cstring_from_memory(task + offset_comm) or "???"
+        return task, read_cstring_from_memory(task + offset_comm, allow_non_ascii=True) or "???"
 
     @staticmethod
     def get_offset_pid():
@@ -227992,7 +228084,7 @@ class KernelLsm:
         tasks = []
         for task in self.task_addrs:
             pid = read_int32_from_memory(task + task_command.offset_pid, safe=True)
-            comm = read_cstring_from_memory(task + task_command.offset_comm, safe=True)
+            comm = read_cstring_from_memory(task + task_command.offset_comm, safe=True, allow_non_ascii=True)
             cred = read_int_from_memory(task + task_command.offset_cred, safe=True)
             if pid is not None:
                 if comm is not None:
@@ -228997,7 +229089,7 @@ class KernelIoUring(KernelTaskFileScanner):
             return None, "???"
         try:
             pid = read_int32_from_memory(task + command.offset_pid)
-            comm = read_cstring_from_memory(task + command.offset_comm) or "???"
+            comm = read_cstring_from_memory(task + command.offset_comm, allow_non_ascii=True) or "???"
         except (gdb.MemoryError, OverflowError):
             return None, "???"
         return pid, comm
