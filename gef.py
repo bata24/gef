@@ -79760,6 +79760,12 @@ class KernelAddressHeuristicFinder:
     USE_KSYSCTL = True # for debug
     DEBUG_CONTEXT = False # for debug; report which CPU context resolved each cpu-dependent heuristic
 
+    # the syscall tables of `get_sys_call_table_other(abi)` that are not "sys_call_table"
+    SYS_CALL_TABLE_OTHER_NAMES = {
+        "n32": "sysn32_call_table", "mips64_o32": "sys32_call_table", "ppc64_32": "compat_sys_call_table",
+        "s390x_emu": "sys_call_table_emu",
+    }
+
     def cpu_context_dependent(f):
         """Decorator for the heuristics whose answer depends on which CPU (= gdb thread) is selected.
         The result is memoized per CPU context, so an answer resolved on one CPU is never reused
@@ -81299,12 +81305,8 @@ class KernelAddressHeuristicFinder:
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
     def get_sys_call_table_other(abi):
         """Return the syscall table of `abi` of MIPS, PowerPC, s390x, LoongArch and SPARC32, or None."""
-        names = {
-            "o32": "sys_call_table", "n64": "sys_call_table", "n32": "sysn32_call_table", "mips64_o32": "sys32_call_table",
-            "ppc64_32": "compat_sys_call_table", "s390x_emu": "sys_call_table_emu",
-        }
         if KernelAddressHeuristicFinder.USE_DIRECTLY:
-            address = Ksym.get_addr(names.get(abi, "sys_call_table"))
+            address = Ksym.get_addr(KernelAddressHeuristicFinder.SYS_CALL_TABLE_OTHER_NAMES.get(abi, "sys_call_table"))
             if address:
                 return address
 
@@ -99695,10 +99697,10 @@ class KernelSched:
         (0x8000, "TASK_FROZEN", "6.1"),
     ]
 
-    # the short letters mirror those shown by `ps`
+    # the short letters mirror those shown by `ps`, of the bits in TASK_REPORT (TASK_PARKED is in it since v4.14)
     STATE_LETTERS = [
-        ("TASK_UNINTERRUPTIBLE", "D"), ("__TASK_STOPPED", "T"), ("__TASK_TRACED", "t"), ("EXIT_DEAD", "X"),
-        ("EXIT_ZOMBIE", "Z"), ("TASK_PARKED", "P"), ("TASK_DEAD", "X"), ("TASK_INTERRUPTIBLE", "S"),
+        ("TASK_INTERRUPTIBLE", "S"), ("TASK_UNINTERRUPTIBLE", "D"), ("__TASK_STOPPED", "T"), ("__TASK_TRACED", "t"),
+        ("EXIT_DEAD", "X"), ("EXIT_ZOMBIE", "Z"), ("TASK_PARKED", "P"),
     ]
 
     POLICY_NAMES = {
@@ -99844,7 +99846,10 @@ class KernelSched:
         if self.offset_cpu is not None:
             self.meta.append(("info", "offsetof(task_struct, cpu): {:#x}".format(self.offset_cpu)))
 
-        self.initialized = True
+        # The searches without debug information depend on the tasks of the moment (e.g., policy needs an RT or DL
+        # task, which may not exist yet during boot), so they are repeated next time until all are resolved.
+        if None not in (self.offset_state, self.offset_exit_state, self.offset_sched_class, self.offset_policy):
+            self.initialized = True
         return True
 
     @classmethod
@@ -100065,16 +100070,29 @@ class KernelSched:
         return "TASK_RUNNING"
 
     def state_to_letter(self, v):
+        """Return the letter of `v` (`__state | exit_state`) like __task_state_index() of the kernel."""
         if v is None:
             return "?"
-        if v == 0:
-            return "R"
-        if self.report_idle and v == (self.state_bits["TASK_UNINTERRUPTIBLE"] | self.state_bits["TASK_NOLOAD"]):
+        bits = self.state_bits
+        # RTLOCK_WAIT (v5.15~) and FROZEN (v6.1~) are reported as uninterruptible
+        if v & (bits.get("TASK_RTLOCK_WAIT", 0) | bits.get("TASK_FROZEN", 0)):
+            return "D"
+        # TASK_IDLE is reported since v4.14, and compared with a mask since TASK_FREEZABLE (v6.1)
+        idle = bits["TASK_UNINTERRUPTIBLE"] | bits.get("TASK_NOLOAD", 0)
+        if self.report_idle and (v & idle) == idle:
             return "I"
+        # fls() of the reported bits; the others (e.g., TASK_NEW and TASK_WAKING) are running
+        reported = []
         for name, letter in self.STATE_LETTERS:
-            if v & self.state_bits.get(name, 0):
-                return letter
-        return "?"
+            # TASK_REPORT has TASK_PARKED since v4.14, with TASK_IDLE
+            if name == "TASK_PARKED" and not self.report_idle:
+                continue
+            if v & bits.get(name, 0):
+                reported.append((bits[name], letter))
+        if not reported:
+            return "R"
+        _, letter = max(reported)
+        return letter
 
     def policy_to_str(self, v):
         base = v & ~self.SCHED_RESET_ON_FORK
@@ -105047,6 +105065,7 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         "  MISMATCH: heuristic differs from direct.",
         "  ERROR   : either run raised an exception. The messages are listed under `errors`.",
         "  n/a     : not compared, because direct is '-', False or None, or heuristic is False.",
+        "            The syscall table finders give up on KGDB, so their None is n/a there.",
         "MISS, MISMATCH and ERROR are failures. They are highlighted, and `--failures-only` shows only them.",
         "$ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.",
     ])
@@ -105071,6 +105090,9 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
             if is_riscv64():
                 return "compat_sys_call_table"
             return None
+        if finder_name.startswith("get_sys_call_table_other_"):
+            abi = finder_name[len("get_sys_call_table_other_"):]
+            return KernelAddressHeuristicFinder.SYS_CALL_TABLE_OTHER_NAMES.get(abi, "sys_call_table")
         if finder_name == "find_per_cpu_unit_size":
             if is_arm32():
                 return "pcpu_unit_size"
@@ -105153,6 +105175,28 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
                 implementation = implementation.__wrapped__
             if "USE_DIRECTLY" in implementation.__code__.co_names:
                 finders[name] = finder
+
+        # get_sys_call_table_other() needs the ABI of the arch (the same ones as kchecksec)
+        del finders["get_sys_call_table_other"]
+        if is_mips32():
+            abis = ["o32"]
+        elif is_mips64():
+            abis = ["n64", "n32", "mips64_o32"]
+        elif is_ppc32():
+            abis = ["ppc32"]
+        elif is_ppc64():
+            abis = ["ppc64", "ppc64_32"]
+        elif is_s390x():
+            abis = ["s390x", "s390x_emu"]
+        elif is_loongarch64():
+            abis = ["loongarch64"]
+        elif is_sparc32():
+            abis = ["sparc32"]
+        else:
+            abis = []
+        for abi in abis:
+            finder = functools.partial(KernelAddressHeuristicFinder.get_sys_call_table_other, abi)
+            finders["get_sys_call_table_other_" + abi] = finder
         return sorted(finders.items())
 
     @staticmethod
@@ -105242,8 +105286,12 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         finder_args = ()
         try:
             if name == "get_current_clocksource":
-                current_clocksource = read_int_from_memory(symbol_address)
-                finder_args = ((current_clocksource,),)
+                # the same candidates as kclock-source, i.e., all entries of clocksource_list
+                kclocksource = Kernel.clocksource()
+                if not kclocksource.initialize():
+                    return None, None, False, ()
+                entries = [kclocksource.read_clocksource(node) for node in kclocksource.nodes]
+                finder_args = (tuple(entry["address"] for entry in entries if entry is not None),)
             elif name == "get_log_buffer":
                 length_address = Ksym.get_addr("log_buf_len")
                 if length_address is None:
@@ -105295,6 +105343,9 @@ class KernelAddressHeuristicSelftestCommand(GenericCommand, BufferingOutput):
         # the heuristic returns the candidates, so it is enough that they include the symbol-backed address
         if name == "get_printk_ring_candidates" and heuristic is not None and direct in heuristic:
             return "OK"
+        # the syscall table finders give up on KGDB before reading the image, which is too slow
+        if heuristic is None and is_kgdb() and name.startswith("get_sys_call_table"):
+            return "n/a"
         if heuristic is None:
             return "MISS"
         return "MISMATCH"
@@ -108622,7 +108673,9 @@ class KernelKeyring:
         "KeyInfo", "address usage serial type_addr type_name description expiry uid gid perm datalen state flags payload",
     )
     KeyRecord = collections.namedtuple("KeyRecord", "root depth parent address info status")
-    RequestAuth = collections.namedtuple("RequestAuth", "target target_info dest dest_info cred callout callout_len pid op")
+    RequestAuth = collections.namedtuple(
+        "RequestAuth", "target target_info dest dest_info cred callout callout_len pid pid_struct op",
+    )
 
     @classmethod
     @Cache.cache_this_session(per_inferior=True, until_new_objfile=True)
@@ -108725,6 +108778,9 @@ class KernelKeyring:
             if address is None:
                 break
             if not is_valid_addr(address):
+                continue
+            # an empty list (e.g., sem.wait_list) points to the key itself, whose bytes may look like a string
+            if key <= address < key + 0x120:
                 continue
             value = read_cstring_from_memory(address, max_length=0x100)
             if value and all(c.isprintable() for c in value):
@@ -108841,8 +108897,13 @@ class KernelKeyring:
                     candidates.reverse()
                 self.offset_payload = candidates[0]
                 # the payload of a keyring is name_link (a list, or zeros if the name is not published)
-                # and keys.root (NULL, or the root node, whose back_pointer is NULL)
+                # and keys.root (NULL, or the root node, whose back_pointer is NULL).
+                # The other types (e.g., `user`, `logon` and `.request_key_auth`) use only data[0], so they cannot tell.
                 if sample_key is not None:
+                    sample_type = self.type_name(read_int_from_memory(sample_key + self.offset_type, safe=True))
+                else:
+                    sample_type = None
+                if sample_type == "keyring":
                     for candidate in candidates:
                         head = read_memory(sample_key + candidate, current_arch.ptrsize * 2, safe=True)
                         root = read_int_from_memory(sample_key + candidate + current_arch.ptrsize * 2, safe=True)
@@ -109023,7 +109084,10 @@ class KernelKeyring:
             type_name = self.type_name(type_addr)
             description_addr = read_int_from_memory(address + self.offset_description)
             if description_addr:
-                description = read_cstring_from_memory(description_addr, max_length=0x100)
+                # it may be UTF-8 or have control characters (e.g., `keyctl add user café x @s`), shown by repr
+                description = read_cstring_from_memory(description_addr, max_length=0x100, allow_non_ascii=True)
+                if description is None:
+                    description = "[unreadable]"
             else:
                 description = None
             if self.sizeof_expiry == 8:
@@ -109063,7 +109127,8 @@ class KernelKeyring:
         if offsets[0] is not None:
             bases = [offsets[0]]
         else:
-            # rcu_head was added in front of target_key in v5.3, and refcount_t usage in v7.2.
+            # rcu_head was added in front of target_key in v5.3, and refcount_t usage in v7.2 (also in the stable
+            # kernels, e.g., 6.1.177, 6.1.192 and 6.6.162).
             bases = [0, 2 * ptrsize, 3 * ptrsize]
         for base in bases:
             positions = []
@@ -109081,7 +109146,15 @@ class KernelKeyring:
                 cred = read_int_from_memory(address + positions[2])
                 callout_info = read_int_from_memory(address + positions[3])
                 callout_len = read_int_from_memory(address + positions[4])
-                pid = read_int32_from_memory(address + positions[5])
+                # pid_t, or `struct pid *` in the stable kernels (e.g., 6.1.192 and 6.6.162), which moves op
+                pid_struct = read_int_from_memory(address + positions[5])
+                if KernelAddressHeuristicFinderUtil.is_kernel_space(pid_struct) and is_valid_addr(pid_struct):
+                    pid = None
+                    if offsets[6] is None:
+                        positions[6] = positions[5] + ptrsize
+                else:
+                    pid = read_int32_from_memory(address + positions[5])
+                    pid_struct = None
                 op = read_memory(address + positions[6], 8)
             except (gdb.MemoryError, OverflowError):
                 continue
@@ -109109,7 +109182,7 @@ class KernelKeyring:
                 op = op.decode()
             else:
                 op = None
-            return self.RequestAuth(target, target_info, dest, dest_info, cred, callout, callout_len, pid, op)
+            return self.RequestAuth(target, target_info, dest, dest_info, cred, callout, callout_len, pid, pid_struct, op)
         return None
 
     def walk_assoc_array(self, root):
@@ -109199,6 +109272,10 @@ class KernelKeyring:
         seen.add(address)
         records.append(self.KeyRecord(root, depth, parent, address, info, None))
         children = self.keyring_children(info)
+        # the error of this keyring is moved before the depth limit and before the children overwrite it
+        if self.walk_error:
+            self.walk_errors.append("{:s}: {:s}".format(root, self.walk_error))
+            self.walk_error = None
         if depth >= self.max_depth:
             if children:
                 self.depth_limit_reached = True
@@ -109207,9 +109284,6 @@ class KernelKeyring:
         next_ancestors = ancestors | {address}
         for child in children:
             self.collect_key(records, root, child, depth + 1, address, next_ancestors, seen)
-        if self.walk_error:
-            self.walk_errors.append("{:s}: {:s}".format(root, self.walk_error))
-            self.walk_error = None
         return
 
     def collect_roots(self, roots):
@@ -109274,28 +109348,30 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
         "+-key----------------------------+",
         "| usage                          |",
         "| serial                         |",
-        "| uid, gid, perm                 |",
+        "| type (~v3.12)                  |",
         "| expiry                         |",
-        "| flags                          |",
+        "| uid, gid, perm                 |",
+        "| datalen                        |",
         "| state (v4.14~)                 |",
-        "| type                           |",
+        "| flags                          |",
+        "| type (v3.13~)                  |",
         "| description                    |",
         "| payload.subscriptions (~v3.12) |---->struct keyring_list",
         "| payload.data[0] (auth key)     |---->struct request_key_auth",
         "| keys.root (v3.13~)             |---->assoc_array_ptr",
         "+--------------------------------+",
         "",
-        "+-request_key_auth-+",
-        "| rcu (v5.3~)      |",
-        "| usage (v7.2~)    |",
-        "| target_key       |---->struct key (being constructed)",
-        "| dest_keyring     |---->struct key",
-        "| cred             |---->struct cred (requester)",
-        "| callout_info     |",
-        "| callout_len      |",
-        "| pid              |",
-        "| op[8] (v5.0~)    |",
-        "+------------------+",
+        "+-request_key_auth------+",
+        "| rcu (v5.3~)           |",
+        "| usage (v7.2~, stable) |",
+        "| target_key            |---->struct key (being constructed)",
+        "| dest_keyring          |---->struct key",
+        "| cred                  |---->struct cred (requester)",
+        "| callout_info          |",
+        "| callout_len           |",
+        "| pid                   |",
+        "| op[8] (v5.0~)         |",
+        "+-----------------------+",
         "",
         "[~v3.12]",
         "+-keyring_list-+",
@@ -109423,7 +109499,11 @@ class KernelKeyringCommand(GenericCommand, BufferingOutput):
             op = "n/a"
         else:
             op = auth.op
-        self.out.append("  auth:  cred={:#x} pid={:d} op={:s}".format(auth.cred, auth.pid, op))
+        if auth.pid_struct is not None:
+            pid = "(struct pid *){:#x}".format(auth.pid_struct)
+        else:
+            pid = "{:d}".format(auth.pid)
+        self.out.append("  auth:  cred={:#x} pid={:s} op={:s}".format(auth.cred, pid, op))
         if auth.callout is None:
             callout = "none"
         else:
@@ -109736,7 +109816,7 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
     _category_ = "06-f. Qemu-system/KGDB Cooperation - Linux Task"
 
     parser = argparse.ArgumentParser(prog=_cmdline_)
-    parser.add_argument("pid", metavar="PID", type=int, help="the process ID of the target task.")
+    parser.add_argument("pid", metavar="PID", type=int, help="the process or thread ID of the target task.")
     parser.add_argument("format", metavar="/FMT", help="specified output format.")
     parser.add_argument("location", metavar="ADDRESS", type=AddressUtil.parse_address,
                         help="the user-land virtual address of the target task to dump.")
@@ -109847,11 +109927,27 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
     ))
     @Decorator.only_if_in_kernel_or_kpti_disabled
     def do_invoke(self, args):
+        # pagewalk supports KGDB only on x86 and ARM64, and x86_32 reads the physical memory through the given physmap
+        # (or `mdp` of KDB)
+        if is_kgdb():
+            if is_x86_64() or is_arm64():
+                pass
+            elif is_x86_32():
+                if not is_kdb() and not Config.get("gef.physmap_base_for_read_physmem_kgdb_work_around"):
+                    err("Set gef.physmap_base_for_read_physmem_kgdb_work_around to read the physical memory")
+                    return
+            else:
+                err("KGDB mode is supported only on x86 and ARM64")
+                return
+
         ret = XphysAddrCommand.parse_type_unit_count(args.format)
         if ret is None:
             self.usage()
             return
         dump_type, dump_unit, dump_count = ret
+        # nothing to dump, like `x/0xg`
+        if dump_count == 0:
+            return
         if args.telescope_like:
             dump_size = dump_count * current_arch.ptrsize
             target = args.location
@@ -109871,13 +109967,16 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
                 offset_tasks, offset_pid, offset_comm, offset_mm = offsets
                 tasks = KernelListHead(init_task + offset_tasks, offset_tasks)
                 for entry in tasks.iter_entries(include_head=True):
-                    if read_int32_from_memory(entry + offset_pid, safe=True) == args.pid:
+                    if read_int32_from_memory(entry + offset_pid, safe=True) != args.pid:
+                        continue
+                    # a thread ID, or a task without mm (a kernel thread, or an exited leader) is left to KernelTask
+                    if read_int_from_memory(entry + offset_mm, safe=True):
                         task = entry
-                        break
+                    break
 
         if task is None:
             self.task_command = Kernel.task()
-            if not self.task_command.initialize():
+            if not self.task_command.initialize(threads=True):
                 for func, line in Kernel.export_meta(self, self.task_command.meta):
                     func(line)
                 self.quiet_err("Failed to initialize")
@@ -109890,8 +109989,21 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
             offset_mm = self.task_command.offset_mm
         label = "{:s}[{:d}]".format(read_cstring_from_memory(task + offset_comm, allow_non_ascii=True) or "???", args.pid)
         mm = read_int_from_memory(task + offset_mm)
+        if mm == 0 and self.task_command.lwp_available():
+            # The leader that exits before the other threads stays as a zombie without mm (exit_mm()),
+            # so another thread in the group is used (also for its VMAs below).
+            for lwp in self.task_command.add_lwp_task([task]):
+                mm = read_int_from_memory(lwp + offset_mm)
+                if mm:
+                    task = lwp
+                    break
         if mm == 0:
-            err("{:s} is a kernel thread, which has no user-land memory".format(label))
+            if self.task_command.offset_flags is None:
+                err("{:s} is a kernel thread or has exited, which has no user-land memory".format(label))
+            elif self.task_command.is_kernel_thread(task, mm, args.pid):
+                err("{:s} is a kernel thread, which has no user-land memory".format(label))
+            else:
+                err("{:s} has exited, which has no user-land memory".format(label))
             return
 
         # pgd detection without DWARF validates a candidate by walking it to the task's own VMAs
@@ -109918,8 +110030,9 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
         self.quiet_info("offsetof(mm_struct, pgd): {:#x}".format(offset_pgd))
         self.quiet_info("{:s} task: {:#x}, mm: {:#x}, pgd: {:#x} (phys: {:#x})".format(label, task, mm, pgd, pgd_phys))
 
+        # KGDB walks only the pages of the dump, since it is slow. -t walks all, since it follows the pointers anywhere.
         addresses = ()
-        if is_kgdb() and (is_x86_64() or is_arm64()):
+        if is_kgdb() and (is_x86_64() or is_arm64()) and not args.telescope_like:
             page_size = get_pagesize()
             start = target & ~(page_size - 1)
             if 0 < target + dump_size - start <= 64 * page_size:
@@ -109927,7 +110040,12 @@ class KmemTaskCommand(GenericCommand, BufferingOutput):
         try:
             self.maps = KernelMM.get_user_maps(pgd_phys, addresses)
         except (gdb.error, gdb.MemoryError, OverflowError):
-            self.maps = []
+            err("Could not walk the page table of {:s}".format(label))
+            return
+        if not self.maps and addresses:
+            # none of the traced pages is present
+            err("Memory read error at {:#x} (not mapped in the page table of {:s})".format(target, label))
+            return
         if not self.maps:
             err("Could not walk the page table of {:s}".format(label))
             return
@@ -110088,7 +110206,11 @@ class KernelLoadCommand(GenericCommand):
             # STB_GLOBAL, STT_FUNC, not SHN_UNDEF/SHN_ABS
             if sym[index_info] != 0x12 or sym[index_shndx] in (0, 0xfff1) or not sym[index_value]:
                 continue
-            functions.append((sym[index_value], sym[0]))
+            value = sym[index_value]
+            # a Thumb function (CONFIG_THUMB2_KERNEL=y) has bit 0, which kallsyms drops like `nm`
+            if elf.e_machine == Elf.EM_ARM:
+                value &= ~1
+            functions.append((value, sym[0]))
         functions.sort()
         step = max(1, len(functions) // count)
         samples = {}
@@ -110126,8 +110248,12 @@ class KernelLoadCommand(GenericCommand):
         else:
             results.append(("linux_banner", "mismatch", "another build or version"))
 
-        # kallsyms
+        # kallsyms; it is checked once here, since Ksym.get_addr() parses it again at each call if it is unavailable
+        # (e.g., CONFIG_KALLSYMS=n)
         samples = self.get_elf_function_samples(elf, self.KALLSYMS_SAMPLES)
+        kallsyms = Ksym.get_kallsyms(quiet=True)
+        if kallsyms is None:
+            samples = {}
         matched = compared = 0
         for name, value in samples.items():
             addr = Ksym.get_addr(name)
@@ -110136,7 +110262,9 @@ class KernelLoadCommand(GenericCommand):
             compared += 1
             if addr == AddressUtil.normalize_address(value + slide):
                 matched += 1
-        if compared < 8:
+        if kallsyms is None:
+            results.append(("kallsyms", "unknown", "not found"))
+        elif compared < 8:
             results.append(("kallsyms", "unknown", "{:d} of {:d} sampled functions found".format(compared, len(samples))))
         elif matched * 10 >= compared * 9:
             results.append(("kallsyms", "match", "{:d}/{:d} sampled functions".format(matched, compared)))
@@ -110171,8 +110299,22 @@ class KernelLoadCommand(GenericCommand):
             if name not in elf_symbols:
                 continue
             slide = hint - elf_symbols[name]
-            if self.is_valid_slide(slide):
-                return slide
+            if not self.is_valid_slide(slide):
+                continue
+            if is_arm64():
+                # VBAR is the trampoline of KPTI at EL0 (TRAMP_VALIAS + SZ_2K * slot), whose distance may be a multiple of
+                # the page size. Its EL1 entries are empty, unlike the first entry of `vectors`, which is not patched.
+                # Note that __bp_harden_el1_vectors (Spectre-BHB) has the same EL1 entries as `vectors`.
+                offset = elf.vaddr_to_offset(elf_symbols[name])
+                actual = read_memory(hint, 0x10, safe=True)
+                if offset is None or actual is None:
+                    continue
+                with open(elf.filename, "rb") as fd:
+                    fd.seek(elf.seek_init_offset + offset)
+                    expected = fd.read(0x10)
+                if expected != actual:
+                    continue
+            return slide
         return None
 
     @Decorator.parse_args
@@ -110248,6 +110390,16 @@ class KernelLoadCommand(GenericCommand):
                 info("Confidence: medium")
         else:
             warn("Confidence: low (nothing but the KASLR offset shows that the vmlinux matches)")
+
+        # gdb looks up the objfiles in order, so the old one of the same file (e.g., before a reboot with KASLR) wins
+        for objfile in gdb.objfiles():
+            if os.path.realpath(objfile.filename) != os.path.realpath(args.path):
+                continue
+            if objfile.filename == objfile.progspace.filename:
+                warn("The main symbol file is the same vmlinux without the KASLR offset, whose symbols are found too")
+                info("Discard it by `symbol-file`, or `break` also gets the locations without the offset")
+                continue
+            gdb.execute("remove-symbol-file {:s}".format(GefUtil.quote_gdb_argument(objfile.filename)), to_string=True)
 
         cmd = "add-symbol-file {:s} -o {:#x}".format(GefUtil.quote_gdb_argument(args.path), slide)
         for shdr in elf.shdrs:
@@ -202205,7 +202357,7 @@ class XphysAddrCommand(GenericCommand):
                 if is_arm32():
                     target -= 1
                 else:
-                    err("Unsupported odd address: {}".format(target))
+                    err("Unsupported odd address: {:#x}".format(target))
                     return None
             # s390x opcode is at most 6byte
             if is_s390x():
