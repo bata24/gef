@@ -117,7 +117,7 @@ options:
 
 ## `context-extra`
 
-Context internal command to display extra information or execute command.
+Context internal command to display extra information or execute user commands.
 
 
 ### Syntax
@@ -166,7 +166,7 @@ options:
 
 ## `context-mem-watch`
 
-Context internal command to display watching memory.
+Context internal command to display the watched memory.
 
 - Alias: `context-mem_watch`
 
@@ -304,12 +304,12 @@ options:
   -f, --frame-split     display with frame split lines (heuristics).
   -u, --uniq            display with uniq.
   -i, --interval INTERVAL
-                        the line number of the interval for showing.
-  -d, --depth DEPTH     depth of recursive. (default: 1)
+                        the interval of the lines to display.
+  -d, --depth DEPTH     depth of recursion. (default: 1)
   -D, --depth-nb-lines DEPTH_NB_LINES
-                        NB_LINES when recursive. (default: 4)
-  -p, --phys            treat LOCATION as a physical address. (qemu-system only)
-  -l, --list-head       display if LIST_HEAD or not.
+                        NB_LINES of each recursion. (default: 4)
+  -p, --phys            treat LOCATION as a physical address (qemu-system, vmware and kgdb only).
+  -l, --list-head       tag the elements that look like list_head.
   -s, --slab-contains   display slab_cache name if available.
   -S, --slab-contains-unaligned
                         display slab_cache name (allow unaligned) if available.
@@ -324,10 +324,10 @@ options:
 dereference                         # dereference $sp 64
 dereference $sp 20                  # specify location and number of elements to display
 dereference $sp -20                 # display memory backwards
-dereference --reverse $sp 20        # display reverse order
+dereference --reverse $sp 20        # display in reverse order
 dereference --depth 2 $sp 20        # display recursively if valid aligned address
-dereference --is-addr $sp 20        # display elements which is valid address
-dereference --slab-contains $sp 20  # with slab-contains result (available under qemu-system)
+dereference --is-addr $sp 20        # display elements which are valid addresses
+dereference --slab-contains $sp 20  # with slab-contains result (available under qemu-system, vmware and kgdb)
 dereference --tag 0 next $sp 20     # with tags
 dereference -v $sp 20               # with variable tags
 ```
@@ -336,8 +336,10 @@ dereference -v $sp 20               # with variable tags
 
 ```text
 Use blacklist feature if reading the address causes process crash.
-e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"
+e.g., `gef config dereference.blacklist "[ [0xffffffffc9000000, 0xffffffffc9001000], ]"`
 then `gef save`.
+The memory cache reads the whole 4KB block around an address, so specify page aligned ranges,
+or use `gef config gef.disable_memory_cache True`.
 ```
 
 ## `registers`
@@ -377,7 +379,7 @@ Get the syscall name and arguments based on the register values in the current s
 usage: syscall-args [-h] [SYSCALL_NUM]
 
 positional arguments:
-  SYSCALL_NUM  syscall number to search.
+  SYSCALL_NUM  syscall number or name to use instead of the syscall number register.
 
 options:
   -h, --help   show this help message and exit
@@ -462,16 +464,36 @@ options:
 command-break 0x55555555aab9 "hexdump -n $sp+0x120"
 ```
 
+### Notes
+
+```text
+If COMMAND fails, it stops at the breakpoint instead of continuing.
+COMMAND is executed while GDB decides whether to stop, so it cannot resume the target.
+Commands that resume it (e.g., `stepi`, `continue`) fail, and calling a function of it
+(e.g., `call getpid()`, `print strlen($rdi)`) may hang GDB. Use `commands` of GDB for them.
+```
+
 ## `entry-break`
 
-Try to find best entry point and set a temporary breakpoint on it.
+Run the program (kill it first if running) and stop at the best entry point.
 
 - Alias: `start`
 
 ### Syntax
 
 ```text
-usage: entry-break
+usage: entry-break [ARGS ...]
+
+positional arguments:
+  ARGS  the arguments passed to `run` as is (e.g., redirections and wildcards).
+```
+
+### Notes
+
+```text
+If the program is running, it is killed and started again.
+It stops at the first symbol of entry_break.entrypoint_symbols found in the code of the main ELF,
+or at the ELF entry point (after ld.so maps a PIE).
 ```
 
 ## `load-break`
@@ -1259,8 +1281,8 @@ positional arguments:
 
 options:
   -h, --help         show this help message and exit
-  -a ARCH            specify the architecture. (default: current_arch.arch)
-  -m MODE            specify the mode. (default: current_arch.mode)
+  -a ARCH            specify the architecture. (default: current_arch.arch, or X86)
+  -m MODE            specify the mode. (default: current_arch.mode, or 64)
   -e                 use big-endian.
   -s                 output like shellcode style.
   -l LOCATION        write to memory address.
@@ -1273,11 +1295,12 @@ options:
 ```gdb
 asm -a X86 -m 64 "mov rax, qword ptr [rax] ; inc rax ;"
 asm -a X86 -m 32 "mov eax, dword ptr [eax] ; inc eax ;"
-asm -a X86 -m 16 "mov ax, word ptr [ax] ; inc ax"
+asm -a X86 -m 16 "mov ax, word ptr [bx] ; inc ax"
 asm -a ARM -m ARM      "sub r1, r2, r3"
 asm -a ARM -m ARM -e   "sub r1, r2, r3"
 asm -a ARM -m THUMB    "movs r4, #0xf0"
 asm -a ARM -m THUMB -e "movs r4, #0xf0"
+asm -a ARM -m ARM+V8   "crc32b r1, r2, r3"
 asm -a ARM64 -m ARM    "ldr w1, [sp, #0x8]"
 asm -a MIPS -m 32    "and $9, $6, $7"
 asm -a MIPS -m 32 -e "and $9, $6, $7"
@@ -1391,8 +1414,8 @@ positional arguments:
 
 options:
   -h, --help         show this help message and exit
-  -a ARCH            specify the architecture. (default: current_arch.arch)
-  -m MODE            specify the mode. (default: current_arch.mode)
+  -a ARCH            specify the architecture. (default: current_arch.arch, or X86)
+  -m MODE            specify the mode. (default: current_arch.mode, or 64)
   -e                 use big-endian.
   -i, --infile FILE  read hex code from a file.
 ```
@@ -1402,11 +1425,12 @@ options:
 ```gdb
 dasm -a X86 -m 64 "488b00 48ffc0"
 dasm -a X86 -m 32 "8b00 40"
-dasm -a X86 -m 16 "8b00 40"
+dasm -a X86 -m 16 "8b07 40"
 dasm -a ARM -m ARM      "031042e0"
 dasm -a ARM -m ARM -e   "e0421003"
 dasm -a ARM -m THUMB    "f024"
 dasm -a ARM -m THUMB -e "24f0"
+dasm -a ARM -m ARM+V8   "431002e1"
 dasm -a ARM64 -m ARM    "e10b40b9"
 dasm -a MIPS -m 32    "2448c700"
 dasm -a MIPS -m 32 -e "00c74824"
@@ -1470,12 +1494,14 @@ command:
 ### Notes
 
 ```text
-Comments are temporary only. Note that it will be deleted when GDB exits.
+Comments are temporary only. Note that they will be deleted when GDB exits.
+A comment is attached to the absolute address, so it stays there after re-running with ASLR,
+and is also shown at the same address of another inferior.
 ```
 
 ## `comment add`
 
-Add a comment to specific address.
+Add a comment to a specific address.
 
 
 ### Syntax
@@ -1485,7 +1511,7 @@ usage: comment add [-h] LOCATION COMMENT
 
 positional arguments:
   LOCATION    the address for comment.
-  COMMENT     the comment to print when hit.
+  COMMENT     the comment to display next to the instruction in the code pane.
 
 options:
   -h, --help  show this help message and exit
@@ -1494,7 +1520,9 @@ options:
 ### Notes
 
 ```text
-Comments are temporary only. Note that it will be deleted when GDB exits.
+Comments are temporary only. Note that they will be deleted when GDB exits.
+A comment is attached to the absolute address, so it stays there after re-running with ASLR,
+and is also shown at the same address of another inferior.
 ```
 
 ## `comment clear`
@@ -1514,7 +1542,9 @@ options:
 ### Notes
 
 ```text
-Comments are temporary only. Note that it will be deleted when GDB exits.
+Comments are temporary only. Note that they will be deleted when GDB exits.
+A comment is attached to the absolute address, so it stays there after re-running with ASLR,
+and is also shown at the same address of another inferior.
 ```
 
 ## `comment list`
@@ -1534,7 +1564,9 @@ options:
 ### Notes
 
 ```text
-Comments are temporary only. Note that it will be deleted when GDB exits.
+Comments are temporary only. Note that they will be deleted when GDB exits.
+A comment is attached to the absolute address, so it stays there after re-running with ASLR,
+and is also shown at the same address of another inferior.
 ```
 
 ## `comment remove`
@@ -1558,12 +1590,14 @@ options:
 ### Notes
 
 ```text
-Comments are temporary only. Note that it will be deleted when GDB exits.
+Comments are temporary only. Note that they will be deleted when GDB exits.
+A comment is attached to the absolute address, so it stays there after re-running with ASLR,
+and is also shown at the same address of another inferior.
 ```
 
 ## `extra`
 
-The base command to add, remove, list or clear user specified command to `context extra`.
+The base command to add, remove, list or clear user-specified commands of `context extra`.
 
 
 ### Syntax
@@ -1580,16 +1614,17 @@ command:
 
 ## `extra add`
 
-Add user specified command to execute when each step.
+Add a user-specified command to execute each time the context is displayed.
 
 
 ### Syntax
 
 ```text
-usage: extra add [-h] CMD [CMD ...]
+usage: extra add [-h] GDB_CMD [ARG ...]
 
 positional arguments:
-  CMD         the command to execute when each step.
+  GDB_CMD     gdb command.
+  ARG         arguments of gdb command.
 
 options:
   -h, --help  show this help message and exit
@@ -1597,7 +1632,7 @@ options:
 
 ## `extra clear`
 
-Clear all user specified commands to execute when each step.
+Clear all user-specified commands to execute each time the context is displayed.
 
 
 ### Syntax
@@ -1611,7 +1646,7 @@ options:
 
 ## `extra list`
 
-List user specified command to execute when each step.
+List user-specified commands to execute each time the context is displayed.
 
 
 ### Syntax
@@ -1625,7 +1660,7 @@ options:
 
 ## `extra remove`
 
-Remove user specified command to execute when each step.
+Remove a user-specified command to execute each time the context is displayed.
 
 
 ### Syntax
@@ -1634,7 +1669,7 @@ Remove user specified command to execute when each step.
 usage: extra remove [-h] INDEX
 
 positional arguments:
-  INDEX       the index of command to remove from automatically execution each step.
+  INDEX       the index of the command to remove from the automatic execution.
 
 options:
   -h, --help  show this help message and exit
@@ -1758,7 +1793,7 @@ command:
 
 ## `memory list`
 
-List all watchpoints to display in context layout.
+List all memory watches shown in context.
 
 
 ### Syntax
@@ -1772,7 +1807,7 @@ options:
 
 ## `memory reset`
 
-Remove all watchpoints.
+Remove all memory watches.
 
 
 ### Syntax
@@ -1795,7 +1830,7 @@ Remove address ranges from the memory view.
 usage: memory unwatch [-h] ADDRESS
 
 positional arguments:
-  ADDRESS     the memory address to deregister for display in `context memory`.
+  ADDRESS     the memory address to deregister for display in `context mem_watch`.
 
 options:
   -h, --help  show this help message and exit
@@ -1819,7 +1854,7 @@ Add address ranges to the memory view.
 usage: memory watch [-h] ADDRESS [COUNT] [{byte,word,dword,qword,pointers}]
 
 positional arguments:
-  ADDRESS               the memory address to register for display in `context memory`.
+  ADDRESS               the memory address to register for display in `context mem_watch`.
   COUNT                 the number of pointers, or bytes for byte/word/dword/qword. (default: 16)
   {byte,word,dword,qword,pointers}
                         the size of unit. (default: pointers)
@@ -2056,7 +2091,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   -a ARCH               specify the architecture. (default: current_arch.arch)
-  -m MODE               specify the mode. (default: current_arch.mode)
+  -m MODE               specify the mode. (default: the mode of the current process)
   -n, --no-pager        do not use the pager.
   -v, --verbose         display prototype of syscall.
 ```
@@ -2451,7 +2486,7 @@ Invoke rp++ (v2) command to search rop gadgets (x64/x86 only).
 ### Syntax
 
 ```text
-usage: rp [-h] (--bin | --libc | --file FILE | --kernel) [-f FILTER] [-r ROP_N] [-a] [-n] [--no-print]
+usage: rp [-h] (--bin | --libc | --file FILE | --kernel) [-f FILTER] [-r ROP_N] [-a] [--rescan] [-n] [--no-print]
 
 options:
   -h, --help            show this help message and exit
@@ -2462,6 +2497,7 @@ options:
   -f, --filter FILTER   REGEXP filter.
   -r, --rop ROP_N       the max length of rop gadget. (default: 3)
   -a, --allow-branches  enable --allow-branches.
+  --rescan              do not use cache.
   -n, --no-pager        do not use the pager.
   --no-print            run rp, create a temporary file, but don't display it.
 ```
@@ -2491,17 +2527,19 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  -c, --force-ceccomp   force use ceccomp.
+  -c, --force-ceccomp   force using ceccomp.
   -s, --force-seccomp-tools
-                        force use seccomp-tools.
+                        force using seccomp-tools.
 ```
 
 ### Notes
 
 ```text
-Default: Search `ceccomp` -> `seccomp-tools`, and use found one.
+Default: Search `ceccomp` -> `seccomp-tools`, and use the one found.
 With `-c` or `-s`: Forces GEF to use the specified one.
-The tool starts a new process; use `-- ARGS` for filters depending on startup arguments.
+The tool starts a new process with `show args`; use `-- ARGS` to replace them, or `--` for no arguments.
+The process also uses `show environment` and `show cwd`, as `run` does.
+`ceccomp probe` emulates the syscalls with the first filter only.
 ```
 
 # 02-a. Process Information - General
@@ -2622,8 +2660,8 @@ usage: codebase [-h] [-s ADDR] [-r] [-q]
 
 options:
   -h, --help      show this help message and exit
-  -s, --set ADDR  user specific address.
-  -r, --reset     reset user specific address.
+  -s, --set ADDR  set a user-specified base address.
+  -r, --reset     reset the user-specified base address.
   -q, --quiet     quiet execution.
 ```
 
@@ -2675,8 +2713,8 @@ usage: heapbase [-h] [-s ADDR] [-r] [-q]
 
 options:
   -h, --help      show this help message and exit
-  -s, --set ADDR  user specific address.
-  -r, --reset     reset user specific address.
+  -s, --set ADDR  set a user-specified base address.
+  -r, --reset     reset the user-specified base address.
   -q, --quiet     quiet execution.
 ```
 
@@ -2692,8 +2730,8 @@ usage: ld [-h] [-s ADDR] [-r] [-q]
 
 options:
   -h, --help      show this help message and exit
-  -s, --set ADDR  user specific address.
-  -r, --reset     reset user specific address.
+  -s, --set ADDR  set a user-specified base address.
+  -r, --reset     reset the user-specified base address.
   -q, --quiet     quiet execution.
 ```
 
@@ -2709,8 +2747,8 @@ usage: libc [-h] [-s ADDR] [-r] [-q]
 
 options:
   -h, --help      show this help message and exit
-  -s, --set ADDR  user specific address.
-  -r, --reset     reset user specific address.
+  -s, --set ADDR  set a user-specified base address.
+  -r, --reset     reset the user-specified base address.
   -q, --quiet     quiet execution.
 ```
 
@@ -2760,13 +2798,13 @@ Display a comprehensive layout of the virtual memory mapping.
 usage: vmmap [-h] [--outer] [-n] [-q] [-w] [-x] [-A LINES_AFTER] [-B LINES_BEFORE] [-C CONTEXT] [--gaps] [FILTER]
 
 positional arguments:
-  FILTER                filter string.
+  FILTER                a part of the path, an address or an expression, or `binary` for the executable itself.
 
 options:
   -h, --help            show this help message and exit
   --outer               display qemu-user's memory map instead of emulated process's memory map.
   -n, --no-pager        do not use the pager.
-  -q, --quiet           do not display register information.
+  -q, --quiet           do not display the offset from the filter address and register information.
   -w, --writable        display writable maps only.
   -x, --executable      display executable maps only.
   -A, --lines-after LINES_AFTER
@@ -2782,8 +2820,8 @@ options:
 
 ```gdb
 vmmap libc             # show only lines containing the string `libc`
-vmmap binary           # 'binary' means the area executable itself
-vmmap 0x555555577ab0   # show only lines included specified address
+vmmap binary           # 'binary' means the maps of the executable itself
+vmmap 0x555555577ab0   # show only the line that includes the specified address
 vmmap --outer          # show qemu-user memory map; only valid in qemu-user mode
 ```
 
@@ -3128,14 +3166,14 @@ Simplified DWARF exception structure:
 +-----------------------+      +-->+----------------+
 | ...                   |      |   | p_type         |
 | frame_hdr_cache_head  |---+  |   | p_flags        |
-+-frame_hdr_cache_entry-+<--+  |   | p_offset       |
++frame_hdr_cache_element+<--+  |   | p_offset       |
 | pc_low                |      |   | p_vaddr        |----+
 | pc_high               |      |   | p_paddr        |    |
 | load_base             |      |   | p_filesz       |    |
 | p_eh_frame_hdr        |------+   | p_memsz        |    |
 | p_dynamic             |          | p_align        |    |         [NEW IMPLEMENTATION]
-| link                  |---+      +----------------+    |          _dlfo_main@ld.so rodata area
-+-frame_hdr_cache_entry-+<--+                            |          _dlfo_nodelete_mappings@ld.so rodata area
+| link                  |---+      +----------------+    |          _dlfo_main@ld.so relro area
++frame_hdr_cache_element+<--+                            |          _dlfo_nodelete_mappings[]@heap (pointer in relro)
 | pc_low                |                                |         +-------------+
 | pc_high               |                                |         | map_start   |
 | load_base             |                                |         | map_end     |
@@ -3143,8 +3181,8 @@ Simplified DWARF exception structure:
 | p_dynamic             |                                |<--------| eh_frame    |
 | link                  |                                |         | (eh_dbase)  |
 +-----------------------+                                |         | (eh_count)  |
-The frame_hdr_cache_head and frame_hdr_cache_entry are   |         +-------------+
-initialized the first time they are called.              |
+The frame_hdr_cache_head and frame_hdr_cache[] are       |         +-------------+
+initialized the first time they are used.                |
                                                          |
                            +-----------------------------+
                            |
@@ -3212,7 +3250,7 @@ dynamic -d 0x555555575a98 --size 0x1c0          # dump specified address with sp
 
 ## `fpchain`
 
-Dump chains from __IO_list_all.
+Dump chains from _IO_list_all.
 
 
 ### Syntax
@@ -3245,7 +3283,7 @@ options:
   -h, --help            show this help message and exit
   -f, --file FILE       the filename to parse.
   -e, --elf-address ELF_ADDRESS
-                        the ELF address to parse.
+                        the base address where the file of -f is loaded.
   -r, --remote          parse remote binary if download feature is available.
   -n, --no-pager        do not use the pager.
   -q, --quiet           enable quiet mode.
@@ -3257,8 +3295,8 @@ options:
 ### Examples
 
 ```gdb
-got read print                              # filter specified keyword
-got -f /usr/lib/x86_64-linux-gnu/libc.so.6  # specified target binary
+got read print                              # filter by the specified keywords
+got -f /usr/lib/x86_64-linux-gnu/libc.so.6  # specify the target binary
 got -f /bin/ls -e 0x4000000000              # use specified address, it is useful under qemu
 ```
 
@@ -3323,7 +3361,7 @@ They are searched in writable memory. Their SQEs are guessed from the liburing l
 
 ## `link-map`
 
-Dump useful members of link_map with iterating.
+Dump useful members of each link_map by iterating over the chain.
 
 
 ### Syntax
@@ -3333,7 +3371,7 @@ usage: link-map [-h] [-e ELF_ADDRESS | -l LINK_MAP_ADDRESS] [-n] [-v]
 
 options:
   -h, --help           show this help message and exit
-  -e ELF_ADDRESS       the ELF address to parse.
+  -e ELF_ADDRESS       the ELF header address of the executable to parse.
   -l LINK_MAP_ADDRESS  the link_map address to parse.
   -n, --no-pager       do not use the pager.
   -v, --verbose        verbose output.
@@ -3342,7 +3380,7 @@ options:
 ### Examples
 
 ```gdb
-link-map                    # dump itself
+link-map                    # dump all loaded objects
 link-map -e 0x555555554000  # dump specified address as ELF
 link-map -l 0x7ffff7ffe2e0  # dump specified address as link_map
 ```
@@ -3359,7 +3397,7 @@ Dump members of stdin/stdout/stderr.
 usage: stdio-dump [-h] [-n] [address ...]
 
 positional arguments:
-  address         the ELF address to parse (default: stdin, stdout, stderr).
+  address         the FILE address to parse (default: stdin, stdout, stderr).
 
 options:
   -h, --help      show this help message and exit
@@ -3445,7 +3483,7 @@ options:
 
 ## `checksec`
 
-Check the security properties of the current executable or passed as argument.
+Check the security properties of the current executable or the one passed as an argument.
 
 - Alias: `cs`
 
@@ -4190,7 +4228,7 @@ positional arguments:
 
 options:
   -h, --help            show this help message and exit
-  --phys                treat LOCATION as a physical address (qemu-system only).
+  --phys                treat LOCATION as a physical address (qemu-system, vmware and kgdb only).
   -r, --reverse         display in reverse order line by line.
   -f, --full            display the same line without omitting.
   -s, --symbol          display the symbol.
@@ -4214,7 +4252,7 @@ positional arguments:
 
 options:
   -h, --help         show this help message and exit
-  --phys             treat LOCATION as a physical address (qemu-system only).
+  --phys             treat LOCATION as a physical address (qemu-system, vmware and kgdb only).
   -t, --tag IDX TAG  display with tags.
   -n, --no-pager     do not use the pager.
 ```
@@ -4331,7 +4369,7 @@ Display stack values for sigreturn syscall.
 usage: sigreturn [-h] [-r] [-n] [LOCATION]
 
 positional arguments:
-  LOCATION        the address interpreted as the beginning of a sigframe, or the ucontext_t on architectures other than x86/arm. (default: current_arch.sp)
+  LOCATION        the address interpreted as the beginning of a sigframe, or the ucontext_t on architectures other than x86/arm/SPARC64. (default: from current_arch.sp at the handler entry or at the sigreturn syscall)
 
 options:
   -h, --help      show this help message and exit
@@ -4354,15 +4392,24 @@ positional arguments:
 
 options:
   -h, --help      show this help message and exit
-  -m, --mcontext  interpret LOCATION as mcontext_t (e.g. &uc->uc_mcontext, struct sigcontext).
+  -m, --mcontext  interpret LOCATION as mcontext_t (e.g. &uc->uc_mcontext).
   -n, --no-pager  do not use the pager.
 ```
 
 ### Examples
 
 ```gdb
-ucontext $rdx                 # the 3rd argument of a SA_SIGINFO handler, setcontext, etc.
-ucontext -m 0x7fffffffd9e8    # struct sigcontext
+ucontext $rdx                 # the 3rd argument of a SA_SIGINFO handler
+ucontext $rdi                 # the 1st argument of getcontext, setcontext, makecontext and swapcontext
+ucontext -m 0x7fffffffd9e8    # struct sigcontext of x86-64, which is the same as mcontext_t
+```
+
+### Notes
+
+```text
+struct sigcontext is not mcontext_t on PPC32, s390x, m68k and SPARC64, and -m cannot read it there.
+uc_mcontext of PPC32 is a union of pointers, so give its uc_regs, which points to mcontext_t, to -m.
+SPARC64 passes &sf->info to the 3rd argument of a SA_SIGINFO handler, which is not ucontext_t.
 ```
 
 ## `xc`
@@ -4430,7 +4477,7 @@ positional arguments:
 
 options:
   -h, --help      show this help message and exit
-  --phys          treat LOCATION as a physical address (qemu-system only).
+  --phys          treat LOCATION as a physical address (qemu-system, vmware and kgdb only).
   -r, --reverse   display in reverse order line by line.
   -f, --full      display the same line without omitting.
   -s, --symbol    display the symbol.
@@ -4734,7 +4781,7 @@ usage: patch hex [-h] [--phys] LOCATION "hex-string" [LENGTH]
 positional arguments:
   LOCATION      the memory address to patch.
   "hex-string"  the string to write to memory.
-  LENGTH        the number of bytes to patch. (default: None)
+  LENGTH        the number of bytes to patch, repeating or truncating the input. (default: the input length)
 
 options:
   -h, --help    show this help message and exit
@@ -4808,7 +4855,7 @@ options:
   -h, --help          show this help message and exit
   --mode {arm,thumb}  select the instruction mode at LOCATION (ARM32 only).
   --phys              treat LOCATION as a physical address (qemu-system only).
-  -b BYTE_LENGTH      the patch length in bytes. (default: None)
+  -b BYTE_LENGTH      the patch length in bytes instead of -i.
   -i INST_COUNT       the number of instructions to patch. (default: 1)
 ```
 
@@ -4830,7 +4877,7 @@ usage: patch pattern [-h] [--phys] [-c CHARSET] [-d] LOCATION LENGTH
 
 positional arguments:
   LOCATION              the memory address to patch.
-  LENGTH                the number of bytes to patch. (default: None)
+  LENGTH                the number of bytes to patch.
 
 options:
   -h, --help            show this help message and exit
@@ -4892,7 +4939,7 @@ positional arguments:
 
 options:
   -h, --help    show this help message and exit
-  --phys        treat LOCATION as a physical address (qemu-system only).
+  --phys        treat START_ADDR and END_ADDR as physical addresses (qemu-system only).
 ```
 
 ### Examples
@@ -4935,13 +4982,13 @@ A new patch or a successful patch revert discards the redo history for the curre
 
 ## `patch ret`
 
-Patch the instruction(s) at the given address with return.
+Patch the instruction(s) at the given address with a return instruction.
 
 
 ### Syntax
 
 ```text
-usage: patch ret [-h] [--mode {arm,thumb}] [--phys] [--return-mode {leaf,windowed}] [--interworking | --no-interworking] [LOCATION]
+usage: patch ret [-h] [--mode {arm,thumb}] [--phys] [--return-mode {leaf,windowed,call0}] [--interworking | --no-interworking] [LOCATION]
 
 positional arguments:
   LOCATION              the memory address to patch. (default: current_arch.pc)
@@ -4950,8 +4997,8 @@ options:
   -h, --help            show this help message and exit
   --mode {arm,thumb}    select the instruction mode at LOCATION (ARM32 only).
   --phys                treat LOCATION as a physical address (qemu-system only).
-  --return-mode {leaf,windowed}
-                        select the SPARC return form: retl/nop or ret/restore.
+  --return-mode {leaf,windowed,call0}
+                        select the return form: retl/nop (leaf) or ret/restore (windowed) of SPARC, retw.n (windowed) or ret.n (call0) of Xtensa.
   --interworking        use BX LR when ARM interworking support cannot be detected.
   --no-interworking     use MOV PC, LR for ARM CPUs without interworking support.
 ```
@@ -5001,7 +5048,7 @@ positional arguments:
   LOCATION              the memory address to patch.
   "double backslash-escaped string"
                         the string to write to memory.
-  LENGTH                the number of bytes to patch. (default: None)
+  LENGTH                the number of bytes to patch, repeating or truncating the input. (default: the input length)
 
 options:
   -h, --help            show this help message and exit
@@ -5017,7 +5064,7 @@ patch string $sp "\\x41\\x41\\x41\\x41\\x42\\x42\\x42\\x42"
 
 ## `patch syscall`
 
-Patch the instruction(s) at the given address with syscall instruction.
+Patch the instruction(s) at the given address with a syscall instruction.
 
 
 ### Syntax
@@ -5042,7 +5089,7 @@ patch syscall $pc
 
 ## `patch trap`
 
-Patch the instruction(s) at the given address with breakpoint or trap (if available).
+Patch the instruction(s) at the given address with a breakpoint or trap instruction (if available).
 
 
 ### Syntax
@@ -6024,7 +6071,7 @@ Load the file into memory.
 usage: load-file [-h] LOCATION FILE_PATH [FILE_OFFSET] [LOAD_SIZE]
 
 positional arguments:
-  LOCATION     the memory address to load.
+  LOCATION     the memory address to load into.
   FILE_PATH    the filepath to load.
   FILE_OFFSET  the offset of the file to load.
   LOAD_SIZE    the size of the data to load.
@@ -6056,7 +6103,7 @@ If there is not enough space, the load will fail halfway.
 
 ## `load-file-mmap`
 
-Load the file into memory that allocated by `mmap`.
+Load the file into memory that is allocated by `mmap`.
 
 
 ### Syntax
@@ -6065,7 +6112,7 @@ Load the file into memory that allocated by `mmap`.
 usage: load-file-mmap [-h] LOCATION FILE_PATH [FILE_OFFSET] [LOAD_SIZE]
 
 positional arguments:
-  LOCATION     the memory address to load.
+  LOCATION     the memory address to load into.
   FILE_PATH    the filepath to load.
   FILE_OFFSET  the offset of the file to load.
   LOAD_SIZE    the size of the data to load.
@@ -6464,7 +6511,7 @@ Disable `-enable-kvm` option for qemu-system.
 
 ## `fpu`
 
-Display fpu registers (x86/x64:x87-fpu, ARM/ARM64:vfp-d16).
+Display fpu registers (x86/x64: x87 FPU, ARM/ARM64: VFP/NEON).
 
 
 ### Syntax
@@ -6606,7 +6653,7 @@ Disable `-enable-kvm` option for qemu-system.
 
 ## `xmmset`
 
-Simply set the value to xmm or ymm register.
+Simply set the value to xmm, ymm or zmm register.
 
 
 ### Syntax
@@ -10430,6 +10477,7 @@ Verdicts:
   MISMATCH: heuristic differs from direct.
   ERROR   : either run raised an exception. The messages are listed under `errors`.
   n/a     : not compared, because direct is '-', False or None, or heuristic is False.
+            The syscall table finders give up on KGDB, so their None is n/a there.
 MISS, MISMATCH and ERROR are failures. They are highlighted, and `--failures-only` shows only them.
 $ks_selftest_failures is nonzero if the test cannot run, otherwise it is the number of failed results.
 ```
@@ -10874,7 +10922,7 @@ A clear mismatch is not loaded without `--force`.
 
 ## `kmod-load`
 
-Load the kernel module without a load address.
+Load the symbols of a kernel module file at the addresses of the loaded module.
 
 
 ### Syntax
@@ -10883,7 +10931,7 @@ Load the kernel module without a load address.
 usage: kmod-load [-h] [--force] [--meta] [-n] [-q] name path
 
 positional arguments:
-  name            name of the loaded module to search for by `kmod`.
+  name            name of the loaded module (as shown by `kmod`).
   path            path to compiled kernel module.
 
 options:
@@ -11196,7 +11244,7 @@ Dump the user-land memory of a task through the page table of its mm.
 usage: kmem-task [-h] [-t] [-n] [-q] PID /FMT ADDRESS
 
 positional arguments:
-  PID                   the process ID of the target task.
+  PID                   the process or thread ID of the target task.
   /FMT                  specified output format.
   ADDRESS               the user-land virtual address of the target task to dump.
 
@@ -11345,7 +11393,7 @@ options:
   --init-task INIT_TASK
                         specifies the address of init_task.
   --meta                display offset information.
-  --all                 enable all option.
+  --all                 enable all options.
   -n, --no-pager        do not use the pager.
   -q, --quiet           enable quiet mode.
 ```
@@ -11369,7 +11417,7 @@ Simplified task_struct structure:
     | list_head |---+    +-->+-kstack----------+    +--->+-vm_area_struct--+
     +-----------+   |    |   | (thread_info)   |    |    | vm_start        |
                     |    |   | STACK_END_MAGIC |    |    | vm_end          |
-+-------------------+    |   | ...             |    |    | vm_next (~6.1)  |
++-------------------+    |   | ...             |    |    | vm_next (~6.0)  |
 |                        |   | ...             |    |    | ...             |
 |   +-task_struct---+    |   | ...             |    |    | vm_flags        |
 |   | (thread_info) |    |   | ...             |    |    | vm_file         |-----+
@@ -11379,9 +11427,9 @@ Simplified task_struct structure:
 +-->| tasks         |-->...               +---------+<------------------------+  |
     | ...           |                     |                                   |  |
     | mm            |-->+-mm_struct----+  |  +-------->+-maple_node(6.1~)--+  |  |
-    | ...           |   | mmap (~6.1)  |--+  |         | ...               |  |  |
+    | ...           |   | mmap (~6.0)  |--+  |         | ...               |  |  |
     | pid           |   | ...          |     |         | mr64|ma64|alloc   |  |  |
-    | tid           |   | mm_mt (6.1~) |     |         |   ...             |  |  |
+    | tgid          |   | mm_mt (6.1~) |     |         |   ...             |  |  |
     | ...           |   |   ma_root    |-----+         |   slot[]          |--+  |
     | stack_canary  |   | ...          |               +-------------------+     |
     | ...           |   +--------------+                                         |
@@ -11646,7 +11694,7 @@ Simplified cdev structure:
                 +-------------+    +-------+
 
 The character devices are managed at chrdevs[] and cdev_map.
-This command use each of them for getting structure information.
+This command uses each of them to get the structure information.
 
 Each line is a registered range of minors, not a device node.
 `name (guessed)` is guessed from the static major/minor table only when the range has a single minor.
@@ -12422,28 +12470,30 @@ Simplified keyring structures:
 +-key----------------------------+
 | usage                          |
 | serial                         |
-| uid, gid, perm                 |
+| type (~v3.12)                  |
 | expiry                         |
-| flags                          |
+| uid, gid, perm                 |
+| datalen                        |
 | state (v4.14~)                 |
-| type                           |
+| flags                          |
+| type (v3.13~)                  |
 | description                    |
 | payload.subscriptions (~v3.12) |---->struct keyring_list
 | payload.data[0] (auth key)     |---->struct request_key_auth
 | keys.root (v3.13~)             |---->assoc_array_ptr
 +--------------------------------+
 
-+-request_key_auth-+
-| rcu (v5.3~)      |
-| usage (v7.2~)    |
-| target_key       |---->struct key (being constructed)
-| dest_keyring     |---->struct key
-| cred             |---->struct cred (requester)
-| callout_info     |
-| callout_len      |
-| pid              |
-| op[8] (v5.0~)    |
-+------------------+
++-request_key_auth------+
+| rcu (v5.3~)           |
+| usage (v7.2~, stable) |
+| target_key            |---->struct key (being constructed)
+| dest_keyring          |---->struct key
+| cred                  |---->struct cred (requester)
+| callout_info          |
+| callout_len           |
+| pid                   |
+| op[8] (v5.0~)         |
++-----------------------+
 
 [~v3.12]
 +-keyring_list-+
@@ -12732,7 +12782,7 @@ Simplified module structure:
                    |     base                       |
                    |     size                       |
                    |     ...                        |
-                   | core_layout (v4.5~v6.4)        |
+                   | core_layout (v4.5~v6.3)        |
                    |     base                       |
                    |     size                       |
                    |     text_size                  |
@@ -12750,7 +12800,8 @@ Simplified module structure:
                    +--------------------------------+      +----------------+
 
 Since v6.4, each type of mem[] (text, data, rodata, ro_after_init, init_*) is allocated separately,
-so each allocated type is displayed on its own line. Before v6.4, the whole core is displayed as `core`.
+so each allocated type is displayed on its own line. Before v6.4, the whole core is displayed as `core`,
+but PPC32 (CONFIG_ARCH_WANTS_MODULES_DATA_IN_VMALLOC) displays the text as `core` and the data as `data`.
 
 Notes for -a option:
 - You can check the added symbols with the `symbols` command.
@@ -13719,12 +13770,12 @@ options:
   -h, --help           show this help message and exit
   -hh, --help-simple   show help without ASCII diagram.
   -f, --filter FILTER  REGEXP filter.
-  -s, --skip-symlink   do not follow symlink (net.* and user.*).
+  -s, --skip-symlink   do not follow the symlinks to the sets of the namespaces (e.g., net.*).
   -e, --exact          use exact match.
   -d, --decimal        display integer values in decimal.
   --meta               display offset information.
   -r, --rescan         do not use cache.
-  -v, --verbose        dump zero-sized entries and proc_handler too.
+  -v, --verbose        dump the hidden entries (zero-sized or invalid data), the header, set and proc_handler too.
   -n, --no-pager       do not use the pager.
   -q, --quiet          enable quiet mode.
 ```
@@ -13734,7 +13785,7 @@ options:
 ```gdb
 ksysctl --filter modprobe             # filter by parameter name
 ksysctl --filter kernel.modprobe -e   # exact match
-ksysctl -s                            # skip symlink (improves performance with many .net.* and user.* entries)
+ksysctl -s                            # skip symlink (improves performance with many net.* and user.* entries)
 ```
 
 ### Notes
@@ -13962,6 +14013,7 @@ kvfs --type inode 0xffff888003b0a000
 This command requires CONFIG_RANDSTRUCT=n unless vmlinux with debug information is loaded.
 
 ADDRESS is detected as struct file, dentry or inode unless --type is specified.
+The path of a dentry is the one inside its filesystem (e.g., `/1/status` of procfs), which crosses no mount.
 The filesystem type and mount device are best-effort when debug information is unavailable.
 
 Simplified VFS object graph:
@@ -15768,7 +15820,7 @@ addressify --byte-order big 7f ff f7 e0 30 00
 
 ## `convert`
 
-The base command to convert values to various.
+The base command to convert values to various formats.
 
 
 ### Syntax
@@ -15785,7 +15837,7 @@ command:
 
 ## `convert memory`
 
-Convert memory values to various.
+Convert memory values to various formats.
 
 
 ### Syntax
@@ -15794,8 +15846,8 @@ Convert memory values to various.
 usage: convert memory [-h] [-n] [-v] LOCATION SIZE
 
 positional arguments:
-  LOCATION        start address for hash calculation.
-  SIZE            the size for hash calculation.
+  LOCATION        start address to convert.
+  SIZE            the size to convert.
 
 options:
   -h, --help      show this help message and exit
@@ -15811,7 +15863,7 @@ convert memory $rsp 0x20
 
 ## `convert value`
 
-Convert values to various.
+Convert values to various formats.
 
 
 ### Syntax
@@ -15835,6 +15887,7 @@ options:
 convert value 0xdeadbeef
 convert value "\\x41\\x42\\x43\\x44" -v
 convert value --hex "41 42 43 44" -v
+convert value -- -0x10  # `--` is needed for a negative value other than decimal
 ```
 
 ## `cpp-demangle`
@@ -15964,6 +16017,13 @@ options:
 unsigned -- -0xa0
 ```
 
+### Notes
+
+```text
+In each width, a positive VALUE that fits with the MSB clear is taken as the absolute value of a negative number,
+and the others are masked to the width.
+```
+
 # 07-b. Misc - Search
 ## `constgrep`
 
@@ -16015,7 +16075,7 @@ bytearray -b 414243 -b 51-53 -b 61..63
 
 ## `pattern`
 
-The base command to create or search for a De Bruijn cyclic pattern (used pwntools).
+The base command to create or search for a de Bruijn cyclic pattern (compatible with pwntools).
 
 - Alias: `cyclic`
 
@@ -16040,38 +16100,40 @@ Generate a de Bruijn cyclic pattern.
 ### Syntax
 
 ```text
-usage: pattern create [-h] [-c CHARSET] [SIZE]
+usage: pattern create [-h] [-c CHARSET] [-n PERIOD] [SIZE]
 
 positional arguments:
-  SIZE                  the size of pattern. (default: 1024)
+  SIZE                  the size of pattern. (default: pattern.length, up to the maximum)
 
 options:
   -h, --help            show this help message and exit
   -c, --charset CHARSET
                         the charset of pattern. (default: abc..z)
+  -n, --period PERIOD   the length of each unique subsequence. (default: target pointer size)
 ```
 
 ## `pattern search`
 
-Search for the cyclic de Bruijn pattern generated by the `pattern create`.
+Search for the cyclic de Bruijn pattern generated by `pattern create`.
 
 - Alias: `patto`
 
 ### Syntax
 
 ```text
-usage: pattern search [-h] [-c CHARSET] [-w {1,2,4,8}] [-d] [PATTERN] [SIZE]
+usage: pattern search [-h] [-c CHARSET] [-n PERIOD] [-w {1,2,4,8}] [-d] [PATTERN] [SIZE]
 
 positional arguments:
   PATTERN               the pattern to offset search.
-  SIZE                  the size of pattern. (default: 0x10000)
+  SIZE                  the size of pattern, which comes first with --detect. (default: pattern.length * 64, up to the maximum)
 
 options:
   -h, --help            show this help message and exit
   -c, --charset CHARSET
                         the charset of pattern. (default: abc..z)
+  -n, --period PERIOD   the length of each unique subsequence. (default: target pointer size)
   -w, --width {1,2,4,8}
-                        the integer search width in bytes. (default: target pointer size)
+                        the integer search width in bytes. (default: target pointer size, or PERIOD if shorter)
   -d, --detect          detect patterns in registers and their targets.
 ```
 
@@ -16079,7 +16141,9 @@ options:
 
 ```gdb
 pattern search $pc
-pattern search 0x61616164
+pattern search 0x61616164                # on 32-bit
+pattern search 0x6161616161616164        # on 64-bit
+pattern search -n 4 0x61616164           # on 64-bit, with `pattern create -n 4`
 pattern search aaab
 ```
 
@@ -16154,7 +16218,7 @@ positional arguments:
 options:
   -h, --help            show this help message and exit
   --abi {linux,linux-compat,qemu-user}
-                        the signal frame ABI for SPARC64, m68k or PA-RISC32. (default: detect QEMU-user, else Linux)
+                        the signal frame ABI for PPC64, SH4, m68k or PA-RISC32. (default: detect QEMU-user, else Linux)
 ```
 
 # 07-e. Misc - Calculation

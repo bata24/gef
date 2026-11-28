@@ -243,7 +243,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`ktypes-load`|`bpftool`,`gcc` (Debian/Ubuntu), `bpf`,`gcc` (Arch)|-|-|
 |`qemu-device-info`|`binutils` (`nm`)|-|-|
 |`rp`|-|-|`rp++`|
-|`rp --kernel`|`binutils` (`nm`), `grep`|-|`rp++`|
+|`rp --kernel`|`binutils` (`nm`), `grep`|`vmlinux-to-elf`|`rp++`|
 |`binwalk-memory`|`binwalk`|-|-|
 |`diffo colordiff`|`colordiff`|-|-|
 |`diffo git-diff`|`git`|-|-|
@@ -256,7 +256,7 @@ To use these commands fully, you need to manually install the necessary packages
 |`sixel-memory`|`imagemagick`|-|-|
 |`sixel-memory -b`|-|`pillow`, `pyzbar`|-|
 |`ktask -S`|-|-|`ceccomp` or `seccomp-tools`|
-|`seccomp-tools`|-|-|`ceccomp` or `seccomp-tools`|
+|`seccomp`|-|-|`ceccomp` or `seccomp-tools`|
 |`onegadget`|-|-|`one_gadget`|
 |`angr`|-|`angr`|-|
 |`asm-list`|-|`capstone`|-|
@@ -405,13 +405,14 @@ Let's consider debug information and debug symbols separately.
         - However, there are still not many commands that implement this kind of optimization.
 - Debug symbols
     - Yes.
-        - If the symbols are already loaded:
+        - If the `vmlinux` is the main symbol file (e.g., `gdb vmlinux` or `file vmlinux`):
             - The `ksymaddr-remote` command will automatically use offsets read from the `vmlinux` file (with rebasing).
         - If the symbols are not loaded yet:
-            - Load the `vmlinux` symbols using `kload <vmlinux>`.
+            - Load the `vmlinux` symbols using `kload <vmlinux>`, which resolves the KASLR offset (`add-symbol-file -o`).
+            - `ksymaddr-remote` still reads `kallsyms` in memory, since it uses only the main symbol file.
     - Note:
         - GEF internally uses the addresses resolved with `ksymaddr-remote`, and these results are cached.
-        - If `vmlinux` file is already loaded, the results of `ksymaddr-remote` can be replaced with accurate values (with rebasing) and cached.
+        - If `vmlinux` is the main symbol file, the results of `ksymaddr-remote` can be replaced with accurate values (with rebasing) and cached.
 
 ## Does GEF support i386 16-bit mode (real mode)?
 Yes, GEF supports real mode experimentally.
@@ -547,8 +548,8 @@ The `ks-apply` command is unnecessary. Run `kload <vmlinux_path>`.
 Below is a summary of each.
 |Component|How GDB uses it|How GEF uses it|Recommended command|
 |:---|:---|:---|:---|
-|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Essential for source-level debugging|- Used by some commands if available<br>- Can be viewed with `dt`|`kload <vmlinux>`|
-|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (easy wrapper with `kbase`)<br>- Provides kernel symbol resolution|- Accessible after `ks`<br>- Addresses will be automatically rebased|`kload <vmlinux>` then `ks`|
+|`vmlinux` debuginfo|- Loaded via `add-symbol-file`<br>- Or `kload` (resolves the KASLR offset)<br>- Essential for source-level debugging|- Used by some commands if available<br>- Can be viewed with `dt`|`kload <vmlinux>`|
+|`vmlinux` symbols|- Loaded via `add-symbol-file`<br>- Or `kload` (resolves the KASLR offset)<br>- Provides kernel symbol resolution|- Used by `ks` if it is the main symbol file (e.g., `gdb vmlinux`)<br>- Addresses will be automatically rebased|`kload <vmlinux>`|
 |Memory-resident `debuginfo`<br>(if `CONFIG_DEBUG_INFO_BTF=y`)|- Not available by default<br>- Accessible via `kt-load`|- Used by some commands if available after `kt-load`<br>- Can be viewed with `dt`|`kt-load`|
 |Memory-resident `kallsyms`<br>(if `CONFIG_KALLSYMS=y`)|- Not available by default<br>- Accessible via `ks-apply`|- Accessible after `ks`<br>- Used by various GEF commands internally|`ks-apply`|
 
